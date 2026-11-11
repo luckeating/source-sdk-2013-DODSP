@@ -851,8 +851,6 @@ Activity CNPC_GermanSoldier::PickAvailable( const char **ppszNames, int nCount )
 
 Activity CNPC_GermanSoldier::PickDeathActivity( void )
 {
-	Activity act = GetActivity();
-
 	// Running: the CoD running deaths (stumble, crumple, fall forward ...)
 	if ( IsMoving() && m_flGroundSpeed > 100.0f )
 	{
