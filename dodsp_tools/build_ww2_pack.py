@@ -196,7 +196,9 @@ gesture_anims_done = set()
 seen = set()
 for name, anims, act, extra in chosen:
     short = name[len('cod2_'):]
-    if act and KEEP_HL2_ACT.match(act):
+    # The port reuses the gut hunch for leg and physics flinches; the CoD1 pack has a real
+    # leg-hit animation, so those become plain ACT_WW2_* names (and dedupe away).
+    if act and KEEP_HL2_ACT.match(act) and act not in ('ACT_FLINCH_LEFTLEG', 'ACT_FLINCH_RIGHTLEG', 'ACT_FLINCH_PHYSICS'):
         activity = act
     else:
         activity = 'ACT_WW2_' + re.sub(r'_\d+$', '', short).upper()

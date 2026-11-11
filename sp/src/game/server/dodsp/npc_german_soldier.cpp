@@ -198,6 +198,7 @@ private:
 	float				m_flFullFlinchChance;
 	float				m_flFullFlinchCooldown;
 	float				m_flLastHitSide;		// where the last hit landed across his body: + = his right, - = his left (units)
+	float				m_flLastHitDamage;
 
 	// Networked to the client for the procedural hit kick
 	CNetworkVector( m_vecHitDir );			// horizontal direction the bullet travelled
@@ -256,6 +257,7 @@ CNPC_GermanSoldier::CNPC_GermanSoldier() : m_AnimMap( DefLessFunc( int ) )
 	m_flFullFlinchChance = 0.2f;
 	m_flFullFlinchCooldown = 3.0f;
 	m_flLastHitSide = 0.0f;
+	m_flLastHitDamage = 0.0f;
 	m_vecHitDir.Init( 1, 0, 0 );
 	m_nHitGroup = 0;
 	m_flHitTime = 0.0f;
@@ -854,11 +856,21 @@ Activity CNPC_GermanSoldier::PickAvailable( const char **ppszNames, int nCount )
 
 Activity CNPC_GermanSoldier::PickDeathActivity( void )
 {
-	// Running: the CoD running deaths (stumble, crumple, fall forward ...)
+	// Crouch-running: CoD1 crouch-run deaths
+	if ( IsMoving() && IsInCrouchPose() )
+	{
+		static const char *s_CrouchRun[] = { "ACT_WW2_DEATH_CROUCHRUN" };
+		Activity a = PickAvailable( s_CrouchRun, ARRAYSIZE( s_CrouchRun ) );
+		if ( a != ACT_INVALID )
+			return a;
+	}
+
+	// Running: the CoD running deaths (stumble, crumple, fall forward ...), CoD2 and CoD1
 	if ( IsMoving() && m_flGroundSpeed > 100.0f )
 	{
 		static const char *s_Run[] = { "ACT_WW2_DEATH_RUN_FRONT", "ACT_WW2_DEATH_RUN_STUMBLE", "ACT_WW2_DEATH_RUN_CRUMPLE",
-									   "ACT_WW2_DEATH_RUN_LEFT", "ACT_WW2_DEATH_RUN_RIGHT" };
+									   "ACT_WW2_DEATH_RUN_LEFT", "ACT_WW2_DEATH_RUN_RIGHT", "ACT_WW2_DEATH_RUN_BACK",
+									   "ACT_WW2_DEATH_RUN_ONFRONT", "ACT_WW2_DEATH_RUN_ONLEFT" };
 		Activity a = PickAvailable( s_Run, ARRAYSIZE( s_Run ) );
 		if ( a != ACT_INVALID )
 			return a;
@@ -867,8 +879,16 @@ Activity CNPC_GermanSoldier::PickDeathActivity( void )
 	// Crouched or in low cover
 	if ( IsInCrouchPose() )
 	{
+		bool bHead = ( LastHitGroup() == HITGROUP_HEAD );
+		static const char *s_CrouchHead[] = { "ACT_WW2_CROUCH_DEATH_HEAD", "ACT_WW2_DEATH_CROUCH_HEADSHOT" };
+		if ( bHead )
+		{
+			Activity a = PickAvailable( s_CrouchHead, ARRAYSIZE( s_CrouchHead ) );
+			if ( a != ACT_INVALID )
+				return a;
+		}
 		static const char *s_Crouch[] = { "ACT_DIE_CROUCH", "ACT_WW2_DEATH_CROUCH_HANDS", "ACT_WW2_DEATH_CROUCH_FETAL",
-										  "ACT_WW2_DEATH_CROUCH_FLIP", "ACT_WW2_DEATH_CROUCH_HEADSHOT" };
+										  "ACT_WW2_DEATH_CROUCH_FLIP", "ACT_WW2_CROUCH_DEATH" };
 		Activity a = PickAvailable( s_Crouch, ARRAYSIZE( s_Crouch ) );
 		if ( a != ACT_INVALID )
 			return a;
@@ -1002,9 +1022,10 @@ void CNPC_GermanSoldier::DoHitReaction( const CTakeDamageInfo &info )
 	if ( m_flGestureReloadDone > gpGlobals->curtime )
 		m_flGestureReloadDone += flStunned;
 
-	// --- Full-body CoD flinch: big or unlucky hits, standing still only ----
-	// (the CoD pains are standing animations; crouched/prone ones come with CoD1)
-	if ( gpGlobals->curtime < m_flNextFullFlinch || IsMoving() || IsInCrouchPose() || IsCurSchedule( SCHED_BIG_FLINCH ) )
+	// --- Full-body CoD flinch: big or unlucky hits, not while moving ---------
+	// (standing: CoD2 + CoD1 pains by hit location; crouched: CoD1 crouch pain)
+	m_flLastHitDamage = info.GetDamage();
+	if ( gpGlobals->curtime < m_flNextFullFlinch || IsMoving() || IsCurSchedule( SCHED_BIG_FLINCH ) )
 		return;
 	if ( info.GetDamage() < m_flFullFlinchDamage && random->RandomFloat( 0.0f, 1.0f ) > m_flFullFlinchChance )
 		return;
@@ -1023,7 +1044,23 @@ Activity CNPC_GermanSoldier::GetFlinchActivity( bool bHeavyDamage, bool bGesture
 {
 	if ( !bGesture )
 	{
+		// Crouched: the CoD1 crouch pain, whatever was hit.
+		if ( IsInCrouchPose() )
+		{
+			int iAct = ActivityList_IndexForName( "ACT_WW2_CROUCH_PAIN" );
+			if ( iAct >= 0 && HaveSequenceForActivity( (Activity)iAct ) )
+				return (Activity)iAct;
+		}
+
+		// A really big body hit sometimes drops him to one hand (CoD1).
 		int nGroup = LastHitGroup();
+		if ( nGroup != HITGROUP_HEAD && m_flLastHitDamage >= m_flFullFlinchDamage && random->RandomFloat( 0.0f, 1.0f ) < 0.35f )
+		{
+			int iAct = ActivityList_IndexForName( "ACT_WW2_PAIN_FALLTOHAND" );
+			if ( iAct >= 0 && HaveSequenceForActivity( (Activity)iAct ) )
+				return (Activity)iAct;
+		}
+
 		if ( nGroup == HITGROUP_CHEST || nGroup == HITGROUP_GENERIC || nGroup == HITGROUP_GEAR )
 		{
 			const float flCentre = 3.0f;	// within this many units of the middle counts as centre
