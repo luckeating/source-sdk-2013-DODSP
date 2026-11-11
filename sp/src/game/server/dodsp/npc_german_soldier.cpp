@@ -178,6 +178,7 @@ private:
 	Activity			m_actDeath;
 	float				m_flDeathAnimGiveUp;
 	float				m_flDeathAnimSpeed;
+	float				m_flDeathRagdollAt;		// cycle at which the death animation hands over to the ragdoll
 
 	// Hit reaction state
 	float				m_flFlinchUntil;		// no firing until then
@@ -217,6 +218,7 @@ CNPC_GermanSoldier::CNPC_GermanSoldier() : m_AnimMap( DefLessFunc( int ) )
 	m_actDeath = ACT_INVALID;
 	m_flDeathAnimGiveUp = 0.0f;
 	m_flDeathAnimSpeed = 1.0f;
+	m_flDeathRagdollAt = 0.8f;
 	m_flFlinchUntil = 0.0f;
 	m_flNextHitReaction = 0.0f;
 }
@@ -433,6 +435,7 @@ void CNPC_GermanSoldier::BuildAnimMap( void )
 	m_flMoveYSign = ( pScript->GetFloat( "move_y_sign", 1.0f ) < 0.0f ) ? -1.0f : 1.0f;
 	m_flDeathAnimChance = clamp( pScript->GetFloat( "death_anim_chance", 0.75f ), 0.0f, 1.0f );
 	m_flDeathAnimSpeed = clamp( pScript->GetFloat( "death_anim_speed", 1.0f ), 0.25f, 2.0f );
+	m_flDeathRagdollAt = clamp( pScript->GetFloat( "death_ragdoll_at", 0.8f ), 0.3f, 1.0f );
 
 	// Which DoD animation set does this weapon use?
 	const char *pszWeapon = GetActiveWeapon() ? GetActiveWeapon()->GetClassname() : "none";
@@ -741,7 +744,12 @@ void CNPC_GermanSoldier::RunTask( const Task_t *pTask )
 		break;
 
 	case TASK_DIE:
-		if ( m_bDeathAnim && ( ( IsActivityFinished() && GetCycle() >= 1.0f ) || gpGlobals->curtime > m_flDeathAnimGiveUp ) )
+		// Hand over to physics a little before the animation ends: the last frames
+		// are the body already lying in its final pose, which (a) looks stiff and
+		// (b) can sit outside the ragdoll's joint limits or dip into the floor, and
+		// the physics solver "springs" such a pose apart - launching the body.
+		if ( m_bDeathAnim && ( GetCycle() >= m_flDeathRagdollAt || ( IsActivityFinished() && GetCycle() >= 1.0f ) ||
+							   gpGlobals->curtime > m_flDeathAnimGiveUp ) )
 		{
 			FinishDeathAnim();
 			break;
