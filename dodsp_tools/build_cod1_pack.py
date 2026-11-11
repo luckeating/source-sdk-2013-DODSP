@@ -9,6 +9,11 @@ usage: build_cod1_pack.py <assault_dir> <dod_player_shared_dir> <german_rifleman
 import os, re, sys, shutil
 sys.path.insert(0, os.path.dirname(__file__))
 from cod1_setup import make_retargeter
+from upper_layer import weightlist_lines, upper_sequence
+from smd import SMD
+
+UPPER_PAINS = {'pain_lshoulder': 'ACT_WW2_UPPER_PAIN_LSHOULDER', 'pain_rshoulder': 'ACT_WW2_UPPER_PAIN_RSHOULDER',
+               'pain_hunch': 'ACT_WW2_UPPER_PAIN_HUNCH', 'crouch_pain': 'ACT_WW2_UPPER_CROUCH_PAIN'}
 
 SRC, DOD_DIR, DOD_REF, SKELETON, OUT = sys.argv[1:6]
 qc = open(os.path.join(SRC, 'assault.qc'), encoding='latin1').read().replace('\r\n', '\n')
@@ -93,6 +98,13 @@ for name, b in seqs:
         rows.append((seqname, act, smds[0], converted[smds[0]][1]))
 
 for p in used_params: L.append(poseparams[p])
+L += weightlist_lines(SMD(DOD_REF).nodes)
+for name, b in seqs:
+    if name in UPPER_PAINS:
+        smd = [l.strip().strip('"') for l in b.split('\n') if l.strip().startswith('"')][0]
+        sn = 'c1_upper_' + name
+        body += upper_sequence(sn, converted[smd][0], UPPER_PAINS[name])
+        rows.append((sn, UPPER_PAINS[name], smd, converted[smd][1]))
 L.append('')
 L += body
 open(os.path.join(OUT, 'npc_ww2_anims_cod1.qc'), 'w', newline='\r\n').write('\n'.join(L) + '\n')

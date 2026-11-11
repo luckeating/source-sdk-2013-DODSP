@@ -142,6 +142,8 @@ private:
 	void		DoHitReaction( const CTakeDamageInfo &info );
 	bool		IsHitReacting( void ) const { return gpGlobals->curtime < m_flFlinchUntil; }
 	bool		IsInCrouchPose( void );
+	Activity	PickUpperPain( void );
+	Activity	ResolveNamedActivity( const char *pszName );
 	void		FinishReload( void );
 	void		UpdateMovingReload( void );
 
@@ -200,6 +202,7 @@ private:
 	float				m_flLastHitSide;		// where the last hit landed across his body: + = his right, - = his left (units)
 	float				m_flLastHitDamage;
 	bool				m_bLastHitCrouched;		// crouch state at the moment of the last hit
+	bool				m_bFallToHandPending;	// next full-body flinch is "fall to a hand"
 
 	// Networked to the client for the procedural hit kick
 	CNetworkVector( m_vecHitDir );			// horizontal direction the bullet travelled
@@ -260,6 +263,7 @@ CNPC_GermanSoldier::CNPC_GermanSoldier() : m_AnimMap( DefLessFunc( int ) )
 	m_flLastHitSide = 0.0f;
 	m_flLastHitDamage = 0.0f;
 	m_bLastHitCrouched = false;
+	m_bFallToHandPending = false;
 	m_vecHitDir.Init( 1, 0, 0 );
 	m_nHitGroup = 0;
 	m_flHitTime = 0.0f;
@@ -733,6 +737,11 @@ void CNPC_GermanSoldier::StartTask( const Task_t *pTask )
 		}
 		break;
 
+	case TASK_BIG_FLINCH:
+		BaseClass::StartTask( pTask );		// uses GetFlinchActivity -> fall to a hand
+		m_bFallToHandPending = false;
+		break;
+
 	default:
 		BaseClass::StartTask( pTask );
 		break;
@@ -1038,72 +1047,121 @@ void CNPC_GermanSoldier::DoHitReaction( const CTakeDamageInfo &info )
 	if ( m_flGestureReloadDone > gpGlobals->curtime )
 		m_flGestureReloadDone += flStunned;
 
-	// --- Full-body CoD flinch: big or unlucky hits, not while moving ---------
-	// (standing: CoD2 + CoD1 pains by hit location; crouched: CoD1 crouch pain)
+	// --- Pain animation: big or unlucky hits ---------------------------------
+	// Played as an upper-body overlay (spine up, arms, head, gun) from the WW2 packs
+	// while the legs keep DoD's stance - standing, crouched or walking - so nothing
+	// slides or snaps back. The one exception is "fall to a hand" (CoD1), a
+	// full-body moment for big body hits on a soldier standing still.
 	m_flLastHitDamage = info.GetDamage();
 	m_bLastHitCrouched = IsInCrouchPose();
 
 	const char *pszSkip = NULL;
+	Activity actPain = ACT_INVALID;
+	bool bFallToHand = false;
 	if ( gpGlobals->curtime < m_flNextFullFlinch )			pszSkip = "cooldown";
-	else if ( IsMoving() )									pszSkip = "moving";
-	else if ( IsCurSchedule( SCHED_BIG_FLINCH ) )			pszSkip = "already flinching";
+	else if ( IsCurSchedule( SCHED_BIG_FLINCH ) )			pszSkip = "already down";
 	else if ( info.GetDamage() < m_flFullFlinchDamage && random->RandomFloat( 0.0f, 1.0f ) > m_flFullFlinchChance )
 															pszSkip = "small hit, chance roll failed";
-	else if ( !HaveSequenceForActivity( GetFlinchActivity( true, false ) ) )
-															pszSkip = "no animation";
+	else
+	{
+		bFallToHand = !m_bLastHitCrouched && !IsMoving() && LastHitGroup() != HITGROUP_HEAD &&
+					  info.GetDamage() >= m_flFullFlinchDamage && random->RandomFloat( 0.0f, 1.0f ) < 0.35f &&
+					  ResolveNamedActivity( "ACT_WW2_PAIN_FALLTOHAND" ) != ACT_INVALID;
+		if ( !bFallToHand )
+		{
+			actPain = PickUpperPain();
+			if ( actPain == ACT_INVALID )
+				pszSkip = "no animation (is npc_ww2_anims_cod1 included?)";
+		}
+	}
 
 	if ( npc_german_debug.GetBool() )
 	{
-		Msg( "npc_german_soldier %d hit: group %d, %.0f dmg, %s, side %.1f -> %s%s\n", entindex(), LastHitGroup(), info.GetDamage(),
-			 m_bLastHitCrouched ? "CROUCHED" : "standing", m_flLastHitSide, pszSkip ? "kick only: " : "FULL FLINCH ",
-			 pszSkip ? pszSkip : ActivityList_NameForIndex( GetFlinchActivity( true, false ) ) );
+		Msg( "npc_german_soldier %d hit: group %d, %.0f dmg, %s%s, side %.1f -> %s%s\n", entindex(), LastHitGroup(), info.GetDamage(),
+			 m_bLastHitCrouched ? "CROUCHED" : "standing", IsMoving() ? " moving" : "", m_flLastHitSide,
+			 pszSkip ? "kick only: " : "PAIN ",
+			 pszSkip ? pszSkip : ( bFallToHand ? "ACT_WW2_PAIN_FALLTOHAND (full body)" : ActivityList_NameForIndex( actPain ) ) );
 	}
 	if ( pszSkip )
 		return;
 
-	m_flWantFullFlinch = gpGlobals->curtime;
 	m_flNextFullFlinch = gpGlobals->curtime + m_flFullFlinchCooldown;
-	SetCondition( COND_HEAVY_DAMAGE );
-	// Not every Combine schedule (crouched/cover fire in particular) lists heavy
-	// damage as an interrupt, so don't depend on it: drop the current schedule and
-	// let SelectSchedule start the flinch on the next think.
-	ClearSchedule( "German soldier full-body flinch" );
+
+	if ( bFallToHand )
+	{
+		m_bFallToHandPending = true;
+		m_flWantFullFlinch = gpGlobals->curtime;
+		SetCondition( COND_HEAVY_DAMAGE );
+		ClearSchedule( "German soldier falls to a hand" );	// SelectSchedule starts it next think
+		return;
+	}
+
+	RestartGesture( actPain );
+	float flDuration = 1.0f;
+	int iSeq = SelectWeightedSequence( actPain );
+	if ( iSeq != ACTIVITY_NOT_AVAILABLE )
+		flDuration = SequenceDuration( iSeq );
+
+	// Out of the fight for most of it; a reload in progress waits too.
+	float flOut = flDuration * 0.7f;
+	m_flFlinchUntil = MAX( m_flFlinchUntil, gpGlobals->curtime + flOut );
+	if ( m_flReloadDoneTime > gpGlobals->curtime )
+		m_flReloadDoneTime += flOut;
+	if ( m_flGestureReloadDone > gpGlobals->curtime )
+		m_flGestureReloadDone += flOut;
 }
 
-// The pack has four full-body pains: helmet hit, left shoulder, right shoulder and
-// the gut hunch. Chest and generic hits would all get the hunch, so pick by which
-// side of the chest was hit: off-centre hits use that side's shoulder animation.
+Activity CNPC_GermanSoldier::ResolveNamedActivity( const char *pszName )
+{
+	int iAct = ActivityList_IndexForName( pszName );
+	return ( iAct >= 0 && HaveSequenceForActivity( (Activity)iAct ) ) ? (Activity)iAct : ACT_INVALID;
+}
+
+// Upper-body pain by where he was hit (both packs; a random pick among what exists).
+Activity CNPC_GermanSoldier::PickUpperPain( void )
+{
+	static const char *s_Crouch[] = { "ACT_WW2_UPPER_CROUCH_PAIN" };
+	static const char *s_Head[]   = { "ACT_WW2_UPPER_PAIN_HEAD" };
+	static const char *s_Left[]   = { "ACT_WW2_UPPER_PAIN_LARM", "ACT_WW2_UPPER_PAIN_LSHOULDER" };
+	static const char *s_Right[]  = { "ACT_WW2_UPPER_PAIN_RARM", "ACT_WW2_UPPER_PAIN_RSHOULDER" };
+	static const char *s_Gut[]    = { "ACT_WW2_UPPER_PAIN_GUT", "ACT_WW2_UPPER_PAIN_HUNCH" };
+
+	Activity a = ACT_INVALID;
+	if ( m_bLastHitCrouched )
+		a = PickAvailable( s_Crouch, ARRAYSIZE( s_Crouch ) );
+	if ( a != ACT_INVALID )
+		return a;
+
+	const float flCentre = 3.0f;	// chest hits within this many units of the middle count as centre
+	switch ( LastHitGroup() )
+	{
+	case HITGROUP_HEAD:		a = PickAvailable( s_Head, ARRAYSIZE( s_Head ) ); break;
+	case HITGROUP_LEFTARM:	a = PickAvailable( s_Left, ARRAYSIZE( s_Left ) ); break;
+	case HITGROUP_RIGHTARM:	a = PickAvailable( s_Right, ARRAYSIZE( s_Right ) ); break;
+	case HITGROUP_CHEST:
+	case HITGROUP_GENERIC:
+	case HITGROUP_GEAR:
+		if ( m_flLastHitSide > flCentre )		a = PickAvailable( s_Right, ARRAYSIZE( s_Right ) );
+		else if ( m_flLastHitSide < -flCentre )	a = PickAvailable( s_Left, ARRAYSIZE( s_Left ) );
+		break;
+	default:
+		break;
+	}
+	if ( a == ACT_INVALID )
+		a = PickAvailable( s_Gut, ARRAYSIZE( s_Gut ) );	// stomach, legs, centre chest, fallback
+	return a;
+}
+
+// Full-body flinch schedules are only used for "fall to a hand"; everything else is
+// the upper-body overlay above. Returning nothing here also keeps the base AI from
+// starting its own full-body flinch on heavy damage (one owner for pain reactions).
 Activity CNPC_GermanSoldier::GetFlinchActivity( bool bHeavyDamage, bool bGesture )
 {
-	if ( !bGesture )
-	{
-		// Crouched when hit: the CoD1 crouch pain, whatever was hit.
-		if ( m_bLastHitCrouched )
-		{
-			int iAct = ActivityList_IndexForName( "ACT_WW2_CROUCH_PAIN" );
-			if ( iAct >= 0 && HaveSequenceForActivity( (Activity)iAct ) )
-				return (Activity)iAct;
-		}
-
-		// A really big body hit sometimes drops him to one hand (CoD1).
-		int nGroup = LastHitGroup();
-		if ( nGroup != HITGROUP_HEAD && m_flLastHitDamage >= m_flFullFlinchDamage && random->RandomFloat( 0.0f, 1.0f ) < 0.35f )
-		{
-			int iAct = ActivityList_IndexForName( "ACT_WW2_PAIN_FALLTOHAND" );
-			if ( iAct >= 0 && HaveSequenceForActivity( (Activity)iAct ) )
-				return (Activity)iAct;
-		}
-
-		if ( nGroup == HITGROUP_CHEST || nGroup == HITGROUP_GENERIC || nGroup == HITGROUP_GEAR )
-		{
-			const float flCentre = 3.0f;	// within this many units of the middle counts as centre
-			if ( m_flLastHitSide > flCentre && HaveSequenceForActivity( ACT_FLINCH_RIGHTARM ) )
-				return ACT_FLINCH_RIGHTARM;
-			if ( m_flLastHitSide < -flCentre && HaveSequenceForActivity( ACT_FLINCH_LEFTARM ) )
-				return ACT_FLINCH_LEFTARM;
-		}
-	}
-	return BaseClass::GetFlinchActivity( bHeavyDamage, bGesture );
+	if ( bGesture )
+		return BaseClass::GetFlinchActivity( bHeavyDamage, bGesture );
+	if ( m_bFallToHandPending )
+		return ResolveNamedActivity( "ACT_WW2_PAIN_FALLTOHAND" );
+	return ACT_INVALID;
 }
 
 int CNPC_GermanSoldier::SelectSchedule( void )
@@ -1112,8 +1170,9 @@ int CNPC_GermanSoldier::SelectSchedule( void )
 	{
 		bool bFresh = gpGlobals->curtime - m_flWantFullFlinch < 0.5f;
 		m_flWantFullFlinch = 0.0f;
-		if ( bFresh && IsAlive() && HaveSequenceForActivity( GetFlinchActivity( true, false ) ) )
-			return SCHED_BIG_FLINCH;	// plays GetFlinchActivity(): head / shoulder / gut by hit location
+		if ( bFresh && IsAlive() && m_bFallToHandPending && HaveSequenceForActivity( GetFlinchActivity( true, false ) ) )
+			return SCHED_BIG_FLINCH;
+		m_bFallToHandPending = false;
 	}
 	return BaseClass::SelectSchedule();
 }

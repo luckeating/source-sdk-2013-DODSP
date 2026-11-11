@@ -19,6 +19,13 @@ import os, re, sys, shutil, math
 import numpy as np
 sys.path.insert(0, os.path.dirname(__file__))
 from smd import SMD
+from upper_layer import weightlist_lines, upper_sequence
+
+# Upper-body pain overlays (see upper_layer.py): source animation -> activity
+UPPER_PAINS = {'a_stand_helmet_hit': 'ACT_WW2_UPPER_PAIN_HEAD',
+               'a_stand_pain_front_lshoulder': 'ACT_WW2_UPPER_PAIN_LARM',
+               'a_stand_pain_front_rshoulder': 'ACT_WW2_UPPER_PAIN_RARM',
+               'a_stand_pain_hunch': 'ACT_WW2_UPPER_PAIN_GUT'}
 
 SRC_DIR, SRC_QC, DOD_REF, DOD_BOLT, DOD_MP40, OUT = sys.argv[1:7]
 
@@ -176,6 +183,7 @@ def _leg_weight(name):
     return 1 if ('thigh' in n or 'calf' in n or 'foot' in n or 'toe' in n) else 0
 for pp in needed_params:
     L.append(poseparams[pp])
+L += weightlist_lines(ref.nodes)
 for wl_name, fn in (('ww2_torso', _torso_weight), ('ww2_legs', _leg_weight)):
     L.append(f'$weightlist "{wl_name}" {{')
     for n, _ in ref.nodes:
@@ -237,6 +245,12 @@ for name, anims, act, extra in chosen:
         L.append('\tfadein 0.1\n\tfadeout 0.2')
         L.append('}')
         seq_rows.append((f'ww2_g_{g[len("ACT_GESTURE_"):].lower()}', g, a, frames[a]))
+
+for a, act in UPPER_PAINS.items():
+    if a in animations and a in frames:
+        sn = 'ww2_upper_' + act[len('ACT_WW2_UPPER_'):].lower()
+        L += upper_sequence(sn, a, act)
+        seq_rows.append((sn, act, a, frames[a]))
 
 open(os.path.join(OUT, 'npc_ww2_anims.qc'), 'w', newline='\r\n').write('\n'.join(L) + '\n')
 
