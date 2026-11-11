@@ -1042,16 +1042,32 @@ void CNPC_GermanSoldier::DoHitReaction( const CTakeDamageInfo &info )
 	// (standing: CoD2 + CoD1 pains by hit location; crouched: CoD1 crouch pain)
 	m_flLastHitDamage = info.GetDamage();
 	m_bLastHitCrouched = IsInCrouchPose();
-	if ( gpGlobals->curtime < m_flNextFullFlinch || IsMoving() || IsCurSchedule( SCHED_BIG_FLINCH ) )
-		return;
-	if ( info.GetDamage() < m_flFullFlinchDamage && random->RandomFloat( 0.0f, 1.0f ) > m_flFullFlinchChance )
-		return;
-	if ( !HaveSequenceForActivity( GetFlinchActivity( true, false ) ) )
+
+	const char *pszSkip = NULL;
+	if ( gpGlobals->curtime < m_flNextFullFlinch )			pszSkip = "cooldown";
+	else if ( IsMoving() )									pszSkip = "moving";
+	else if ( IsCurSchedule( SCHED_BIG_FLINCH ) )			pszSkip = "already flinching";
+	else if ( info.GetDamage() < m_flFullFlinchDamage && random->RandomFloat( 0.0f, 1.0f ) > m_flFullFlinchChance )
+															pszSkip = "small hit, chance roll failed";
+	else if ( !HaveSequenceForActivity( GetFlinchActivity( true, false ) ) )
+															pszSkip = "no animation";
+
+	if ( npc_german_debug.GetBool() )
+	{
+		Msg( "npc_german_soldier %d hit: group %d, %.0f dmg, %s, side %.1f -> %s%s\n", entindex(), LastHitGroup(), info.GetDamage(),
+			 m_bLastHitCrouched ? "CROUCHED" : "standing", m_flLastHitSide, pszSkip ? "kick only: " : "FULL FLINCH ",
+			 pszSkip ? pszSkip : ActivityList_NameForIndex( GetFlinchActivity( true, false ) ) );
+	}
+	if ( pszSkip )
 		return;
 
 	m_flWantFullFlinch = gpGlobals->curtime;
 	m_flNextFullFlinch = gpGlobals->curtime + m_flFullFlinchCooldown;
-	SetCondition( COND_HEAVY_DAMAGE );		// interrupts the current schedule -> SelectSchedule
+	SetCondition( COND_HEAVY_DAMAGE );
+	// Not every Combine schedule (crouched/cover fire in particular) lists heavy
+	// damage as an interrupt, so don't depend on it: drop the current schedule and
+	// let SelectSchedule start the flinch on the next think.
+	ClearSchedule( "German soldier full-body flinch" );
 }
 
 // The pack has four full-body pains: helmet hit, left shoulder, right shoulder and
