@@ -35,7 +35,10 @@ for m in re.finditer(r'^\$sequence "([^"]+)" \{\n(.*?)^\}', qc, re.M | re.S):
     for l in body:
         mm = re.match(r'activity "([^"]+)"', l)
         if mm: act = mm.group(1)
-    sequences.append((m.group(1), anims, act))
+    # other options worth keeping (blend axes and widths for the MG gunner grids, etc.)
+    extra = [l for l in body if re.match(r'(blend|blendwidth|blendcenter|blendref|calcblend)\b', l)]
+    sequences.append((m.group(1), anims, act, extra))
+poseparams = {m.group(1): m.group(0) for m in re.finditer(r'^\$poseparameter "([^"]+)".*$', qc, re.M)}
 
 WANT = re.compile(r'^cod2_(death|pain|turn|corn|cover|jump_(lowwall|fence|window|down)|drag|surrender|mg42|30cal|plant|rocket|grenade|melee)')
 KEEP_HL2_ACT = re.compile(r'^ACT_(DIE|FLINCH|BIG_FLINCH|SMALL_FLINCH)')  # turns: later, need rotation extraction
@@ -50,6 +53,11 @@ GESTURE_FOR = {   # full-body flinch activity -> gesture activity
 LEG_GESTURES = {'ACT_GESTURE_FLINCH_LEFTLEG', 'ACT_GESTURE_FLINCH_RIGHTLEG'}
 
 chosen = [s for s in sequences if WANT.match(s[0])]
+needed_params = []
+for s in chosen:
+    for l in s[3]:
+        mm = re.match(r'blend "([^"]+)"', l)
+        if mm and mm.group(1) not in needed_params: needed_params.append(mm.group(1))
 
 # ---------------------------------------------------------------- DoD data
 ref = SMD(DOD_REF)
@@ -113,7 +121,7 @@ def process(src, dst):
     return len(s.frames)
 
 used_anims = []
-for _, anims, _ in chosen:
+for _, anims, _, _ in chosen:
     for a in anims:
         if a not in used_anims: used_anims.append(a)
 
@@ -138,6 +146,8 @@ def _upper_weight(name):
     if n.endswith('bip01_spine'): return 0.3
     if n.endswith('bip01_spine1'): return 0.7
     return 1
+for pp in needed_params:
+    L.append(poseparams[pp])
 L.append('$weightlist "ww2_upperbody" {')
 for n, _ in ref.nodes:
     if 'knee' in n.lower(): continue   # unweighted in the DoD mesh; studiomdl drops it
@@ -154,7 +164,7 @@ L.append('')
 seq_rows = []
 gestures_done = set()
 seen = set()
-for name, anims, act in chosen:
+for name, anims, act, extra in chosen:
     short = name[len('cod2_'):]
     if act and KEEP_HL2_ACT.match(act):
         activity = act
@@ -166,6 +176,7 @@ for name, anims, act in chosen:
     L.append(f'$sequence "ww2_{short}" {{')
     for a in anims: L.append(f'\t"{a}"')
     L.append(f'\tactivity "{activity}" 1')
+    for l in extra: L.append('\t' + l)
     L.append('\tfadein 0.2\n\tfadeout 0.2')
     if any('loop' == o for o in animations[anims[0]][1]): L.append('\tloop')
     L.append('}')
