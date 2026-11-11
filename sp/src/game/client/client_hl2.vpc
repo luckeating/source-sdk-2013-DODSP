@@ -22,6 +22,11 @@ $Configuration
 
 $Project "Client (HL2)"
 {
+	$Folder	"DOD-SP"
+	{
+		$File	"dodsp\c_weapon_stubs_dodsp.cpp"
+	}
+
 	$Folder	"Source Files"
 	{
 		$File	"hud_chat.cpp"

@@ -538,7 +538,9 @@ void CNPC_GermanSoldier::StartTask( const Task_t *pTask )
 			{
 				m_nShotsLeft = MAX( 1, pWeapon->GetRandomBurst() );
 				m_flShotInterval = pWeapon->GetFireRate();
-				m_flNextShotTime = gpGlobals->curtime + 0.15f;	// settle the aim first
+				// Settle the aim first, and respect the gun's own cycle time (bolt-action rifles
+				// set m_flNextPrimaryAttack after each NPC shot; HL2 guns leave it alone).
+				m_flNextShotTime = MAX( gpGlobals->curtime + 0.15f, (float)pWeapon->m_flNextPrimaryAttack );
 			}
 		}
 		break;
@@ -591,8 +593,11 @@ void CNPC_GermanSoldier::RunTask( const Task_t *pTask )
 				if ( m_nShotsLeft > 0 && FireOneShot( true ) )
 				{
 					m_nShotsLeft--;
+					OnRangeAttack1();	// shot regulator bookkeeping (doesn't fire again inside this task)
 					SetLastAttackTime( gpGlobals->curtime );
 					m_flNextShotTime = gpGlobals->curtime + m_flShotInterval;
+					if ( GetActiveWeapon() )
+						m_flNextShotTime = MAX( m_flNextShotTime, (float)GetActiveWeapon()->m_flNextPrimaryAttack );
 				}
 				else
 				{
