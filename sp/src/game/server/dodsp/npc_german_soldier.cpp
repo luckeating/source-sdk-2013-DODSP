@@ -11,7 +11,9 @@
 //     rebuilding (edit, then "npc_german_reload_script" + respawn).
 //   - Aiming drives DoD's body_pitch / body_yaw instead of aim_pitch / aim_yaw,
 //     with per-axis sign and offset from the script.
-//   - DoD locomotion is a 9-way move_x / move_y blend; we hold it at "forward".
+//   - DoD locomotion is a 9-way move_x / move_y blend. While moving we face
+//     where the AI wants to look (usually the enemy) and feed the walk direction
+//     into move_x / move_y, so soldiers strafe and back-pedal instead of turning.
 //   - DoD shoot / reload animations are delta gestures with no fire or reload
 //     events, so shooting and reloading are timed in code and the DoD gesture
 //     is layered on top. This covers standing fire (TASK_RANGE_ATTACK1), firing
@@ -92,6 +94,7 @@ public:
 	void		SetAim( const Vector &aimDir );
 	void		RelaxAim( void );
 	void		MaintainLookTargets( float flInterval );
+	bool		OverrideMoveFacing( const AILocalMoveGoal_t &move, float flInterval );
 
 protected:
 	void		PopulatePoseParameters( void );
@@ -118,6 +121,7 @@ private:
 	float				m_flYawSign;
 	float				m_flPitchOffset;
 	float				m_flYawOffset;
+	float				m_flMoveYSign;
 	Activity			m_actLastDebug;
 
 	// Aim in world terms (degrees, Source convention); written to the DoD pose
@@ -153,6 +157,7 @@ CNPC_GermanSoldier::CNPC_GermanSoldier() : m_AnimMap( DefLessFunc( int ) )
 	m_flYawSign = 1.0f;
 	m_flPitchOffset = 0.0f;
 	m_flYawOffset = 0.0f;
+	m_flMoveYSign = 1.0f;
 	m_flAimPitch = 0.0f;
 	m_flAimYaw = 0.0f;
 	m_flNextAimDebug = 0.0f;
@@ -211,10 +216,46 @@ void CNPC_GermanSoldier::PopulatePoseParameters( void )
 	m_poseMoveY = LookupPoseParameter( "move_y" );
 }
 
+//-----------------------------------------------------------------------------
+// Strafing. Mirrors what CAI_Motor::MoveFacing does for models with a move_yaw
+// pose parameter: face the blend of path direction and facing targets (the enemy),
+// then tell the 9-way blend which way the feet are travelling relative to that.
+//-----------------------------------------------------------------------------
+bool CNPC_GermanSoldier::OverrideMoveFacing( const AILocalMoveGoal_t &move, float flInterval )
+{
+	if ( BaseClass::OverrideMoveFacing( move, flInterval ) )
+		return true;
+
+	if ( m_poseMoveX < 0 || m_poseMoveY < 0 )
+		return false;	// not a DoD model; let the motor turn us to face the path
+
+	float flMoveYaw = UTIL_VecToYaw( move.dir );
+
+	Vector vecFacing;
+	float flInfluence = GetMotor()->GetFacingDirection( vecFacing );
+	Vector dir = move.facing * ( 1.0f - flInfluence ) + vecFacing * flInfluence;
+	VectorNormalize( dir );
+
+	GetMotor()->SetIdealYawAndUpdate( UTIL_AngleMod( UTIL_VecToYaw( dir ) ) );
+
+	// Travel direction relative to where the body now faces (+ = to his left).
+	float flDiff = DEG2RAD( UTIL_AngleDiff( flMoveYaw, GetLocalAngles().y ) );
+	SetPoseParameter( m_poseMoveX, cosf( flDiff ) );
+	SetPoseParameter( m_poseMoveY, sinf( flDiff ) * m_flMoveYSign );
+
+	// Sideways and backwards DoD cycles cover ground at different speeds; move at
+	// the speed of the blend we are actually showing so the feet don't slide.
+	float flSpeed = GetSequenceGroundSpeed( GetSequence() );
+	if ( flSpeed > 0.0f )
+		m_flGroundSpeed = flSpeed;
+
+	return true;
+}
+
 void CNPC_GermanSoldier::HoldMoveForward( void )
 {
 	// DoD walk/run sequences blend 9 directions on move_x (forward) / move_y (left).
-	// The NPC always turns to face where it walks, so "straight forward" is right.
+	// Start every new activity facing forward; OverrideMoveFacing adjusts while moving.
 	if ( m_poseMoveX >= 0 )
 		SetPoseParameter( m_poseMoveX, 1.0f );
 	if ( m_poseMoveY >= 0 )
@@ -340,6 +381,7 @@ void CNPC_GermanSoldier::BuildAnimMap( void )
 	m_flYawSign = ( pScript->GetFloat( "body_yaw_sign", 1.0f ) < 0.0f ) ? -1.0f : 1.0f;
 	m_flPitchOffset = pScript->GetFloat( "body_pitch_offset", 0.0f );
 	m_flYawOffset = pScript->GetFloat( "body_yaw_offset", 0.0f );
+	m_flMoveYSign = ( pScript->GetFloat( "move_y_sign", 1.0f ) < 0.0f ) ? -1.0f : 1.0f;
 
 	// Which DoD animation set does this weapon use?
 	const char *pszWeapon = GetActiveWeapon() ? GetActiveWeapon()->GetClassname() : "none";
