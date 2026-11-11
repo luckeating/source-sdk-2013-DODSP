@@ -35,7 +35,7 @@
 #define GERMAN_SOLDIER_SCRIPT			"scripts/npc_german_soldier.txt"
 #define GERMAN_WEAPON_TOKEN				"*"		// replaced by the weapon's DoD animation set (RIFLE, MP40, ...)
 
-ConVar npc_german_debug( "npc_german_debug", "0", 0, "1 = print German soldier activity translations and missing animations." );
+ConVar npc_german_debug( "npc_german_debug", "0", 0, "1 = print activity translations and missing animations. 2 = also print aim values twice a second." );
 
 //-----------------------------------------------------------------------------
 // Shared script data (one copy for all German soldiers)
@@ -124,6 +124,8 @@ private:
 	// parameters through the script's sign/offset
 	float				m_flAimPitch;
 	float				m_flAimYaw;
+	float				m_flNextAimDebug;
+	int					m_nAimCalls;
 
 	// DoD pose parameters
 	int					m_poseMoveX;
@@ -153,6 +155,8 @@ CNPC_GermanSoldier::CNPC_GermanSoldier() : m_AnimMap( DefLessFunc( int ) )
 	m_flYawOffset = 0.0f;
 	m_flAimPitch = 0.0f;
 	m_flAimYaw = 0.0f;
+	m_flNextAimDebug = 0.0f;
+	m_nAimCalls = 0;
 	m_actLastDebug = ACT_INVALID;
 	m_poseMoveX = -1;
 	m_poseMoveY = -1;
@@ -246,6 +250,17 @@ void CNPC_GermanSoldier::SetAim( const Vector &aimDir )
 
 	// Interaction yaw, as in the base class
 	m_flInteractionYaw = ( fabs( m_flAimYaw ) < 20 ) ? angDir.y : GetAbsAngles().y;
+
+	m_nAimCalls++;
+	if ( npc_german_debug.GetInt() >= 2 && gpGlobals->curtime >= m_flNextAimDebug )
+	{
+		m_flNextAimDebug = gpGlobals->curtime + 0.5f;
+		Msg( "npc_german_soldier %d aim: enemy %s, target yaw %.0f (body faces %.0f, relative %.0f), target pitch %.0f -> pose body_yaw %.1f [#%d], body_pitch %.1f [#%d], %d aim updates\n",
+			entindex(), GetEnemy() ? GetEnemy()->GetClassname() : "none", angDir.y, GetAbsAngles().y, flRelativeYaw, angDir.x,
+			m_poseAim_Yaw >= 0 ? GetPoseParameter( m_poseAim_Yaw ) : -999.0f, m_poseAim_Yaw,
+			m_poseAim_Pitch >= 0 ? GetPoseParameter( m_poseAim_Pitch ) : -999.0f, m_poseAim_Pitch, m_nAimCalls );
+		m_nAimCalls = 0;
+	}
 }
 
 void CNPC_GermanSoldier::RelaxAim( void )
@@ -260,7 +275,10 @@ void CNPC_GermanSoldier::MaintainLookTargets( float flInterval )
 {
 	// The actor code also drives a "body_yaw" pose parameter (for head/body turns)
 	// and would zero our aim every think. Put the aim back afterwards.
+	float flBefore = ( m_poseAim_Yaw >= 0 ) ? GetPoseParameter( m_poseAim_Yaw ) : 0.0f;
 	BaseClass::MaintainLookTargets( flInterval );
+	if ( npc_german_debug.GetInt() >= 3 && m_poseAim_Yaw >= 0 && GetPoseParameter( m_poseAim_Yaw ) != flBefore )
+		Msg( "npc_german_soldier %d: actor code changed body_yaw %.1f -> %.1f (restoring)\n", entindex(), flBefore, GetPoseParameter( m_poseAim_Yaw ) );
 	ApplyAimPose();
 }
 
