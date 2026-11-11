@@ -92,9 +92,23 @@ os.makedirs(OUT, exist_ok=True)
 
 # skeleton-only reference: DoD German bones, bind pose, one tiny triangle
 skel = SMD(); skel.nodes = list(ref.nodes); skel.frames = [ref.frames[0]]
-pelvis = skel.nodes.index(next(n for n in skel.nodes if n[0].lower() == 'valvebiped.bip01_pelvis'))
-skel.tail = '\n'.join(['triangles', 'ww2_null',
-    f'{pelvis} 0 0 38 0 0 1 0 0', f'{pelvis} 0.1 0 38 0 0 1 1 0', f'{pelvis} 0 0.1 38 0 0 1 0 1', 'end'])
+# studiomdl drops bones no vertex is weighted to, so give every bone (except the
+# knee, which the DoD mesh never uses either) one tiny triangle at its own position.
+_W = None
+def _bone_world(i):
+    global _W
+    if _W is None: _W = world_mats(skel.nodes, skel.frames[0][1])
+    return _W[i][:3, 3]
+tris = ['triangles']
+for i, (n, _) in enumerate(skel.nodes):
+    if 'knee' in n.lower(): continue
+    x, y, z = _bone_world(i)
+    tris.append('ww2_null')
+    tris.append(f'{i} {x:.4f} {y:.4f} {z:.4f} 0 0 1 0 0')
+    tris.append(f'{i} {x + 0.05:.4f} {y:.4f} {z:.4f} 0 0 1 1 0')
+    tris.append(f'{i} {x:.4f} {y + 0.05:.4f} {z:.4f} 0 0 1 0 1')
+tris.append('end')
+skel.tail = '\n'.join(tris)
 skel.write(os.path.join(OUT, 'ww2_skeleton.smd'))
 
 # ---------------------------------------------------------------- SMDs
