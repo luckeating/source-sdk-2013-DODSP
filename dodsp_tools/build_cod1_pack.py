@@ -9,7 +9,7 @@ usage: build_cod1_pack.py <assault_dir> <dod_player_shared_dir> <german_rifleman
 import os, re, sys, shutil
 sys.path.insert(0, os.path.dirname(__file__))
 from cod1_setup import make_retargeter
-from upper_layer import weightlist_lines, upper_sequence
+from upper_layer import weightlist_lines, upper_sequence, ikchain_lines, hand_release_lines
 from smd import SMD
 
 UPPER_PAINS = {'pain_lshoulder': 'ACT_WW2_UPPER_PAIN_LSHOULDER', 'pain_rshoulder': 'ACT_WW2_UPPER_PAIN_RSHOULDER',
@@ -94,16 +94,19 @@ for name, b in seqs:
         for s in smds: body.append(f'\t"{convert(s)}"')
         body.append(f'\tactivity "{act}" 1')
         for l in keep: body.append('\t' + l)
+        if len(smds) == 1:
+            for l in hand_release_lines(converted[smds[0]][1]): body.append('\t' + l)
         body.append('}')
         rows.append((seqname, act, smds[0], converted[smds[0]][1]))
 
 for p in used_params: L.append(poseparams[p])
+L += ikchain_lines()
 L += weightlist_lines(SMD(DOD_REF).nodes)
 for name, b in seqs:
     if name in UPPER_PAINS:
         smd = [l.strip().strip('"') for l in b.split('\n') if l.strip().startswith('"')][0]
         sn = 'c1_upper_' + name
-        body += upper_sequence(sn, converted[smd][0], UPPER_PAINS[name])
+        body += upper_sequence(sn, converted[smd][0], UPPER_PAINS[name], converted[smd][1])
         rows.append((sn, UPPER_PAINS[name], smd, converted[smd][1]))
 L.append('')
 L += body

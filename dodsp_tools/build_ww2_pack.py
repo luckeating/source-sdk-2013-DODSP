@@ -19,7 +19,8 @@ import os, re, sys, shutil, math
 import numpy as np
 sys.path.insert(0, os.path.dirname(__file__))
 from smd import SMD
-from upper_layer import weightlist_lines, upper_sequence
+from upper_layer import weightlist_lines, upper_sequence, ikchain_lines, hand_release_lines
+from gun_follow import GunReference, place_guns, inv
 
 # Upper-body pain overlays (see upper_layer.py): source animation -> activity
 UPPER_PAINS = {'a_stand_helmet_hit': 'ACT_WW2_UPPER_PAIN_HEAD',
@@ -125,25 +126,46 @@ skel.tail = '\n'.join(tris)
 skel.write(os.path.join(OUT, 'ww2_skeleton.smd'))
 
 # ---------------------------------------------------------------- SMDs
+# The CoD2 gun: placed per frame through whichever hand holds it in the CoD animation
+# (gun_follow.py). Reference = an aim pose with the gun in both hands.
+_r = SMD(os.path.join(SRC_DIR, 'american_ranger_normandy__2_2_anim_a_stand_pain_front_lshoulder.smd'))
+_W = world_mats(_r.nodes, _r.frames[0][1])
+GUN_REF = GunReference(_W[_r.index('ValveBiped.Bip01_R_Hand')], _W[_r.index('ValveBiped.Bip01_L_Hand')],
+                       _W[_r.index('ValveBiped.Weapon_bone')])
+GUN_OFFSETS = [inv(GUN_REF.rel_R) @ GRIP_MP40, inv(GUN_REF.rel_R) @ GRIP_K98]   # weapon_bone, weapon_bone_left
+holder_stats = {}
+
 def process(src, dst):
     s = SMD(src)
     wr = s.index('ValveBiped.Weapon_bone')
     rh = s.index('ValveBiped.Bip01_R_Hand'); lh = s.index('ValveBiped.Bip01_L_Hand')
+    has_gun = wr >= 0
     if wr < 0:
         s.nodes.append(('ValveBiped.weapon_bone', rh)); wr = len(s.nodes) - 1
     else:
         s.nodes[wr] = ('ValveBiped.weapon_bone', s.nodes[wr][1])
     s.nodes.append(('ValveBiped.weapon_bone_left', lh)); wl = len(s.nodes) - 1
     names = [n.lower() for n, _ in s.nodes]
+    src_frames, dod_frames, dod_worlds = [], [], []
     for _, f in s.frames:
+        if has_gun:
+            Ws = world_mats(s.nodes, f)
+            src_frames.append((Ws[rh], Ws[lh], Ws[wr]))
         for i, v in list(f.items()):
             n = names[i]
             if n != 'valvebiped.bip01_pelvis' and n in ref_pos:
                 f[i] = tuple(ref_pos[n]) + tuple(v[3:])
         f.pop(wr, None); f.pop(wl, None)
         W = world_mats(s.nodes, f)
-        f[wr] = local_from(W[rh], W[rh] @ GRIP_MP40)    # parent: right hand
-        f[wl] = local_from(W[lh], W[rh] @ GRIP_K98)     # parent: left hand, placed from the right
+        dod_worlds.append(W); dod_frames.append((W[rh], W[lh]))
+    if has_gun:
+        guns, labels = place_guns(GUN_REF, src_frames, dod_frames, GUN_OFFSETS)
+        holder_stats[os.path.basename(src)] = labels
+    else:
+        guns = [[W[rh] @ GRIP_MP40, W[rh] @ GRIP_K98] for W in dod_worlds]
+    for (_, f), W, (g40, g98) in zip(s.frames, dod_worlds, guns):
+        f[wr] = local_from(W[rh], g40)    # parent: right hand
+        f[wl] = local_from(W[lh], g98)    # parent: left hand
     s.write(dst)
     return len(s.frames)
 
@@ -183,6 +205,7 @@ def _leg_weight(name):
     return 1 if ('thigh' in n or 'calf' in n or 'foot' in n or 'toe' in n) else 0
 for pp in needed_params:
     L.append(poseparams[pp])
+L += ikchain_lines()
 L += weightlist_lines(ref.nodes)
 for wl_name, fn in (('ww2_torso', _torso_weight), ('ww2_legs', _leg_weight)):
     L.append(f'$weightlist "{wl_name}" {{')
@@ -195,6 +218,7 @@ for a in used_anims:
     _, opts = animations[a]
     L.append(f'$animation "{a}" "ww2_{a}.smd" {{')
     for o in opts: L.append('\t' + o)
+    for o in hand_release_lines(frames[a]): L.append('\t' + o)
     L.append('}')
 L.append('')
 
@@ -249,7 +273,7 @@ for name, anims, act, extra in chosen:
 for a, act in UPPER_PAINS.items():
     if a in animations and a in frames:
         sn = 'ww2_upper_' + act[len('ACT_WW2_UPPER_'):].lower()
-        L += upper_sequence(sn, a, act)
+        L += upper_sequence(sn, f'ww2_{a}.smd', act, frames[a])
         seq_rows.append((sn, act, a, frames[a]))
 
 open(os.path.join(OUT, 'npc_ww2_anims.qc'), 'w', newline='\r\n').write('\n'.join(L) + '\n')

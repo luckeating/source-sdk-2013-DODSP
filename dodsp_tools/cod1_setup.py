@@ -37,4 +37,6 @@ def make_retargeter(assault_dir, dod_dir, dod_ref):
     # match (checked against CoD1's own gun direction), so no hand correction.
     for side in ('l', 'r'):
         rt.C[f'valvebiped.bip01_{side}_hand'] = np.eye(3)
+    m = lambda b: (lambda R, t: np.block([[R, t[:, None]], [np.zeros((1, 3)), np.ones((1, 1))]]))(*Wa[aim.index(b)])
+    rt.set_gun_reference(m('bip01 r hand'), m('bip01 l hand'), m('tag_weapon'))
     return rt

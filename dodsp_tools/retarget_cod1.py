@@ -7,14 +7,18 @@ measured once from each rig's rest pose (CoD1 "ragdoll" vs DoD bind) and snapped
 to exact axis rotations, so pose differences between the two rest poses can't
 leak in. Then per frame: world rotations via the correction, DoD bone lengths,
 pelvis translation scaled by leg length, Spine2 (missing in CoD1) halfway between
-Spine1 and Spine4. Guns: orientation follows CoD1's own weapon tag (so the barrel
-points where the CoD animator aimed it), position stays at DoD's grip in the
-right hand.
+Spine1 and Spine4. Guns: follow CoD1's own weapon tag through whichever hand holds
+it (gun_follow.py), calibrated on the aim pose so the barrel points where the CoD
+animator aimed it and the grip sits at DoD's grip.
 """
 import math, itertools
 import numpy as np
 from smd import SMD
 from cod1_map import cod1_to_dod
+from gun_follow import GunReference, place_guns, inv as ginv
+
+def m4(R, t):
+    M = np.eye(4); M[:3, :3] = R; M[:3, 3] = t; return M
 
 def rotm(x, y, z):
     cx, sx, cy, sy, cz, sz = math.cos(x), math.sin(x), math.cos(y), math.sin(y), math.cos(z), math.sin(z)
@@ -131,21 +135,42 @@ class Retargeter:
             R = Wt[j] if Wt[j] is not None else PR @ rotm(*bind[3:])
             Wfull[j] = (R, t)
             frame_out[j] = tuple(bind[:3]) + euler(PR.T @ R)
-        # weapon grips from the right hand
+        # source gun / hands and DoD hands for the gun pass in convert()
         rh = self.dr.index('ValveBiped.Bip01_R_Hand'); lh = self.dr.index('ValveBiped.Bip01_L_Hand')
         tag = name_to_ci.get('tag_weapon')
-        for bone, grip, parent, key in (('ValveBiped.weapon_bone', self.grip_mp40, rh, 'mp40'), ('ValveBiped.weapon_bone_left', self.grip_k98, lh, 'k98')):
-            j = self.dr.index(bone)
-            HR, Ht = Wfull[rh]
-            Wtt = HR @ grip[:3, 3] + Ht
-            WR = (Wc[tag][0] @ self.gun_off[key]) if tag is not None and tag in Wc else HR @ grip[:3, :3]
-            PR, Pt = Wfull[parent]
-            frame_out[j] = tuple(PR.T @ (Wtt - Pt)) + euler(PR.T @ WR)
-        return frame_out
+        src = None
+        if tag is not None and tag in Wc:
+            src = tuple(m4(*Wc[name_to_ci[n]]) for n in ('bip01 r hand', 'bip01 l hand')) + (m4(*Wc[tag]),)
+        return frame_out, src, (m4(*Wfull[rh]), m4(*Wfull[lh]))
+
+    def set_gun_reference(self, src_R, src_L, src_G):
+        """Reference aim pose of the CoD1 rig. Calibrates the gun offsets so that, in that pose,
+        the DoD gun sits exactly where the old placement put it: barrel along CoD1's own barrel,
+        grip at DoD's grip in the right hand."""
+        self.gun_ref = GunReference(src_R, src_L, src_G)
+        rel = self.gun_ref.rel_R
+        self.gun_O = []
+        for key, grip in (('mp40', self.grip_mp40), ('k98', self.grip_k98)):
+            G = np.eye(4); G[:3, :3] = rel[:3, :3] @ self.gun_off[key]; G[:3, 3] = grip[:3, 3]
+            self.gun_O.append(ginv(rel) @ G)
+        self.holder_stats = {}
 
     def convert(self, src_path, dst_path):
         s = SMD(src_path)
         out = SMD(); out.nodes = list(self.dr.nodes)
-        out.frames = [(t, self.frame(s, f)) for t, f in s.frames]
+        res = [self.frame(s, f) for t, f in s.frames]
+        rh = self.dr.index('ValveBiped.Bip01_R_Hand'); lh = self.dr.index('ValveBiped.Bip01_L_Hand')
+        bones = [self.dr.index('ValveBiped.weapon_bone'), self.dr.index('ValveBiped.weapon_bone_left')]
+        parents = [rh, lh]
+        if all(r[1] is not None for r in res):
+            guns, labels = place_guns(self.gun_ref, [r[1] for r in res], [r[2] for r in res], self.gun_O, self.scale)
+            self.holder_stats[src_path] = labels
+        else:   # no CoD1 gun tag: DoD grip in the right hand
+            guns = [[r[2][0] @ g for g in (self.grip_mp40, self.grip_k98)] for r in res]
+        for (fo, _, hands), g in zip(res, guns):
+            for j, par, M in zip(bones, parents, g):
+                L = ginv(hands[0 if par == rh else 1]) @ M
+                fo[j] = tuple(L[:3, 3]) + euler(L[:3, :3])
+        out.frames = [(t, r[0]) for (t, _), r in zip(s.frames, res)]
         out.write(dst_path)
         return len(out.frames)
