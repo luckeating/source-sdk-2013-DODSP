@@ -20,6 +20,14 @@
 //     on the move (Combine move-and-shoot gestures) and reloading on the move.
 //   - Grenades and the kick are off until those animations exist (later stage).
 //
+// Stage 3a:
+//   - Death animations: on death a soldier usually plays a death animation
+//     (headshot, gut shot, running stumble, crouched collapse, ...) and becomes
+//     a ragdoll from its last frame. Explosions, falls, heavy hits and a random
+//     share ("death_anim_chance" in the script) still ragdoll straight away.
+//   - Flinches come from the WW2 animation pack (ACT_GESTURE_FLINCH_* and
+//     ACT_*FLINCH*), which the base AI already plays when hurt - no code needed.
+//
 //=============================================================================//
 
 #include "cbase.h"
@@ -91,6 +99,13 @@ public:
 
 	int			MeleeAttack1Conditions( float flDot, float flDist );
 
+	// Death animations
+	void		Event_Killed( const CTakeDamageInfo &info );
+	bool		BecomeRagdoll( const CTakeDamageInfo &info, const Vector &forceVector );
+	bool		CanBecomeRagdoll( void );
+	Activity	GetDeathActivity( void );
+	int			OnTakeDamage_Dying( const CTakeDamageInfo &info );
+
 	void		SetAim( const Vector &aimDir );
 	void		RelaxAim( void );
 	void		MaintainLookTargets( float flInterval );
@@ -106,6 +121,10 @@ private:
 	void		ApplyAimPose( void );
 	void		HoldMoveForward( void );
 	bool		FireOneShot( bool bPlayGesture );
+	bool		ShouldPlayDeathAnim( const CTakeDamageInfo &info );
+	Activity	PickDeathActivity( void );
+	Activity	PickAvailable( const char **ppszNames, int nCount );
+	void		FinishDeathAnim( void );
 	void		FinishReload( void );
 	void		UpdateMovingReload( void );
 
@@ -141,6 +160,14 @@ private:
 	float				m_flNextShotTime;
 	float				m_flReloadDoneTime;
 	float				m_flGestureReloadDone;	// 0 = none, >0 = refill time, -1 = done, wait for gesture to end
+
+	// Death animation state (not saved: a save made mid-death just ragdolls on load)
+	float				m_flDeathAnimChance;
+	bool				m_bDeathAnim;			// playing a death animation; ragdoll when it ends
+	CTakeDamageInfo		m_DeathInfo;
+	Vector				m_vecDeathForce;
+	Activity			m_actDeath;
+	float				m_flDeathAnimGiveUp;
 };
 
 LINK_ENTITY_TO_CLASS( npc_german_soldier, CNPC_GermanSoldier );
@@ -170,6 +197,11 @@ CNPC_GermanSoldier::CNPC_GermanSoldier() : m_AnimMap( DefLessFunc( int ) )
 	m_flNextShotTime = 0.0f;
 	m_flReloadDoneTime = 0.0f;
 	m_flGestureReloadDone = 0.0f;
+	m_flDeathAnimChance = 0.75f;
+	m_bDeathAnim = false;
+	m_vecDeathForce = vec3_origin;
+	m_actDeath = ACT_INVALID;
+	m_flDeathAnimGiveUp = 0.0f;
 }
 
 void CNPC_GermanSoldier::Precache( void )
@@ -382,6 +414,7 @@ void CNPC_GermanSoldier::BuildAnimMap( void )
 	m_flPitchOffset = pScript->GetFloat( "body_pitch_offset", 0.0f );
 	m_flYawOffset = pScript->GetFloat( "body_yaw_offset", 0.0f );
 	m_flMoveYSign = ( pScript->GetFloat( "move_y_sign", 1.0f ) < 0.0f ) ? -1.0f : 1.0f;
+	m_flDeathAnimChance = clamp( pScript->GetFloat( "death_anim_chance", 0.75f ), 0.0f, 1.0f );
 
 	// Which DoD animation set does this weapon use?
 	const char *pszWeapon = GetActiveWeapon() ? GetActiveWeapon()->GetClassname() : "none";
@@ -686,10 +719,160 @@ void CNPC_GermanSoldier::RunTask( const Task_t *pTask )
 		}
 		break;
 
+	case TASK_DIE:
+		if ( m_bDeathAnim && ( ( IsActivityFinished() && GetCycle() >= 1.0f ) || gpGlobals->curtime > m_flDeathAnimGiveUp ) )
+		{
+			FinishDeathAnim();
+			break;
+		}
+		BaseClass::RunTask( pTask );
+		break;
+
 	default:
 		BaseClass::RunTask( pTask );
 		break;
 	}
+}
+
+//-----------------------------------------------------------------------------
+// Death animations
+//
+// Flow: Event_Killed decides; the base kill code then asks BecomeRagdoll, which we
+// decline while a death animation is pending (and CanBecomeRagdoll says no, so the
+// dead-schedule picks SCHED_DIE instead of ragdolling). TASK_DIE plays
+// GetDeathActivity; when it ends (or after a safety timeout) we ragdoll for real,
+// starting from the animation's last pose.
+//-----------------------------------------------------------------------------
+bool CNPC_GermanSoldier::ShouldPlayDeathAnim( const CTakeDamageInfo &info )
+{
+	EnsureAnimMap();
+
+	if ( random->RandomFloat( 0.0f, 1.0f ) > m_flDeathAnimChance )
+		return false;
+
+	// Things that should throw a body, not play a canned fall.
+	const int nRagdollNow = DMG_BLAST | DMG_CRUSH | DMG_VEHICLE | DMG_FALL | DMG_DISSOLVE |
+							DMG_REMOVENORAGDOLL | DMG_PHYSGUN | DMG_ALWAYSGIB;
+	if ( info.GetDamageType() & nRagdollNow )
+		return false;
+	if ( info.GetDamageForce().Length() > 30000.0f )
+		return false;
+	if ( !( GetFlags() & FL_ONGROUND ) || GetWaterLevel() >= 2 )
+		return false;
+	if ( IsInAScript() || GetParent() )
+		return false;
+
+	return PickDeathActivity() != ACT_INVALID;
+}
+
+Activity CNPC_GermanSoldier::PickAvailable( const char **ppszNames, int nCount )
+{
+	Activity candidates[16];
+	int nFound = 0;
+	for ( int i = 0; i < nCount && nFound < (int)ARRAYSIZE( candidates ); i++ )
+	{
+		int iAct = ActivityList_IndexForName( ppszNames[i] );
+		if ( iAct >= 0 && HaveSequenceForActivity( (Activity)iAct ) )
+			candidates[nFound++] = (Activity)iAct;
+	}
+	return nFound ? candidates[random->RandomInt( 0, nFound - 1 )] : ACT_INVALID;
+}
+
+Activity CNPC_GermanSoldier::PickDeathActivity( void )
+{
+	Activity act = GetActivity();
+
+	// Running: the CoD running deaths (stumble, crumple, fall forward ...)
+	if ( IsMoving() && m_flGroundSpeed > 100.0f )
+	{
+		static const char *s_Run[] = { "ACT_WW2_DEATH_RUN_FRONT", "ACT_WW2_DEATH_RUN_STUMBLE", "ACT_WW2_DEATH_RUN_CRUMPLE",
+									   "ACT_WW2_DEATH_RUN_LEFT", "ACT_WW2_DEATH_RUN_RIGHT" };
+		Activity a = PickAvailable( s_Run, ARRAYSIZE( s_Run ) );
+		if ( a != ACT_INVALID )
+			return a;
+	}
+
+	// Crouched or in low cover
+	bool bCrouched = IsCrouching() || act == ACT_RANGE_ATTACK1_LOW || act == ACT_RANGE_AIM_LOW || act == ACT_COVER_LOW ||
+					 act == ACT_CROUCHIDLE || act == ACT_CROUCH || act == ACT_RELOAD_LOW || act == ACT_WALK_CROUCH ||
+					 act == ACT_WALK_CROUCH_AIM || act == ACT_RUN_CROUCH || act == ACT_RUN_CROUCH_AIM;
+	if ( bCrouched )
+	{
+		static const char *s_Crouch[] = { "ACT_DIE_CROUCH", "ACT_WW2_DEATH_CROUCH_HANDS", "ACT_WW2_DEATH_CROUCH_FETAL",
+										  "ACT_WW2_DEATH_CROUCH_FLIP", "ACT_WW2_DEATH_CROUCH_HEADSHOT" };
+		Activity a = PickAvailable( s_Crouch, ARRAYSIZE( s_Crouch ) );
+		if ( a != ACT_INVALID )
+			return a;
+	}
+
+	// Standing: the base picks by hit location and direction (headshot, gut shot, fall back ...)
+	Activity a = BaseClass::GetDeathActivity();
+	if ( a != ACT_INVALID && HaveSequenceForActivity( a ) )
+		return a;
+	return HaveSequenceForActivity( ACT_DIESIMPLE ) ? ACT_DIESIMPLE : ACT_INVALID;
+}
+
+void CNPC_GermanSoldier::Event_Killed( const CTakeDamageInfo &info )
+{
+	m_bDeathAnim = false;
+	m_actDeath = ACT_INVALID;
+	if ( !IsCurSchedule( SCHED_NPC_FREEZE ) && ShouldPlayDeathAnim( info ) )	// frozen NPCs don't die
+	{
+		m_actDeath = PickDeathActivity();
+		m_DeathInfo = info;
+		m_vecDeathForce = info.GetDamageForce();
+		m_flDeathAnimGiveUp = gpGlobals->curtime + 8.0f;
+		m_bDeathAnim = true;
+	}
+
+	BaseClass::Event_Killed( info );
+}
+
+bool CNPC_GermanSoldier::BecomeRagdoll( const CTakeDamageInfo &info, const Vector &forceVector )
+{
+	if ( m_bDeathAnim )
+	{
+		m_vecDeathForce = forceVector;	// ragdoll later with the same push
+		return true;
+	}
+	return BaseClass::BecomeRagdoll( info, forceVector );
+}
+
+bool CNPC_GermanSoldier::CanBecomeRagdoll( void )
+{
+	if ( m_bDeathAnim )
+		return false;
+	return BaseClass::CanBecomeRagdoll();
+}
+
+Activity CNPC_GermanSoldier::GetDeathActivity( void )
+{
+	if ( m_actDeath != ACT_INVALID )
+		return m_actDeath;
+	return BaseClass::GetDeathActivity();
+}
+
+void CNPC_GermanSoldier::FinishDeathAnim( void )
+{
+	if ( !m_bDeathAnim )
+		return;
+
+	m_bDeathAnim = false;
+	CTakeDamageInfo info = m_DeathInfo;
+	BaseClass::BecomeRagdoll( info, m_vecDeathForce * 0.25f );	// a soft settle, not a second hit
+}
+
+int CNPC_GermanSoldier::OnTakeDamage_Dying( const CTakeDamageInfo &info )
+{
+	// Shot again mid-fall: a big hit or an explosion turns the fall into a ragdoll now.
+	if ( m_bDeathAnim && ( ( info.GetDamageType() & DMG_BLAST ) || info.GetDamage() >= 50.0f ) )
+	{
+		m_DeathInfo = info;
+		m_vecDeathForce = info.GetDamageForce() * 4.0f;		// FinishDeathAnim softens by 0.25
+		FinishDeathAnim();
+		return 1;
+	}
+	return BaseClass::OnTakeDamage_Dying( info );
 }
 
 int CNPC_GermanSoldier::MeleeAttack1Conditions( float flDot, float flDist )
