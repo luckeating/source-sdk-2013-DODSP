@@ -552,7 +552,29 @@ void CNPC_GermanSoldier::StartTask( const Task_t *pTask )
 			bool bCrouched = IsCrouching() || TranslateCrouchActivity( ACT_RELOAD ) == ACT_RELOAD_LOW;
 			Activity gesture = ( bCrouched && m_actReloadCrouchGesture != ACT_INVALID ) ? m_actReloadCrouchGesture : m_actReloadGesture;
 
+			// One reload at a time, and never a reload with a full clip. Combine
+			// "hide and reload" runs to cover first; the move-and-shoot code often starts
+			// a reload gesture on the way, so by the time this task runs the clip may be
+			// full already or the reload half done.
+			CBaseCombatWeapon *pWeapon = GetActiveWeapon();
+			if ( !pWeapon || ( pWeapon->UsesClipsForAmmo1() && pWeapon->Clip1() >= pWeapon->GetMaxClip1() ) )
+			{
+				ClearCondition( COND_LOW_PRIMARY_AMMO );
+				ClearCondition( COND_NO_PRIMARY_AMMO );
+				TaskComplete();
+				break;
+			}
+
 			ResetIdealActivity( bCrouched ? ACT_RELOAD_LOW : ACT_RELOAD );
+
+			if ( m_flGestureReloadDone > 0.0f )
+			{
+				// A reload started while moving is still playing: let it finish and
+				// take over its timer instead of starting a second one.
+				m_flReloadDoneTime = m_flGestureReloadDone;
+				m_flGestureReloadDone = -1.0f;
+				break;
+			}
 
 			float flDuration = 1.5f;
 			if ( gesture != ACT_INVALID )
