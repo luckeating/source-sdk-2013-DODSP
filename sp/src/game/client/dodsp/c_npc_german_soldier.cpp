@@ -9,11 +9,23 @@
 // crouched, prone, reloading ...), it works in every stance, and since the arms
 // are children of the spine they ride along - the gun stays in both hands.
 //
+// Ragdoll settle: a ragdoll that starts from a death-animation pose can begin
+// slightly inside the floor or past its joint limits, and the physics solver
+// throws it clear at huge speed. For the first moments of its life our ragdoll's
+// pieces are speed-limited, so it settles instead of flying across the map.
+//
+// Smoother hand-offs: when a full-body CoD animation (pain, death, cover) hands
+// back to DoD's animations, the cross-fade length is the shorter of the two
+// sequences' fade times. DoD's are the 0.2 s default, which reads as a snap, so
+// DoD's full-body sequences get a longer fade-in (cl_npc_german_blend).
+//
 //=============================================================================//
 
 #include "cbase.h"
 #include "c_ai_basenpc.h"
 #include "bone_setup.h"
+#include "ragdoll.h"
+#include "vphysics_interface.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -21,9 +33,59 @@
 ConVar cl_npc_german_hitkick( "cl_npc_german_hitkick", "1", FCVAR_ARCHIVE, "Scale of the German soldiers' procedural hit reactions (0 = off)." );
 ConVar cl_npc_german_hitkick_dir( "cl_npc_german_hitkick_dir", "1", FCVAR_ARCHIVE, "1 = hits push the body away from the shot, -1 = reverse (if the reactions look backwards)." );
 
+ConVar cl_npc_german_ragdoll_maxspeed( "cl_npc_german_ragdoll_maxspeed", "180", FCVAR_ARCHIVE, "Speed limit (units/s) for a German soldier's ragdoll right after it is created (0 = no limit)." );
+ConVar cl_npc_german_ragdoll_settle( "cl_npc_german_ragdoll_settle", "0.8", FCVAR_ARCHIVE, "Seconds the ragdoll speed limit stays on." );
+ConVar cl_npc_german_blend( "cl_npc_german_blend", "0.4", FCVAR_ARCHIVE, "Minimum cross-fade (s) into DoD full-body animations; applied when a German soldier model loads." );
+
 #define HITKICK_RISE		0.06f	// seconds to full deflection
 #define HITKICK_DURATION	0.75f	// total length of the reaction
 #define HITKICK_MAX_DEG		16.0f	// deflection at strength 1
+
+//-----------------------------------------------------------------------------
+// Ragdoll with a short speed limit
+//-----------------------------------------------------------------------------
+class C_GermanRagdoll : public C_ClientRagdoll
+{
+	DECLARE_CLASS( C_GermanRagdoll, C_ClientRagdoll );
+public:
+	C_GermanRagdoll( bool bRestoring ) : C_ClientRagdoll( bRestoring )
+	{
+		m_flSettleUntil = gpGlobals->curtime + cl_npc_german_ragdoll_settle.GetFloat();
+	}
+
+	virtual void ClientThink( void )
+	{
+		BaseClass::ClientThink();
+		if ( !m_pRagdoll || gpGlobals->curtime > m_flSettleUntil )
+			return;
+
+		float flMax = cl_npc_german_ragdoll_maxspeed.GetFloat();
+		if ( flMax > 0.0f )
+		{
+			for ( int i = 0; i < m_pRagdoll->RagdollBoneCount(); i++ )
+			{
+				IPhysicsObject *pObj = m_pRagdoll->GetElement( i );
+				if ( !pObj )
+					continue;
+				Vector vel;
+				AngularImpulse angVel;
+				pObj->GetVelocity( &vel, &angVel );
+				float flSpeed = vel.Length();
+				float flSpin = angVel.Length();
+				if ( flSpeed > flMax || flSpin > 720.0f )
+				{
+					if ( flSpeed > flMax ) vel *= flMax / flSpeed;
+					if ( flSpin > 720.0f ) angVel *= 720.0f / flSpin;
+					pObj->SetVelocity( &vel, &angVel );
+				}
+			}
+		}
+		SetNextClientThink( CLIENT_THINK_ALWAYS );	// every frame while settling
+	}
+
+private:
+	float m_flSettleUntil;
+};
 
 class C_NPC_GermanSoldier : public C_AI_BaseNPC
 {
@@ -34,6 +96,8 @@ public:
 	C_NPC_GermanSoldier();
 
 	virtual void BuildTransformations( CStudioHdr *pStudioHdr, Vector *pos, Quaternion q[], const matrix3x4_t &cameraTransform, int boneMask, CBoneBitList &boneComputed );
+	virtual C_ClientRagdoll *CreateClientRagdoll( bool bRestoring = false );
+	virtual void OnDataChanged( DataUpdateType_t updateType );
 
 private:
 	void	RotateSubtree( CStudioHdr *pStudioHdr, int iBone, const Vector &vecAxis, float flDegrees );
@@ -60,6 +124,41 @@ C_NPC_GermanSoldier::C_NPC_GermanSoldier()
 	m_nHitGroup = 0;
 	m_flHitTime = 0.0f;
 	m_flHitStrength = 0.0f;
+}
+
+C_ClientRagdoll *C_NPC_GermanSoldier::CreateClientRagdoll( bool bRestoring )
+{
+	C_GermanRagdoll *pRagdoll = new C_GermanRagdoll( bRestoring );
+	pRagdoll->SetNextClientThink( CLIENT_THINK_ALWAYS );
+	return pRagdoll;
+}
+
+void C_NPC_GermanSoldier::OnDataChanged( DataUpdateType_t updateType )
+{
+	BaseClass::OnDataChanged( updateType );
+
+	// Lengthen DoD's full-body fade-ins once per loaded model (the sequence data is
+	// shared by every soldier using it). Gestures (delta) are left alone.
+	CStudioHdr *pHdr = GetModelPtr();
+	if ( !pHdr )
+		return;
+	static CUtlVector<const void *> s_Done;		// models already adjusted
+	const void *pKey = pHdr->GetRenderHdr();
+	if ( s_Done.Find( pKey ) != s_Done.InvalidIndex() )
+		return;
+	s_Done.AddToTail( pKey );
+
+	float flBlend = cl_npc_german_blend.GetFloat();
+	for ( int i = 0; i < pHdr->GetNumSeq(); i++ )
+	{
+		mstudioseqdesc_t &seq = pHdr->pSeqdesc( i );
+		if ( seq.flags & STUDIO_DELTA )
+			continue;
+		if ( seq.fadeintime < flBlend )
+			seq.fadeintime = flBlend;
+		if ( seq.fadeouttime < flBlend )
+			seq.fadeouttime = flBlend;
+	}
 }
 
 // Rotate a bone and everything below it about a world-space axis through the bone.

@@ -199,6 +199,7 @@ private:
 	float				m_flFullFlinchCooldown;
 	float				m_flLastHitSide;		// where the last hit landed across his body: + = his right, - = his left (units)
 	float				m_flLastHitDamage;
+	bool				m_bLastHitCrouched;		// crouch state at the moment of the last hit
 
 	// Networked to the client for the procedural hit kick
 	CNetworkVector( m_vecHitDir );			// horizontal direction the bullet travelled
@@ -258,6 +259,7 @@ CNPC_GermanSoldier::CNPC_GermanSoldier() : m_AnimMap( DefLessFunc( int ) )
 	m_flFullFlinchCooldown = 3.0f;
 	m_flLastHitSide = 0.0f;
 	m_flLastHitDamage = 0.0f;
+	m_bLastHitCrouched = false;
 	m_vecHitDir.Init( 1, 0, 0 );
 	m_nHitGroup = 0;
 	m_flHitTime = 0.0f;
@@ -983,10 +985,24 @@ void CNPC_GermanSoldier::PlayFlinchGesture( void )
 	// the procedural kick (every hit) plus full-body CoD flinches (big hits).
 }
 
+// Is he crouched right now? Judged by the animation actually playing (its DoD/CoD
+// activity name), not by AI state: the Combine AI often crouches through activity
+// translation alone, so GetActivity()/IsCrouching() can say "standing" while the
+// body is down. One owner for this question - deaths and flinches both ask here.
 bool CNPC_GermanSoldier::IsInCrouchPose( void )
 {
+	if ( IsCrouching() )
+		return true;
+
+	if ( GetModelPtr() && GetSequence() >= 0 )
+	{
+		const char *pszAct = ActivityList_NameForIndex( GetSequenceActivity( GetSequence() ) );
+		if ( pszAct && ( Q_stristr( pszAct, "CROUCH" ) || Q_stristr( pszAct, "_LOW" ) || Q_stristr( pszAct, "HIDE" ) ) )
+			return true;
+	}
+
 	Activity act = GetActivity();
-	return IsCrouching() || act == ACT_RANGE_ATTACK1_LOW || act == ACT_RANGE_AIM_LOW || act == ACT_COVER_LOW ||
+	return act == ACT_RANGE_ATTACK1_LOW || act == ACT_RANGE_AIM_LOW || act == ACT_COVER_LOW ||
 		   act == ACT_CROUCHIDLE || act == ACT_CROUCH || act == ACT_RELOAD_LOW || act == ACT_WALK_CROUCH ||
 		   act == ACT_WALK_CROUCH_AIM || act == ACT_RUN_CROUCH || act == ACT_RUN_CROUCH_AIM;
 }
@@ -1025,6 +1041,7 @@ void CNPC_GermanSoldier::DoHitReaction( const CTakeDamageInfo &info )
 	// --- Full-body CoD flinch: big or unlucky hits, not while moving ---------
 	// (standing: CoD2 + CoD1 pains by hit location; crouched: CoD1 crouch pain)
 	m_flLastHitDamage = info.GetDamage();
+	m_bLastHitCrouched = IsInCrouchPose();
 	if ( gpGlobals->curtime < m_flNextFullFlinch || IsMoving() || IsCurSchedule( SCHED_BIG_FLINCH ) )
 		return;
 	if ( info.GetDamage() < m_flFullFlinchDamage && random->RandomFloat( 0.0f, 1.0f ) > m_flFullFlinchChance )
@@ -1044,8 +1061,8 @@ Activity CNPC_GermanSoldier::GetFlinchActivity( bool bHeavyDamage, bool bGesture
 {
 	if ( !bGesture )
 	{
-		// Crouched: the CoD1 crouch pain, whatever was hit.
-		if ( IsInCrouchPose() )
+		// Crouched when hit: the CoD1 crouch pain, whatever was hit.
+		if ( m_bLastHitCrouched )
 		{
 			int iAct = ActivityList_IndexForName( "ACT_WW2_CROUCH_PAIN" );
 			if ( iAct >= 0 && HaveSequenceForActivity( (Activity)iAct ) )
