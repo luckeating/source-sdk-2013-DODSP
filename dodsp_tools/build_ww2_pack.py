@@ -152,21 +152,30 @@ L.append('// DoD:S German skeleton: DoD bone lengths, DoD weapon holds. For priv
 L.append('$modelname "german\\npc_ww2_anims.mdl"')
 L.append('$cdmaterials "models\\german\\"')
 L.append('$bodygroup "skeleton"\n{\n\tstudio "ww2_skeleton.smd"\n}')
-# studiomdl wants the brace on the $weightlist line; every bone is listed explicitly
-# (legs and pelvis 0, a soft ramp up the spine, everything above it 1).
-def _upper_weight(name):
+# studiomdl wants the brace on the $weightlist line; every bone is listed explicitly.
+#
+# Flinches are CoD2 pain animations turned into additive (delta) gestures and laid
+# over DoD's own poses. Arm deltas from a CoD2 rifle hold don't fit DoD's holds (arms
+# swing through the chest, the support hand leaves the gun), so flinch gestures only
+# move the spine, neck and head: the arms ride along with the torso in DoD's grip.
+# Leg flinches move only the legs.
+def _torso_weight(name):
     n = name.lower()
-    if 'thigh' in n or 'calf' in n or 'foot' in n or 'toe' in n or 'knee' in n or n.endswith('pelvis'): return 0
-    if n.endswith('bip01_spine'): return 0.3
+    if n.endswith('bip01_spine'): return 0.4
     if n.endswith('bip01_spine1'): return 0.7
-    return 1
+    if n.endswith('bip01_spine2') or n.endswith('bip01_spine4') or n.endswith('neck1') or n.endswith('head1'): return 1
+    return 0      # pelvis, legs, clavicles, arms, hands, fingers, weapon bones
+def _leg_weight(name):
+    n = name.lower()
+    return 1 if ('thigh' in n or 'calf' in n or 'foot' in n or 'toe' in n) else 0
 for pp in needed_params:
     L.append(poseparams[pp])
-L.append('$weightlist "ww2_upperbody" {')
-for n, _ in ref.nodes:
-    if 'knee' in n.lower(): continue   # unweighted in the DoD mesh; studiomdl drops it
-    L.append(f'\t"{n}" {_upper_weight(n)}')
-L.append('}')
+for wl_name, fn in (('ww2_torso', _torso_weight), ('ww2_legs', _leg_weight)):
+    L.append(f'$weightlist "{wl_name}" {{')
+    for n, _ in ref.nodes:
+        if 'knee' in n.lower(): continue   # unweighted in the DoD mesh; studiomdl drops it
+        L.append(f'\t"{n}" {fn(n)}')
+    L.append('}')
 L.append('')
 for a in used_anims:
     _, opts = animations[a]
@@ -214,7 +223,7 @@ for name, anims, act, extra in chosen:
         L.append(f'\t"g_{a}"')
         L.append(f'\tactivity "{g}" 1')
         L.append('\tdelta')
-        if g not in LEG_GESTURES: L.append('\tweightlist "ww2_upperbody"')
+        L.append('\tweightlist "ww2_legs"' if g in LEG_GESTURES else '\tweightlist "ww2_torso"')
         L.append('\tfadein 0.1\n\tfadeout 0.2')
         L.append('}')
         seq_rows.append((f'ww2_g_{g[len("ACT_GESTURE_"):].lower()}', g, a, frames[a]))
