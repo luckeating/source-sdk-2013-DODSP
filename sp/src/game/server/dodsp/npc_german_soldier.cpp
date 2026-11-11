@@ -25,11 +25,14 @@
 //     (headshot, gut shot, running stumble, crouched collapse, ...) and becomes
 //     a ragdoll from its last frame. Explosions, falls, heavy hits and a random
 //     share ("death_anim_chance" in the script) still ragdoll straight away.
-//   - Hit reactions: every hit plays a flinch gesture from the WW2 pack picked by
-//     hit location, whatever he is doing (running, reloading, shooting). While it
-//     plays he can't fire and his reload pauses. This replaces the base AI's
-//     condition-driven gesture flinch (which often skipped moving soldiers).
-//     Full-body stagger flinches on heavy damage stay with the base AI.
+//   - Hit reactions, two systems (CoD animations never layered on top of DoD):
+//     * every hit: a procedural kick. The hit direction, hit location and strength
+//       are networked; the client (c_npc_german_soldier.cpp) bends the spine / snaps
+//       the head away from the shot and springs back. Works in any stance, arms
+//       ride along so the gun stays in both hands. Brief loss of aim.
+//     * big or unlucky hits while standing: a full-body CoD pain animation
+//       (helmet hit, shoulder, gut ...) replaces the DoD pose, untouched, via
+//       SCHED_BIG_FLINCH. Thresholds in the script.
 //
 //=============================================================================//
 
@@ -86,6 +89,8 @@ class CNPC_GermanSoldier : public CNPC_CombineS
 	DECLARE_CLASS( CNPC_GermanSoldier, CNPC_CombineS );
 
 public:
+	DECLARE_SERVERCLASS();
+
 	CNPC_GermanSoldier();
 
 	void		Precache( void );
@@ -112,6 +117,7 @@ public:
 	// Hit reactions
 	int			OnTakeDamage_Alive( const CTakeDamageInfo &info );
 	void		PlayFlinchGesture( void );
+	int			SelectSchedule( void );
 
 	void		SetAim( const Vector &aimDir );
 	void		RelaxAim( void );
@@ -134,6 +140,7 @@ private:
 	void		FinishDeathAnim( void );
 	void		DoHitReaction( const CTakeDamageInfo &info );
 	bool		IsHitReacting( void ) const { return gpGlobals->curtime < m_flFlinchUntil; }
+	bool		IsInCrouchPose( void );
 	void		FinishReload( void );
 	void		UpdateMovingReload( void );
 
@@ -182,8 +189,27 @@ private:
 
 	// Hit reaction state
 	float				m_flFlinchUntil;		// no firing until then
-	float				m_flNextHitReaction;	// cooldown between flinch gestures
+	float				m_flNextHitReaction;	// unused (kept for layout clarity)
+	float				m_flNextFullFlinch;		// cooldown for full-body CoD flinches
+	float				m_flWantFullFlinch;		// time a full flinch was requested (0 = none)
+	float				m_flHitKickScale;		// script tuning
+	float				m_flFullFlinchDamage;
+	float				m_flFullFlinchChance;
+	float				m_flFullFlinchCooldown;
+
+	// Networked to the client for the procedural hit kick
+	CNetworkVector( m_vecHitDir );			// horizontal direction the bullet travelled
+	CNetworkVar( int, m_nHitGroup );
+	CNetworkVar( float, m_flHitTime );
+	CNetworkVar( float, m_flHitStrength );
 };
+
+IMPLEMENT_SERVERCLASS_ST( CNPC_GermanSoldier, DT_NPC_GermanSoldier )
+	SendPropVector( SENDINFO( m_vecHitDir ), 10, 0, -1.0f, 1.0f ),
+	SendPropInt( SENDINFO( m_nHitGroup ), 4, SPROP_UNSIGNED ),
+	SendPropTime( SENDINFO( m_flHitTime ) ),
+	SendPropFloat( SENDINFO( m_flHitStrength ), 8, 0, 0.0f, 2.0f ),
+END_SEND_TABLE()
 
 LINK_ENTITY_TO_CLASS( npc_german_soldier, CNPC_GermanSoldier );
 
@@ -221,6 +247,16 @@ CNPC_GermanSoldier::CNPC_GermanSoldier() : m_AnimMap( DefLessFunc( int ) )
 	m_flDeathRagdollAt = 0.8f;
 	m_flFlinchUntil = 0.0f;
 	m_flNextHitReaction = 0.0f;
+	m_flNextFullFlinch = 0.0f;
+	m_flWantFullFlinch = 0.0f;
+	m_flHitKickScale = 1.0f;
+	m_flFullFlinchDamage = 30.0f;
+	m_flFullFlinchChance = 0.2f;
+	m_flFullFlinchCooldown = 3.0f;
+	m_vecHitDir.Init( 1, 0, 0 );
+	m_nHitGroup = 0;
+	m_flHitTime = 0.0f;
+	m_flHitStrength = 0.0f;
 }
 
 void CNPC_GermanSoldier::Precache( void )
@@ -436,6 +472,10 @@ void CNPC_GermanSoldier::BuildAnimMap( void )
 	m_flDeathAnimChance = clamp( pScript->GetFloat( "death_anim_chance", 0.75f ), 0.0f, 1.0f );
 	m_flDeathAnimSpeed = clamp( pScript->GetFloat( "death_anim_speed", 1.0f ), 0.25f, 2.0f );
 	m_flDeathRagdollAt = clamp( pScript->GetFloat( "death_ragdoll_at", 0.8f ), 0.3f, 1.0f );
+	m_flHitKickScale = clamp( pScript->GetFloat( "hit_kick_scale", 1.0f ), 0.0f, 3.0f );
+	m_flFullFlinchDamage = pScript->GetFloat( "full_flinch_damage", 30.0f );
+	m_flFullFlinchChance = clamp( pScript->GetFloat( "full_flinch_chance", 0.2f ), 0.0f, 1.0f );
+	m_flFullFlinchCooldown = pScript->GetFloat( "full_flinch_cooldown", 3.0f );
 
 	// Which DoD animation set does this weapon use?
 	const char *pszWeapon = GetActiveWeapon() ? GetActiveWeapon()->GetClassname() : "none";
@@ -824,10 +864,7 @@ Activity CNPC_GermanSoldier::PickDeathActivity( void )
 	}
 
 	// Crouched or in low cover
-	bool bCrouched = IsCrouching() || act == ACT_RANGE_ATTACK1_LOW || act == ACT_RANGE_AIM_LOW || act == ACT_COVER_LOW ||
-					 act == ACT_CROUCHIDLE || act == ACT_CROUCH || act == ACT_RELOAD_LOW || act == ACT_WALK_CROUCH ||
-					 act == ACT_WALK_CROUCH_AIM || act == ACT_RUN_CROUCH || act == ACT_RUN_CROUCH_AIM;
-	if ( bCrouched )
+	if ( IsInCrouchPose() )
 	{
 		static const char *s_Crouch[] = { "ACT_DIE_CROUCH", "ACT_WW2_DEATH_CROUCH_HANDS", "ACT_WW2_DEATH_CROUCH_FETAL",
 										  "ACT_WW2_DEATH_CROUCH_FLIP", "ACT_WW2_DEATH_CROUCH_HEADSHOT" };
@@ -921,38 +958,68 @@ int CNPC_GermanSoldier::OnTakeDamage_Alive( const CTakeDamageInfo &info )
 
 void CNPC_GermanSoldier::PlayFlinchGesture( void )
 {
-	// Gesture flinches are played from DoHitReaction on every hit instead (one owner).
+	// No gesture flinches: CoD flinch deltas don't fit DoD poses. Hit reactions are
+	// the procedural kick (every hit) plus full-body CoD flinches (big hits).
+}
+
+bool CNPC_GermanSoldier::IsInCrouchPose( void )
+{
+	Activity act = GetActivity();
+	return IsCrouching() || act == ACT_RANGE_ATTACK1_LOW || act == ACT_RANGE_AIM_LOW || act == ACT_COVER_LOW ||
+		   act == ACT_CROUCHIDLE || act == ACT_CROUCH || act == ACT_RELOAD_LOW || act == ACT_WALK_CROUCH ||
+		   act == ACT_WALK_CROUCH_AIM || act == ACT_RUN_CROUCH || act == ACT_RUN_CROUCH_AIM;
 }
 
 void CNPC_GermanSoldier::DoHitReaction( const CTakeDamageInfo &info )
 {
-	if ( gpGlobals->curtime < m_flNextHitReaction || IsCurSchedule( SCHED_BIG_FLINCH ) )
-		return;
+	EnsureAnimMap();
 
-	bool bHeavy = info.GetDamage() >= 20.0f;
-	Activity gesture = GetFlinchActivity( bHeavy, true );		// by hit location (m_LastHitGroup)
-	if ( !HaveSequenceForActivity( gesture ) )
-		gesture = bHeavy ? ACT_GESTURE_BIG_FLINCH : ACT_GESTURE_SMALL_FLINCH;
-	if ( !HaveSequenceForActivity( gesture ) )
-		return;
+	// --- Procedural kick, every hit ---------------------------------------
+	Vector vecDir = info.GetDamageForce();
+	if ( vecDir.LengthSqr() < 1.0f && info.GetAttacker() )
+		vecDir = GetAbsOrigin() - info.GetAttacker()->GetAbsOrigin();
+	vecDir.z = 0.0f;
+	if ( VectorNormalize( vecDir ) < 0.001f )
+		vecDir = -BodyDirection2D();
 
-	RestartGesture( gesture );
+	float flStrength = clamp( info.GetDamage() / 25.0f, 0.35f, 1.5f ) * m_flHitKickScale;
+	m_vecHitDir = vecDir;
+	m_nHitGroup = clamp( LastHitGroup(), 0, 15 );
+	m_flHitStrength = MIN( flStrength, 2.0f );
+	m_flHitTime = gpGlobals->curtime;
 
-	float flDuration = 0.6f;
-	int iSeq = SelectWeightedSequence( gesture );
-	if ( iSeq != ACTIVITY_NOT_AVAILABLE )
-		flDuration = SequenceDuration( iSeq );
-
-	// He's knocked off aim for the first part of the flinch.
-	float flStunned = clamp( flDuration * 0.5f, 0.2f, bHeavy ? 0.9f : 0.5f );
+	// Knocked off aim for a moment; a reload in progress takes that much longer.
+	float flStunned = 0.15f + 0.2f * MIN( flStrength, 1.0f );
 	m_flFlinchUntil = MAX( m_flFlinchUntil, gpGlobals->curtime + flStunned );
-	m_flNextHitReaction = gpGlobals->curtime + 0.3f;
-
-	// Being hit mid-reload costs time.
 	if ( m_flReloadDoneTime > gpGlobals->curtime )
 		m_flReloadDoneTime += flStunned;
 	if ( m_flGestureReloadDone > gpGlobals->curtime )
 		m_flGestureReloadDone += flStunned;
+
+	// --- Full-body CoD flinch: big or unlucky hits, standing still only ----
+	// (the CoD pains are standing animations; crouched/prone ones come with CoD1)
+	if ( gpGlobals->curtime < m_flNextFullFlinch || IsMoving() || IsInCrouchPose() || IsCurSchedule( SCHED_BIG_FLINCH ) )
+		return;
+	if ( info.GetDamage() < m_flFullFlinchDamage && random->RandomFloat( 0.0f, 1.0f ) > m_flFullFlinchChance )
+		return;
+	if ( !HaveSequenceForActivity( GetFlinchActivity( true, false ) ) )
+		return;
+
+	m_flWantFullFlinch = gpGlobals->curtime;
+	m_flNextFullFlinch = gpGlobals->curtime + m_flFullFlinchCooldown;
+	SetCondition( COND_HEAVY_DAMAGE );		// interrupts the current schedule -> SelectSchedule
+}
+
+int CNPC_GermanSoldier::SelectSchedule( void )
+{
+	if ( m_flWantFullFlinch > 0.0f )
+	{
+		bool bFresh = gpGlobals->curtime - m_flWantFullFlinch < 0.5f;
+		m_flWantFullFlinch = 0.0f;
+		if ( bFresh && IsAlive() && HaveSequenceForActivity( GetFlinchActivity( true, false ) ) )
+			return SCHED_BIG_FLINCH;	// plays GetFlinchActivity(): head / shoulder / gut by hit location
+	}
+	return BaseClass::SelectSchedule();
 }
 
 int CNPC_GermanSoldier::MeleeAttack1Conditions( float flDot, float flDist )

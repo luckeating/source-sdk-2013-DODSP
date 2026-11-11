@@ -25,6 +25,7 @@ $Project "Client (HL2)"
 	$Folder	"DOD-SP"
 	{
 		$File	"dodsp\c_weapon_stubs_dodsp.cpp"
+		$File	"dodsp\c_npc_german_soldier.cpp"
 	}
 
 	$Folder	"Source Files"

@@ -43,6 +43,12 @@ poseparams = {m.group(1): m.group(0) for m in re.finditer(r'^\$poseparameter "([
 WANT = re.compile(r'^cod2_(death|pain|turn|corn|cover|jump_(lowwall|fence|window|down)|drag|surrender|mg42|30cal|plant|rocket|grenade|melee)')
 KEEP_HL2_ACT = re.compile(r'^ACT_(DIE|FLINCH|BIG_FLINCH|SMALL_FLINCH)')  # turns: later, need rotation extraction
 
+# Flinch gestures (CoD deltas layered on DoD poses) are switched off: the deltas come
+# from a different rifle hold and base pose, so they bent arms through the chest and
+# made crouched legs spasm. Hit reactions are now a procedural kick (client code)
+# plus the untouched full-body CoD pains below. Set MAKE_FLINCH_GESTURES = True to
+# bring the gesture versions back for experiments.
+MAKE_FLINCH_GESTURES = False
 GESTURE_FOR = {   # full-body flinch activity -> gesture activity
     'ACT_FLINCH_HEAD': 'ACT_GESTURE_FLINCH_HEAD', 'ACT_FLINCH_LEFTARM': 'ACT_GESTURE_FLINCH_LEFTARM',
     'ACT_FLINCH_RIGHTARM': 'ACT_GESTURE_FLINCH_RIGHTARM', 'ACT_FLINCH_STOMACH': 'ACT_GESTURE_FLINCH_STOMACH',
@@ -205,7 +211,7 @@ for name, anims, act, extra in chosen:
     if any('loop' == o for o in animations[anims[0]][1]): L.append('\tloop')
     L.append('}')
     seq_rows.append((f'ww2_{short}', activity, anims[0], frames[anims[0]]))
-    g = GESTURE_FOR.get(activity)
+    g = GESTURE_FOR.get(activity) if MAKE_FLINCH_GESTURES else None
     if g and g not in gestures_done and len(anims) == 1:
         gestures_done.add(g)
         a = anims[0]
