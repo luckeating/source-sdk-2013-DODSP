@@ -118,6 +118,7 @@ public:
 	int			OnTakeDamage_Alive( const CTakeDamageInfo &info );
 	void		PlayFlinchGesture( void );
 	int			SelectSchedule( void );
+	Activity	GetFlinchActivity( bool bHeavyDamage, bool bGesture );
 
 	void		SetAim( const Vector &aimDir );
 	void		RelaxAim( void );
@@ -196,6 +197,7 @@ private:
 	float				m_flFullFlinchDamage;
 	float				m_flFullFlinchChance;
 	float				m_flFullFlinchCooldown;
+	float				m_flLastHitSide;		// where the last hit landed across his body: + = his right, - = his left (units)
 
 	// Networked to the client for the procedural hit kick
 	CNetworkVector( m_vecHitDir );			// horizontal direction the bullet travelled
@@ -253,6 +255,7 @@ CNPC_GermanSoldier::CNPC_GermanSoldier() : m_AnimMap( DefLessFunc( int ) )
 	m_flFullFlinchDamage = 30.0f;
 	m_flFullFlinchChance = 0.2f;
 	m_flFullFlinchCooldown = 3.0f;
+	m_flLastHitSide = 0.0f;
 	m_vecHitDir.Init( 1, 0, 0 );
 	m_nHitGroup = 0;
 	m_flHitTime = 0.0f;
@@ -980,6 +983,11 @@ void CNPC_GermanSoldier::DoHitReaction( const CTakeDamageInfo &info )
 	if ( VectorNormalize( vecDir ) < 0.001f )
 		vecDir = -BodyDirection2D();
 
+	// Which side of his body was hit (for picking a full-body flinch)?
+	Vector vecRight;
+	GetVectors( NULL, &vecRight, NULL );
+	m_flLastHitSide = DotProduct( info.GetDamagePosition() - WorldSpaceCenter(), vecRight );
+
 	float flStrength = clamp( info.GetDamage() / 25.0f, 0.35f, 1.5f ) * m_flHitKickScale;
 	m_vecHitDir = vecDir;
 	m_nHitGroup = clamp( LastHitGroup(), 0, 15 );
@@ -1006,6 +1014,26 @@ void CNPC_GermanSoldier::DoHitReaction( const CTakeDamageInfo &info )
 	m_flWantFullFlinch = gpGlobals->curtime;
 	m_flNextFullFlinch = gpGlobals->curtime + m_flFullFlinchCooldown;
 	SetCondition( COND_HEAVY_DAMAGE );		// interrupts the current schedule -> SelectSchedule
+}
+
+// The pack has four full-body pains: helmet hit, left shoulder, right shoulder and
+// the gut hunch. Chest and generic hits would all get the hunch, so pick by which
+// side of the chest was hit: off-centre hits use that side's shoulder animation.
+Activity CNPC_GermanSoldier::GetFlinchActivity( bool bHeavyDamage, bool bGesture )
+{
+	if ( !bGesture )
+	{
+		int nGroup = LastHitGroup();
+		if ( nGroup == HITGROUP_CHEST || nGroup == HITGROUP_GENERIC || nGroup == HITGROUP_GEAR )
+		{
+			const float flCentre = 3.0f;	// within this many units of the middle counts as centre
+			if ( m_flLastHitSide > flCentre && HaveSequenceForActivity( ACT_FLINCH_RIGHTARM ) )
+				return ACT_FLINCH_RIGHTARM;
+			if ( m_flLastHitSide < -flCentre && HaveSequenceForActivity( ACT_FLINCH_LEFTARM ) )
+				return ACT_FLINCH_LEFTARM;
+		}
+	}
+	return BaseClass::GetFlinchActivity( bHeavyDamage, bGesture );
 }
 
 int CNPC_GermanSoldier::SelectSchedule( void )

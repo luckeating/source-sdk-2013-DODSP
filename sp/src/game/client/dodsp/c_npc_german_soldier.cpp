@@ -19,6 +19,7 @@
 #include "tier0/memdbgon.h"
 
 ConVar cl_npc_german_hitkick( "cl_npc_german_hitkick", "1", FCVAR_ARCHIVE, "Scale of the German soldiers' procedural hit reactions (0 = off)." );
+ConVar cl_npc_german_hitkick_dir( "cl_npc_german_hitkick_dir", "1", FCVAR_ARCHIVE, "1 = hits push the body away from the shot, -1 = reverse (if the reactions look backwards)." );
 
 #define HITKICK_RISE		0.06f	// seconds to full deflection
 #define HITKICK_DURATION	0.75f	// total length of the reaction
@@ -110,7 +111,8 @@ void C_NPC_GermanSoldier::BuildTransformations( CStudioHdr *pStudioHdr, Vector *
 	// Fast rise, then a damped spring back with a little overshoot.
 	float flEnvelope = ( t < HITKICK_RISE ) ? ( t / HITKICK_RISE )
 										   : expf( -( t - HITKICK_RISE ) * 7.0f ) * cosf( ( t - HITKICK_RISE ) * 9.0f );
-	float flDeg = HITKICK_MAX_DEG * m_flHitStrength * cl_npc_german_hitkick.GetFloat() * flEnvelope;
+	float flDeg = HITKICK_MAX_DEG * m_flHitStrength * cl_npc_german_hitkick.GetFloat() * flEnvelope *
+				  ( cl_npc_german_hitkick_dir.GetFloat() < 0.0f ? -1.0f : 1.0f );
 
 	Vector vecUp( 0, 0, 1 );
 	Vector vecShot = m_vecHitDir;					// direction the bullet travelled
