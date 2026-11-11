@@ -177,6 +177,7 @@ L.append('')
 
 seq_rows = []
 gestures_done = set()
+gesture_anims_done = set()
 seen = set()
 for name, anims, act, extra in chosen:
     short = name[len('cod2_'):]
@@ -199,11 +200,20 @@ for name, anims, act, extra in chosen:
     if g and g not in gestures_done and len(anims) == 1:
         gestures_done.add(g)
         a = anims[0]
+        # The subtraction must live on an $animation of its own: "subtract" inside a
+        # $sequence only applies to SMDs named inline in that sequence, so with a
+        # named $animation it was silently ignored and the full pose got added on
+        # top of the current one (soldiers folded into a ball when hit).
+        if a not in gesture_anims_done:
+            gesture_anims_done.add(a)
+            L.append(f'$animation "g_{a}" "ww2_{a}.smd" {{')
+            L.append('\tfps 30')
+            L.append(f'\tsubtract "{a}" 0')
+            L.append('}')
         L.append(f'$sequence "ww2_g_{g[len("ACT_GESTURE_"):].lower()}" {{')
-        L.append(f'\t"{a}"')
+        L.append(f'\t"g_{a}"')
         L.append(f'\tactivity "{g}" 1')
         L.append('\tdelta')
-        L.append(f'\tsubtract "{a}" 0')
         if g not in LEG_GESTURES: L.append('\tweightlist "ww2_upperbody"')
         L.append('\tfadein 0.1\n\tfadeout 0.2')
         L.append('}')

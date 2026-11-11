@@ -820,7 +820,7 @@ void CNPC_GermanSoldier::Event_Killed( const CTakeDamageInfo &info )
 	{
 		m_actDeath = PickDeathActivity();
 		m_DeathInfo = info;
-		m_vecDeathForce = info.GetDamageForce();
+		m_vecDeathForce = vec3_origin;		// a finished death animation settles; see FinishDeathAnim
 		m_flDeathAnimGiveUp = gpGlobals->curtime + 8.0f;
 		m_bDeathAnim = true;
 	}
@@ -831,10 +831,7 @@ void CNPC_GermanSoldier::Event_Killed( const CTakeDamageInfo &info )
 bool CNPC_GermanSoldier::BecomeRagdoll( const CTakeDamageInfo &info, const Vector &forceVector )
 {
 	if ( m_bDeathAnim )
-	{
-		m_vecDeathForce = forceVector;	// ragdoll later with the same push
-		return true;
-	}
+		return true;	// ragdoll later, from the death animation's last pose
 	return BaseClass::BecomeRagdoll( info, forceVector );
 }
 
@@ -858,8 +855,13 @@ void CNPC_GermanSoldier::FinishDeathAnim( void )
 		return;
 
 	m_bDeathAnim = false;
+
+	// The animation already did the falling. Hand over to physics with no push at
+	// all (the bullet's force was meant for the moment of the hit, not seconds later)
+	// so the body just settles from the final pose.
 	CTakeDamageInfo info = m_DeathInfo;
-	BaseClass::BecomeRagdoll( info, m_vecDeathForce * 0.25f );	// a soft settle, not a second hit
+	info.SetDamageForce( m_vecDeathForce );
+	BaseClass::BecomeRagdoll( info, m_vecDeathForce );
 }
 
 int CNPC_GermanSoldier::OnTakeDamage_Dying( const CTakeDamageInfo &info )
@@ -868,7 +870,7 @@ int CNPC_GermanSoldier::OnTakeDamage_Dying( const CTakeDamageInfo &info )
 	if ( m_bDeathAnim && ( ( info.GetDamageType() & DMG_BLAST ) || info.GetDamage() >= 50.0f ) )
 	{
 		m_DeathInfo = info;
-		m_vecDeathForce = info.GetDamageForce() * 4.0f;		// FinishDeathAnim softens by 0.25
+		m_vecDeathForce = info.GetDamageForce();	// this hit happens now, so it does push the body
 		FinishDeathAnim();
 		return 1;
 	}
