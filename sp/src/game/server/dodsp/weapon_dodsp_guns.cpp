@@ -44,6 +44,28 @@ extern ISoundEmitterSystemBase *soundemitterbase;
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
+//-----------------------------------------------------------------------------
+// DoD's weapon sounds live in DoD's game_sounds_weapons.txt, which HL2's file of
+// the same name hides, so we load our own copy of the entries we use. Sound
+// overrides are cleared when a level shuts down - including "restart" and
+// "reload" of the same map - so load them at the start of EVERY level, before
+// any entity precaches.
+//-----------------------------------------------------------------------------
+class CDODSPWeaponSoundLoader : public CAutoGameSystem
+{
+public:
+	CDODSPWeaponSoundLoader() : CAutoGameSystem( "DODSPWeaponSoundLoader" ) {}
+
+	virtual void LevelInitPreEntity()
+	{
+		if ( filesystem->FileExists( DODSP_WEAPON_SOUNDS, "GAME" ) )
+			soundemitterbase->AddSoundOverrides( DODSP_WEAPON_SOUNDS );
+		else
+			Warning( "DOD-SP: %s is missing - DoD weapons will be silent\n", DODSP_WEAPON_SOUNDS );
+	}
+};
+static CDODSPWeaponSoundLoader g_DODSPWeaponSoundLoader;
+
 extern acttable_t *GetSMG1Acttable();
 extern int GetSMG1ActtableCount();
 extern acttable_t *GetAR2Acttable();
@@ -123,18 +145,6 @@ CWeaponDODSPGun::CWeaponDODSPGun()
 
 void CWeaponDODSPGun::Precache( void )
 {
-	// DoD's weapon sounds live in DoD's game_sounds_weapons.txt, which HL2's file of the
-	// same name hides. Load our own copy of the entries we use (once per map).
-	static int s_iLoadedForMap = -1;
-	if ( s_iLoadedForMap != gpGlobals->mapversion )
-	{
-		s_iLoadedForMap = gpGlobals->mapversion;
-		if ( filesystem->FileExists( DODSP_WEAPON_SOUNDS, "GAME" ) )
-			soundemitterbase->AddSoundOverrides( DODSP_WEAPON_SOUNDS );
-		else
-			Warning( "DOD-SP: %s is missing - DoD weapons will be silent\n", DODSP_WEAPON_SOUNDS );
-	}
-
 	BaseClass::Precache();
 	LoadNPCTuning();
 }
