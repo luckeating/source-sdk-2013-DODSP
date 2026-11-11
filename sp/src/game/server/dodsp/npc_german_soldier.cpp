@@ -9,11 +9,13 @@
 //   - Combine activities are translated to DoD activities through a data file,
 //     scripts/npc_german_soldier.txt, so animation choices can be tuned without
 //     rebuilding (edit, then "npc_german_reload_script" + respawn).
-//   - Aiming drives DoD's body_pitch / body_yaw instead of aim_pitch / aim_yaw.
+//   - Aiming drives DoD's body_pitch / body_yaw instead of aim_pitch / aim_yaw,
+//     with per-axis sign and offset from the script.
 //   - DoD locomotion is a 9-way move_x / move_y blend; we hold it at "forward".
 //   - DoD shoot / reload animations are delta gestures with no fire or reload
 //     events, so shooting and reloading are timed in code and the DoD gesture
-//     is layered on top.
+//     is layered on top. This covers standing fire (TASK_RANGE_ATTACK1), firing
+//     on the move (Combine move-and-shoot gestures) and reloading on the move.
 //   - Grenades and the kick are off until those animations exist (later stage).
 //
 //=============================================================================//
@@ -79,6 +81,9 @@ public:
 	Activity	NPC_TranslateActivity( Activity eNewActivity );
 	void		OnChangeActivity( Activity eNewActivity );
 
+	void		PrescheduleThink( void );
+	void		OnRangeAttack1( void );
+
 	void		StartTask( const Task_t *pTask );
 	void		RunTask( const Task_t *pTask );
 
@@ -95,9 +100,11 @@ private:
 	void		EnsureAnimMap( void );
 	void		BuildAnimMap( void );
 	Activity	ResolveActivity( const char *pszName, const char *pszWeaponSet );
-	void		FlipAimSigns( void );
+	void		ApplyAimPose( void );
 	void		HoldMoveForward( void );
-	bool		FireOneShot( void );
+	bool		FireOneShot( bool bPlayGesture );
+	void		FinishReload( void );
+	void		UpdateMovingReload( void );
 
 	// Animation map (rebuilt when the script reloads or the weapon changes)
 	CUtlMap<int, int>	m_AnimMap;
@@ -109,7 +116,14 @@ private:
 	int					m_iFireEvent;
 	float				m_flPitchSign;
 	float				m_flYawSign;
+	float				m_flPitchOffset;
+	float				m_flYawOffset;
 	Activity			m_actLastDebug;
+
+	// Aim in world terms (degrees, Source convention); written to the DoD pose
+	// parameters through the script's sign/offset
+	float				m_flAimPitch;
+	float				m_flAimYaw;
 
 	// DoD pose parameters
 	int					m_poseMoveX;
@@ -120,6 +134,7 @@ private:
 	float				m_flShotInterval;
 	float				m_flNextShotTime;
 	float				m_flReloadDoneTime;
+	float				m_flGestureReloadDone;	// 0 = none, >0 = refill time, -1 = done, wait for gesture to end
 };
 
 LINK_ENTITY_TO_CLASS( npc_german_soldier, CNPC_GermanSoldier );
@@ -134,6 +149,10 @@ CNPC_GermanSoldier::CNPC_GermanSoldier() : m_AnimMap( DefLessFunc( int ) )
 	m_iFireEvent = 0;
 	m_flPitchSign = 1.0f;
 	m_flYawSign = 1.0f;
+	m_flPitchOffset = 0.0f;
+	m_flYawOffset = 0.0f;
+	m_flAimPitch = 0.0f;
+	m_flAimYaw = 0.0f;
 	m_actLastDebug = ACT_INVALID;
 	m_poseMoveX = -1;
 	m_poseMoveY = -1;
@@ -141,6 +160,7 @@ CNPC_GermanSoldier::CNPC_GermanSoldier() : m_AnimMap( DefLessFunc( int ) )
 	m_flShotInterval = 0.1f;
 	m_flNextShotTime = 0.0f;
 	m_flReloadDoneTime = 0.0f;
+	m_flGestureReloadDone = 0.0f;
 }
 
 void CNPC_GermanSoldier::Precache( void )
@@ -197,43 +217,51 @@ void CNPC_GermanSoldier::HoldMoveForward( void )
 		SetPoseParameter( m_poseMoveY, 0.0f );
 }
 
-// The base aim code assumes positive = the model's convention. If the script says
-// a DoD axis is reversed, flip the stored pose value around the base call so the
-// base smoothing still sees its own numbers.
-void CNPC_GermanSoldier::FlipAimSigns( void )
+void CNPC_GermanSoldier::ApplyAimPose( void )
 {
-	if ( m_flPitchSign < 0.0f && m_poseAim_Pitch >= 0 )
-		SetPoseParameter( m_poseAim_Pitch, -GetPoseParameter( m_poseAim_Pitch ) );
-	if ( m_flYawSign < 0.0f && m_poseAim_Yaw >= 0 )
-		SetPoseParameter( m_poseAim_Yaw, -GetPoseParameter( m_poseAim_Yaw ) );
+	if ( m_poseAim_Pitch >= 0 )
+		SetPoseParameter( m_poseAim_Pitch, m_flAimPitch * m_flPitchSign + m_flPitchOffset );
+	if ( m_poseAim_Yaw >= 0 )
+		SetPoseParameter( m_poseAim_Yaw, m_flAimYaw * m_flYawSign + m_flYawOffset );
 }
 
+// Same smoothing as CAI_BaseNPC::SetAim, but kept in our own variables so the
+// script's sign/offset never feed back into the smoothing.
 void CNPC_GermanSoldier::SetAim( const Vector &aimDir )
 {
 	EnsureAnimMap();
-	FlipAimSigns();
-	BaseClass::SetAim( aimDir );
-	FlipAimSigns();
+
+	QAngle angDir;
+	VectorAngles( aimDir, angDir );
+
+	float flRelativeYaw = UTIL_AngleDiff( angDir.y, GetAbsAngles().y );
+	float flRate = GetEnemy() ? 0.8f : 0.6f;		// sweep more slowly when not fighting
+
+	float newPitch = m_flAimPitch + flRate * UTIL_AngleDiff( UTIL_ApproachAngle( angDir.x, m_flAimPitch, 20 ), m_flAimPitch );
+	float newYaw = GetEnemy() ? flRelativeYaw : m_flAimYaw + flRate * UTIL_AngleDiff( flRelativeYaw, m_flAimYaw );
+
+	m_flAimPitch = AngleNormalize( newPitch );
+	m_flAimYaw = AngleNormalize( newYaw );
+	ApplyAimPose();
+
+	// Interaction yaw, as in the base class
+	m_flInteractionYaw = ( fabs( m_flAimYaw ) < 20 ) ? angDir.y : GetAbsAngles().y;
 }
 
 void CNPC_GermanSoldier::RelaxAim( void )
 {
 	EnsureAnimMap();
-	FlipAimSigns();
-	BaseClass::RelaxAim();
-	FlipAimSigns();
+	m_flAimPitch = AngleNormalize( UTIL_ApproachAngle( 0, m_flAimPitch, 3 ) );
+	m_flAimYaw = AngleNormalize( UTIL_ApproachAngle( 0, m_flAimYaw, 2 ) );
+	ApplyAimPose();
 }
 
 void CNPC_GermanSoldier::MaintainLookTargets( float flInterval )
 {
-	// The actor code also drives a "body_yaw" pose parameter (for head/body turns) and
-	// would zero our aim every think. Keep the aim value.
-	float flAimYaw = ( m_poseAim_Yaw >= 0 ) ? GetPoseParameter( m_poseAim_Yaw ) : 0.0f;
-
+	// The actor code also drives a "body_yaw" pose parameter (for head/body turns)
+	// and would zero our aim every think. Put the aim back afterwards.
 	BaseClass::MaintainLookTargets( flInterval );
-
-	if ( m_poseAim_Yaw >= 0 )
-		SetPoseParameter( m_poseAim_Yaw, flAimYaw );
+	ApplyAimPose();
 }
 
 //-----------------------------------------------------------------------------
@@ -292,6 +320,8 @@ void CNPC_GermanSoldier::BuildAnimMap( void )
 
 	m_flPitchSign = ( pScript->GetFloat( "body_pitch_sign", 1.0f ) < 0.0f ) ? -1.0f : 1.0f;
 	m_flYawSign = ( pScript->GetFloat( "body_yaw_sign", 1.0f ) < 0.0f ) ? -1.0f : 1.0f;
+	m_flPitchOffset = pScript->GetFloat( "body_pitch_offset", 0.0f );
+	m_flYawOffset = pScript->GetFloat( "body_yaw_offset", 0.0f );
 
 	// Which DoD animation set does this weapon use?
 	const char *pszWeapon = GetActiveWeapon() ? GetActiveWeapon()->GetClassname() : "none";
@@ -377,7 +407,7 @@ void CNPC_GermanSoldier::OnChangeActivity( Activity eNewActivity )
 //-----------------------------------------------------------------------------
 // Shooting and reloading
 //-----------------------------------------------------------------------------
-bool CNPC_GermanSoldier::FireOneShot( void )
+bool CNPC_GermanSoldier::FireOneShot( bool bPlayGesture )
 {
 	CBaseCombatWeapon *pWeapon = GetActiveWeapon();
 	if ( !pWeapon )
@@ -403,10 +433,78 @@ bool CNPC_GermanSoldier::FireOneShot( void )
 		pWeapon->Operator_ForceNPCFire( this, false );
 	}
 
-	if ( m_actFireGesture != ACT_INVALID )
+	if ( bPlayGesture && m_actFireGesture != ACT_INVALID )
 		RestartGesture( m_actFireGesture );
 
 	return true;
+}
+
+void CNPC_GermanSoldier::FinishReload( void )
+{
+	if ( GetActiveWeapon() )
+		GetActiveWeapon()->Reload_NPC( true );
+
+	ClearCondition( COND_LOW_PRIMARY_AMMO );
+	ClearCondition( COND_NO_PRIMARY_AMMO );
+	ClearCondition( COND_NO_SECONDARY_AMMO );
+
+	if ( GetShotRegulator() )
+		GetShotRegulator()->Reset( false );
+}
+
+// Firing while moving: the Combine move-and-shoot code calls OnRangeAttack1 and then
+// plays ACT_GESTURE_RANGE_ATTACK1 (mapped to the DoD fire gesture), expecting the
+// gesture's fire event to shoot. DoD gestures have no event, so shoot here.
+void CNPC_GermanSoldier::OnRangeAttack1( void )
+{
+	BaseClass::OnRangeAttack1();
+
+	const Task_t *pTask = GetTask();
+	bool bStandingFire = pTask && pTask->iTask == TASK_RANGE_ATTACK1;	// that task shoots by itself
+	if ( !bStandingFire )
+	{
+		FireOneShot( false );	// the move-and-shoot code plays the gesture
+	}
+}
+
+// Reloading while moving: the move-and-shoot code plays ACT_GESTURE_RELOAD (mapped to
+// the DoD reload gesture) and expects a reload event to fill the clip. Time it instead.
+void CNPC_GermanSoldier::UpdateMovingReload( void )
+{
+	const Task_t *pTask = GetTask();
+	if ( pTask && pTask->iTask == TASK_RELOAD )
+		return;	// the reload task handles its own timing
+
+	bool bPlaying = ( m_actReloadGesture != ACT_INVALID && IsPlayingGesture( m_actReloadGesture ) ) ||
+					( m_actReloadCrouchGesture != ACT_INVALID && IsPlayingGesture( m_actReloadCrouchGesture ) );
+
+	if ( m_flGestureReloadDone < 0.0f )
+	{
+		if ( !bPlaying )
+			m_flGestureReloadDone = 0.0f;
+	}
+	else if ( m_flGestureReloadDone == 0.0f )
+	{
+		if ( bPlaying && m_actReloadGesture != ACT_INVALID )
+		{
+			float flDuration = 1.5f;
+			int iSeq = SelectWeightedSequence( m_actReloadGesture );
+			if ( iSeq != ACTIVITY_NOT_AVAILABLE )
+				flDuration = SequenceDuration( iSeq );
+			m_flGestureReloadDone = gpGlobals->curtime + flDuration * 0.85f;
+		}
+	}
+	else if ( gpGlobals->curtime >= m_flGestureReloadDone )
+	{
+		FinishReload();
+		m_flGestureReloadDone = -1.0f;
+	}
+}
+
+void CNPC_GermanSoldier::PrescheduleThink( void )
+{
+	BaseClass::PrescheduleThink();
+	UpdateMovingReload();
 }
 
 void CNPC_GermanSoldier::StartTask( const Task_t *pTask )
@@ -472,7 +570,7 @@ void CNPC_GermanSoldier::RunTask( const Task_t *pTask )
 
 			if ( gpGlobals->curtime >= m_flNextShotTime )
 			{
-				if ( m_nShotsLeft > 0 && FireOneShot() )
+				if ( m_nShotsLeft > 0 && FireOneShot( true ) )
 				{
 					m_nShotsLeft--;
 					SetLastAttackTime( gpGlobals->curtime );
@@ -494,16 +592,8 @@ void CNPC_GermanSoldier::RunTask( const Task_t *pTask )
 
 			if ( gpGlobals->curtime >= m_flReloadDoneTime )
 			{
-				if ( GetActiveWeapon() )
-					GetActiveWeapon()->Reload_NPC( true );
-
-				ClearCondition( COND_LOW_PRIMARY_AMMO );
-				ClearCondition( COND_NO_PRIMARY_AMMO );
-				ClearCondition( COND_NO_SECONDARY_AMMO );
-
-				if ( GetShotRegulator() )
-					GetShotRegulator()->Reset( false );
-
+				FinishReload();
+				m_flGestureReloadDone = -1.0f;	// the gesture's tail is still playing; don't count it twice
 				TaskComplete();
 			}
 		}
