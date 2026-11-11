@@ -223,7 +223,9 @@ for name, anims, act, extra in chosen:
         L.append(f'\t"g_{a}"')
         L.append(f'\tactivity "{g}" 1')
         L.append('\tdelta')
-        L.append('\tweightlist "ww2_legs"' if g in LEG_GESTURES else '\tweightlist "ww2_torso"')
+        # Every flinch gesture (leg hits too) moves only the torso and head. Leg deltas
+        # from a standing CoD2 pain pose wobble running legs and make crouched legs spasm.
+        L.append('\tweightlist "ww2_torso"')
         L.append('\tfadein 0.1\n\tfadeout 0.2')
         L.append('}')
         seq_rows.append((f'ww2_g_{g[len("ACT_GESTURE_"):].lower()}', g, a, frames[a]))
