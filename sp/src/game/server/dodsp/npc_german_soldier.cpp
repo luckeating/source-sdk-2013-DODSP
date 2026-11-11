@@ -25,14 +25,19 @@
 //     (headshot, gut shot, running stumble, crouched collapse, ...) and becomes
 //     a ragdoll from its last frame. Explosions, falls, heavy hits and a random
 //     share ("death_anim_chance" in the script) still ragdoll straight away.
-//   - Hit reactions, two systems (CoD animations never layered on top of DoD):
+//   - Hit reactions:
 //     * every hit: a procedural kick. The hit direction, hit location and strength
 //       are networked; the client (c_npc_german_soldier.cpp) bends the spine / snaps
-//       the head away from the shot and springs back. Works in any stance, arms
-//       ride along so the gun stays in both hands. Brief loss of aim.
-//     * big or unlucky hits while standing: a full-body CoD pain animation
-//       (helmet hit, shoulder, gut ...) replaces the DoD pose, untouched, via
-//       SCHED_BIG_FLINCH. Thresholds in the script.
+//       the head away from the shot and springs back. Brief loss of aim.
+//     * big or unlucky hits: a CoD pain animation (helmet hit, shoulder, gut, crouch
+//       pain ...) as an upper-body overlay - it replaces spine, arms, head and gun
+//       while the legs keep DoD's stance (standing, crouched or walking).
+//       Thresholds in the script.
+//     * big body hits on a soldier standing still sometimes: "fall to a hand",
+//       a full-body CoD1 moment via SCHED_BIG_FLINCH.
+//
+// Test commands (npc_german_test for the list): spawn soldiers, play any pain or
+// death animation on the soldier you look at, fake hits by body part, force crouch.
 //
 //=============================================================================//
 
@@ -43,6 +48,7 @@
 #include "npcevent.h"
 #include "filesystem.h"
 #include "KeyValues.h"
+#include "player.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -125,6 +131,13 @@ public:
 	void		MaintainLookTargets( float flInterval );
 	bool		OverrideMoveFacing( const AILocalMoveGoal_t &move, float flInterval );
 
+	// Test commands (npc_german_test_*)
+	void		GetTestSequences( bool bDeaths, CUtlVector<int> &list );
+	void		TestPain( int iSequence );
+	void		TestPainAll( void );
+	void		TestHit( int nHitGroup, float flSide, float flDamage, CBaseEntity *pAttacker );
+	void		TestDeath( int iSequence, CBaseEntity *pAttacker );
+
 protected:
 	void		PopulatePoseParameters( void );
 
@@ -140,6 +153,8 @@ private:
 	Activity	PickAvailable( const char **ppszNames, int nCount );
 	void		FinishDeathAnim( void );
 	void		DoHitReaction( const CTakeDamageInfo &info );
+	void		StartFallToHand( void );
+	void		UpdateTestPainAll( void );
 	bool		IsHitReacting( void ) const { return gpGlobals->curtime < m_flFlinchUntil; }
 	bool		IsInCrouchPose( void );
 	Activity	PickUpperPain( void );
@@ -204,6 +219,13 @@ private:
 	bool				m_bLastHitCrouched;		// crouch state at the moment of the last hit
 	bool				m_bFallToHandPending;	// next full-body flinch is "fall to a hand"
 
+	// Test commands (not saved)
+	bool				m_bTestForcePain;		// next DoHitReaction skips chance and cooldown
+	int					m_iTestPainLayer;		// overlay layer started by npc_german_test_pain
+	int					m_iForceDeathSeq;		// npc_german_test_death: exact death sequence, -1 = none
+	int					m_iTestPainAllNext;		// npc_german_test_pain all: next list entry, -1 = off
+	float				m_flTestPainAllTime;
+
 	// Networked to the client for the procedural hit kick
 	CNetworkVector( m_vecHitDir );			// horizontal direction the bullet travelled
 	CNetworkVar( int, m_nHitGroup );
@@ -264,6 +286,11 @@ CNPC_GermanSoldier::CNPC_GermanSoldier() : m_AnimMap( DefLessFunc( int ) )
 	m_flLastHitDamage = 0.0f;
 	m_bLastHitCrouched = false;
 	m_bFallToHandPending = false;
+	m_bTestForcePain = false;
+	m_iTestPainLayer = -1;
+	m_iForceDeathSeq = -1;
+	m_iTestPainAllNext = -1;
+	m_flTestPainAllTime = 0.0f;
 	m_vecHitDir.Init( 1, 0, 0 );
 	m_nHitGroup = 0;
 	m_flHitTime = 0.0f;
@@ -670,6 +697,7 @@ void CNPC_GermanSoldier::PrescheduleThink( void )
 {
 	BaseClass::PrescheduleThink();
 	UpdateMovingReload();
+	UpdateTestPainAll();
 }
 
 void CNPC_GermanSoldier::StartTask( const Task_t *pTask )
@@ -734,6 +762,16 @@ void CNPC_GermanSoldier::StartTask( const Task_t *pTask )
 
 			// Fill the clip a little before the gesture ends, like the Combine event timing.
 			m_flReloadDoneTime = gpGlobals->curtime + flDuration * 0.85f;
+		}
+		break;
+
+	case TASK_DIE:
+		BaseClass::StartTask( pTask );
+		if ( m_bDeathAnim && m_iForceDeathSeq >= 0 )
+		{
+			// npc_german_test_death asked for one exact sequence (an activity can have several)
+			SetIdealActivity( ACT_DO_NOT_DISTURB );
+			SetSequenceById( m_iForceDeathSeq );
 		}
 		break;
 
@@ -916,7 +954,15 @@ void CNPC_GermanSoldier::Event_Killed( const CTakeDamageInfo &info )
 {
 	m_bDeathAnim = false;
 	m_actDeath = ACT_INVALID;
-	if ( !IsCurSchedule( SCHED_NPC_FREEZE ) && ShouldPlayDeathAnim( info ) )	// frozen NPCs don't die
+	if ( m_iForceDeathSeq >= 0 )
+	{
+		m_actDeath = (Activity)GetSequenceActivity( m_iForceDeathSeq );
+		m_DeathInfo = info;
+		m_vecDeathForce = vec3_origin;
+		m_flDeathAnimGiveUp = gpGlobals->curtime + 8.0f;
+		m_bDeathAnim = true;
+	}
+	else if ( !IsCurSchedule( SCHED_NPC_FREEZE ) && ShouldPlayDeathAnim( info ) )	// frozen NPCs don't die
 	{
 		m_actDeath = PickDeathActivity();
 		m_DeathInfo = info;
@@ -1058,10 +1104,13 @@ void CNPC_GermanSoldier::DoHitReaction( const CTakeDamageInfo &info )
 	const char *pszSkip = NULL;
 	Activity actPain = ACT_INVALID;
 	bool bFallToHand = false;
-	if ( gpGlobals->curtime < m_flNextFullFlinch )			pszSkip = "cooldown";
-	else if ( IsCurSchedule( SCHED_BIG_FLINCH ) )			pszSkip = "already down";
-	else if ( info.GetDamage() < m_flFullFlinchDamage && random->RandomFloat( 0.0f, 1.0f ) > m_flFullFlinchChance )
-															pszSkip = "small hit, chance roll failed";
+	bool bForce = m_bTestForcePain;
+	m_bTestForcePain = false;
+	// (npc_german_test_hit forces a reaction: no cooldown, no chance roll)
+	if ( !bForce && gpGlobals->curtime < m_flNextFullFlinch )	pszSkip = "cooldown";
+	else if ( IsCurSchedule( SCHED_BIG_FLINCH ) )				pszSkip = "already down";
+	else if ( !bForce && info.GetDamage() < m_flFullFlinchDamage && random->RandomFloat( 0.0f, 1.0f ) > m_flFullFlinchChance )
+																pszSkip = "small hit, chance roll failed";
 	else
 	{
 		bFallToHand = !m_bLastHitCrouched && !IsMoving() && LastHitGroup() != HITGROUP_HEAD &&
@@ -1075,7 +1124,7 @@ void CNPC_GermanSoldier::DoHitReaction( const CTakeDamageInfo &info )
 		}
 	}
 
-	if ( npc_german_debug.GetBool() )
+	if ( npc_german_debug.GetBool() || bForce )
 	{
 		Msg( "npc_german_soldier %d hit: group %d, %.0f dmg, %s%s, side %.1f -> %s%s\n", entindex(), LastHitGroup(), info.GetDamage(),
 			 m_bLastHitCrouched ? "CROUCHED" : "standing", IsMoving() ? " moving" : "", m_flLastHitSide,
@@ -1089,10 +1138,7 @@ void CNPC_GermanSoldier::DoHitReaction( const CTakeDamageInfo &info )
 
 	if ( bFallToHand )
 	{
-		m_bFallToHandPending = true;
-		m_flWantFullFlinch = gpGlobals->curtime;
-		SetCondition( COND_HEAVY_DAMAGE );
-		ClearSchedule( "German soldier falls to a hand" );	// SelectSchedule starts it next think
+		StartFallToHand();
 		return;
 	}
 
@@ -1109,6 +1155,14 @@ void CNPC_GermanSoldier::DoHitReaction( const CTakeDamageInfo &info )
 		m_flReloadDoneTime += flOut;
 	if ( m_flGestureReloadDone > gpGlobals->curtime )
 		m_flGestureReloadDone += flOut;
+}
+
+void CNPC_GermanSoldier::StartFallToHand( void )
+{
+	m_bFallToHandPending = true;
+	m_flWantFullFlinch = gpGlobals->curtime;
+	SetCondition( COND_HEAVY_DAMAGE );
+	ClearSchedule( "German soldier falls to a hand" );	// SelectSchedule starts it next think
 }
 
 Activity CNPC_GermanSoldier::ResolveNamedActivity( const char *pszName )
@@ -1181,4 +1235,340 @@ int CNPC_GermanSoldier::MeleeAttack1Conditions( float flDot, float flDist )
 {
 	// No rifle-butt animation with a hit event yet. Stage 2e.
 	return COND_NONE;
+}
+
+//-----------------------------------------------------------------------------
+// Test commands. Look at a German soldier (or have one roughly in view) and:
+//   npc_german_test_spawn [weapon]        a soldier where you aim, facing you
+//   npc_german_test_pain  [next|prev|N|name|all|list]
+//   npc_german_test_death [next|prev|N|name|list]
+//   npc_german_test_hit   <part> [damage]  a fake hit through the real reaction code
+//   npc_german_test_crouch                toggle forced crouch
+// "notarget" keeps soldiers from fighting you while you watch.
+//-----------------------------------------------------------------------------
+static bool IsPainTestActivity( const char *pszAct )
+{
+	return pszAct && ( Q_stristr( pszAct, "_UPPER_" ) || !Q_stricmp( pszAct, "ACT_WW2_PAIN_FALLTOHAND" ) );
+}
+
+static bool IsDeathTestActivity( const char *pszAct )
+{
+	if ( !pszAct || Q_stristr( pszAct, "UPPER" ) || Q_stristr( pszAct, "GESTURE" ) )
+		return false;
+	return !Q_strnicmp( pszAct, "ACT_DIE", 7 ) || Q_stristr( pszAct, "DEATH" ) != NULL;
+}
+
+void CNPC_GermanSoldier::GetTestSequences( bool bDeaths, CUtlVector<int> &list )
+{
+	list.RemoveAll();
+	CStudioHdr *pHdr = GetModelPtr();
+	if ( !pHdr )
+		return;
+	for ( int i = 0; i < pHdr->GetNumSeq(); i++ )
+	{
+		const char *pszAct = GetSequenceActivityName( i );
+		if ( bDeaths ? IsDeathTestActivity( pszAct ) : IsPainTestActivity( pszAct ) )
+			list.AddToTail( i );
+	}
+}
+
+void CNPC_GermanSoldier::TestPain( int iSequence )
+{
+	const char *pszAct = GetSequenceActivityName( iSequence );
+	Msg( "npc_german_soldier %d: pain %s (%s, %.1f s)\n", entindex(), GetSequenceName( iSequence ), pszAct, SequenceDuration( iSequence ) );
+
+	if ( pszAct && !Q_stricmp( pszAct, "ACT_WW2_PAIN_FALLTOHAND" ) )
+	{
+		StartFallToHand();		// the full-body one goes through its real schedule
+		return;
+	}
+
+	if ( m_iTestPainLayer >= 0 && IsValidLayer( m_iTestPainLayer ) )
+		FastRemoveLayer( m_iTestPainLayer );
+	m_iTestPainLayer = AddGestureSequence( iSequence );
+	m_flFlinchUntil = MAX( m_flFlinchUntil, gpGlobals->curtime + SequenceDuration( iSequence ) * 0.7f );
+}
+
+void CNPC_GermanSoldier::TestPainAll( void )
+{
+	m_iTestPainAllNext = 0;
+	m_flTestPainAllTime = gpGlobals->curtime;
+	Msg( "npc_german_soldier %d: playing every pain animation in turn\n", entindex() );
+}
+
+void CNPC_GermanSoldier::UpdateTestPainAll( void )
+{
+	if ( m_iTestPainAllNext < 0 || gpGlobals->curtime < m_flTestPainAllTime )
+		return;
+	CUtlVector<int> list;
+	GetTestSequences( false, list );
+	if ( m_iTestPainAllNext >= list.Count() )
+	{
+		Msg( "npc_german_soldier %d: done, %d pain animations\n", entindex(), list.Count() );
+		m_iTestPainAllNext = -1;
+		return;
+	}
+	int iSeq = list[m_iTestPainAllNext++];
+	Msg( "  %d/%d ", m_iTestPainAllNext, list.Count() );
+	TestPain( iSeq );
+	m_flTestPainAllTime = gpGlobals->curtime + SequenceDuration( iSeq ) + 1.0f;	// a second of rest between
+}
+
+void CNPC_GermanSoldier::TestHit( int nHitGroup, float flSide, float flDamage, CBaseEntity *pAttacker )
+{
+	Vector vecRight;
+	GetVectors( NULL, &vecRight, NULL );
+	Vector vecPos = ( nHitGroup == HITGROUP_HEAD ) ? EyePosition() : WorldSpaceCenter();
+	vecPos += vecRight * flSide;
+
+	Vector vecDir = vecPos - ( pAttacker ? pAttacker->EyePosition() : vecPos - BodyDirection3D() );
+	VectorNormalize( vecDir );
+
+	CTakeDamageInfo info( pAttacker, pAttacker, flDamage, DMG_BULLET );
+	info.SetDamagePosition( vecPos );
+	info.SetDamageForce( vecDir * 1000.0f );
+	SetLastHitGroup( nHitGroup );
+	m_bTestForcePain = true;
+	DoHitReaction( info );		// the reaction only; no health is taken
+}
+
+void CNPC_GermanSoldier::TestDeath( int iSequence, CBaseEntity *pAttacker )
+{
+	Msg( "npc_german_soldier %d: death %s (%s, %.1f s)\n", entindex(), GetSequenceName( iSequence ),
+		 GetSequenceActivityName( iSequence ), SequenceDuration( iSequence ) );
+	m_iForceDeathSeq = iSequence;
+	m_iTestPainAllNext = -1;
+	SetLastHitGroup( HITGROUP_CHEST );
+	CTakeDamageInfo info( pAttacker, pAttacker, GetHealth() + 100.0f, DMG_BULLET );
+	info.SetDamagePosition( WorldSpaceCenter() );
+	info.SetDamageForce( vec3_origin );
+	TakeDamage( info );
+}
+
+// --- console side ------------------------------------------------------------
+static CNPC_GermanSoldier *GermanTestTarget( void )
+{
+	CBasePlayer *pPlayer = UTIL_GetLocalPlayer();
+	if ( !pPlayer )
+		return NULL;
+
+	Vector vecEye = pPlayer->EyePosition(), vecFwd;
+	pPlayer->EyeVectors( &vecFwd );
+
+	trace_t tr;
+	UTIL_TraceLine( vecEye, vecEye + vecFwd * 8192.0f, MASK_SHOT, pPlayer, COLLISION_GROUP_NONE, &tr );
+	if ( tr.m_pEnt && FClassnameIs( tr.m_pEnt, "npc_german_soldier" ) && tr.m_pEnt->IsAlive() )
+		return static_cast<CNPC_GermanSoldier *>( tr.m_pEnt );
+
+	// Not right under the crosshair: the living soldier closest to it.
+	CNPC_GermanSoldier *pBest = NULL;
+	float flBest = 0.7f;
+	for ( CBaseEntity *pEnt = gEntList.FindEntityByClassname( NULL, "npc_german_soldier" ); pEnt;
+		  pEnt = gEntList.FindEntityByClassname( pEnt, "npc_german_soldier" ) )
+	{
+		if ( !pEnt->IsAlive() )
+			continue;
+		Vector vecTo = pEnt->WorldSpaceCenter() - vecEye;
+		VectorNormalize( vecTo );
+		float flDot = DotProduct( vecTo, vecFwd );
+		if ( flDot > flBest )
+		{
+			flBest = flDot;
+			pBest = static_cast<CNPC_GermanSoldier *>( pEnt );
+		}
+	}
+	if ( !pBest )
+		Msg( "No living German soldier in view. Look at one, or spawn one with npc_german_test_spawn.\n" );
+	return pBest;
+}
+
+static void GermanTestPrintList( CNPC_GermanSoldier *pNPC, const CUtlVector<int> &list, const char *pszWhat )
+{
+	Msg( "%d %s animations (ww2_ = CoD2 pack, c1_ = CoD1 pack):\n", list.Count(), pszWhat );
+	for ( int i = 0; i < list.Count(); i++ )
+		Msg( "  %3d  %-40s %-40s %.1f s\n", i + 1, pNPC->GetSequenceName( list[i] ), pNPC->GetSequenceActivityName( list[i] ),
+			 pNPC->SequenceDuration( list[i] ) );
+}
+
+// next / prev / a number from the list / part of a sequence or activity name. -1 = nothing.
+static int GermanTestPick( CNPC_GermanSoldier *pNPC, const CUtlVector<int> &list, const char *pszArg, int &iCursor )
+{
+	int n = list.Count();
+	if ( !n )
+	{
+		Msg( "This model has no such animations (are the WW2 animation packs compiled and included?)\n" );
+		return -1;
+	}
+	if ( !pszArg[0] || !Q_stricmp( pszArg, "next" ) )
+		iCursor = ( iCursor + 1 ) % n;
+	else if ( !Q_stricmp( pszArg, "prev" ) )
+		iCursor = ( iCursor - 1 + n ) % n;
+	else if ( pszArg[0] >= '0' && pszArg[0] <= '9' )
+	{
+		int i = atoi( pszArg ) - 1;
+		if ( i < 0 || i >= n )
+		{
+			Msg( "Pick 1 to %d (\"list\" shows them).\n", n );
+			return -1;
+		}
+		iCursor = i;
+	}
+	else
+	{
+		int iFound = -1;
+		for ( int pass = 0; pass < 2 && iFound < 0; pass++ )
+		{
+			for ( int i = 0; i < n && iFound < 0; i++ )
+			{
+				const char *psz = pass == 0 ? pNPC->GetSequenceName( list[i] ) : pNPC->GetSequenceActivityName( list[i] );
+				if ( psz && Q_stristr( psz, pszArg ) )
+					iFound = i;
+			}
+		}
+		if ( iFound < 0 )
+		{
+			Msg( "Nothing matches \"%s\" (\"list\" shows them).\n", pszArg );
+			return -1;
+		}
+		iCursor = iFound;
+	}
+	Msg( "[%d/%d] ", iCursor + 1, n );
+	return list[iCursor];
+}
+
+CON_COMMAND( npc_german_test, "List the German soldier test commands." )
+{
+	Msg( "German soldier test commands (aim at a soldier; \"notarget\" stops them fighting you):\n"
+		 "  npc_german_test_spawn [weapon]       spawn one where you aim, facing you (default weapon_k98)\n"
+		 "  npc_german_test_pain  [arg]          play a pain animation on him\n"
+		 "  npc_german_test_death [arg]          kill him with a chosen death animation\n"
+		 "     arg: next (default) | prev | a number | part of a name (head, gut, falltohand ...) | list\n"
+		 "     npc_german_test_pain all          plays every pain animation in turn on him\n"
+		 "  npc_german_test_hit <part> [damage]  fake a hit through the real reaction code (no damage taken)\n"
+		 "     part: head chest chestleft chestright stomach leftarm rightarm leftleg rightleg\n"
+		 "  npc_german_test_crouch               toggle: force him to crouch (crouched pains and deaths)\n"
+		 "Tip: bind keys, e.g.  bind KP_PLUS \"npc_german_test_pain next\"\n" );
+}
+
+CON_COMMAND( npc_german_test_spawn, "Spawn a German soldier where you aim, facing you. Optional: weapon classname (default weapon_k98)." )
+{
+	CBasePlayer *pPlayer = UTIL_GetLocalPlayer();
+	if ( !pPlayer )
+		return;
+
+	Vector vecEye = pPlayer->EyePosition(), vecFwd;
+	pPlayer->EyeVectors( &vecFwd );
+	trace_t tr;
+	UTIL_TraceLine( vecEye, vecEye + vecFwd * 2048.0f, MASK_NPCSOLID, pPlayer, COLLISION_GROUP_NONE, &tr );
+
+	// Step back from walls, then find the floor below.
+	Vector vecPos = tr.endpos;
+	if ( tr.plane.normal.z < 0.7f )
+		vecPos -= vecFwd * 32.0f;
+	UTIL_TraceLine( vecPos + Vector( 0, 0, 16 ), vecPos - Vector( 0, 0, 512 ), MASK_NPCSOLID, NULL, COLLISION_GROUP_NONE, &tr );
+	vecPos = tr.endpos + Vector( 0, 0, 1 );
+
+	CAI_BaseNPC *pNPC = dynamic_cast<CAI_BaseNPC *>( CreateEntityByName( "npc_german_soldier" ) );
+	if ( !pNPC )
+		return;
+	pNPC->KeyValue( "additionalequipment", args.ArgC() > 1 ? args[1] : "weapon_k98" );
+	Vector vecToPlayer = pPlayer->GetAbsOrigin() - vecPos;
+	QAngle angFace( 0, UTIL_VecToYaw( vecToPlayer ), 0 );
+	pNPC->SetAbsOrigin( vecPos );
+	pNPC->SetAbsAngles( angFace );
+	DispatchSpawn( pNPC );
+	pNPC->Activate();
+	Msg( "Spawned npc_german_soldier %d\n", pNPC->entindex() );
+}
+
+CON_COMMAND( npc_german_test_pain, "Play a pain animation on the German soldier you look at: next | prev | N | name | all | list" )
+{
+	CNPC_GermanSoldier *pNPC = GermanTestTarget();
+	if ( !pNPC )
+		return;
+	CUtlVector<int> list;
+	pNPC->GetTestSequences( false, list );
+	const char *pszArg = args.ArgC() > 1 ? args[1] : "";
+	if ( !Q_stricmp( pszArg, "list" ) )
+	{
+		GermanTestPrintList( pNPC, list, "pain" );
+		return;
+	}
+	if ( !Q_stricmp( pszArg, "all" ) )
+	{
+		pNPC->TestPainAll();
+		return;
+	}
+	static int s_iCursor = -1;
+	int iSeq = GermanTestPick( pNPC, list, pszArg, s_iCursor );
+	if ( iSeq >= 0 )
+		pNPC->TestPain( iSeq );
+}
+
+CON_COMMAND( npc_german_test_death, "Kill the German soldier you look at with a chosen death animation: next | prev | N | name | list" )
+{
+	CNPC_GermanSoldier *pNPC = GermanTestTarget();
+	if ( !pNPC )
+		return;
+	CUtlVector<int> list;
+	pNPC->GetTestSequences( true, list );
+	const char *pszArg = args.ArgC() > 1 ? args[1] : "";
+	if ( !Q_stricmp( pszArg, "list" ) )
+	{
+		GermanTestPrintList( pNPC, list, "death" );
+		return;
+	}
+	static int s_iCursor = -1;
+	int iSeq = GermanTestPick( pNPC, list, pszArg, s_iCursor );
+	if ( iSeq >= 0 )
+		pNPC->TestDeath( iSeq, UTIL_GetLocalPlayer() );
+}
+
+CON_COMMAND( npc_german_test_hit, "Fake a hit on the German soldier you look at: <head|chest|chestleft|chestright|stomach|leftarm|rightarm|leftleg|rightleg> [damage]" )
+{
+	static const struct { const char *pszName; int nGroup; float flSide; } s_Parts[] = {
+		{ "head", HITGROUP_HEAD, 0.0f }, { "chest", HITGROUP_CHEST, 0.0f },
+		{ "chestleft", HITGROUP_CHEST, -6.0f }, { "chestright", HITGROUP_CHEST, 6.0f },
+		{ "stomach", HITGROUP_STOMACH, 0.0f }, { "leftarm", HITGROUP_LEFTARM, -10.0f },
+		{ "rightarm", HITGROUP_RIGHTARM, 10.0f }, { "leftleg", HITGROUP_LEFTLEG, -4.0f },
+		{ "rightleg", HITGROUP_RIGHTLEG, 4.0f },
+	};
+	if ( args.ArgC() < 2 )
+	{
+		Msg( "Usage: npc_german_test_hit <head|chest|chestleft|chestright|stomach|leftarm|rightarm|leftleg|rightleg> [damage, default 35]\n" );
+		return;
+	}
+	int iPart = -1;
+	for ( int i = 0; i < (int)ARRAYSIZE( s_Parts ); i++ )
+	{
+		if ( !Q_stricmp( args[1], s_Parts[i].pszName ) )
+			iPart = i;
+	}
+	if ( iPart < 0 )
+	{
+		Msg( "Unknown body part \"%s\".\n", args[1] );
+		return;
+	}
+	CNPC_GermanSoldier *pNPC = GermanTestTarget();
+	if ( !pNPC )
+		return;
+	float flDamage = args.ArgC() > 2 ? atof( args[2] ) : 35.0f;
+	pNPC->TestHit( s_Parts[iPart].nGroup, s_Parts[iPart].flSide, MAX( flDamage, 1.0f ), UTIL_GetLocalPlayer() );
+}
+
+CON_COMMAND( npc_german_test_crouch, "Toggle forced crouching on the German soldier you look at." )
+{
+	CNPC_GermanSoldier *pNPC = GermanTestTarget();
+	if ( !pNPC )
+		return;
+	if ( pNPC->CrouchIsDesired() )
+	{
+		pNPC->ClearForceCrouch();
+		Msg( "npc_german_soldier %d: stands\n", pNPC->entindex() );
+	}
+	else
+	{
+		pNPC->ForceCrouch();
+		Msg( "npc_german_soldier %d: forced to crouch\n", pNPC->entindex() );
+	}
 }
