@@ -1,0 +1,38 @@
+#
+# DOD-SP build
+#
+# Builds the HL2 (Mapbase) client.dll and server.dll for DOD-SP on every push to master
+# that touches game code. Download the result from the Actions tab:
+#   Actions -> "DOD-SP Build" -> newest run -> Artifacts -> game_hl2_win32_Release
+# Unzip it and copy client.dll + server.dll into sourcemods\DOD-SP\bin (back up the old ones first).
+#
+# Can also be started by hand: Actions -> "DOD-SP Build" -> "Run workflow".
+
+name: DOD-SP Build
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - '.github/workflows/dodsp_build.yml'
+      - '.github/workflows/mapbase_build-base.yml'
+      - 'sp/src/vpc_scripts/**'
+      - 'sp/src/game/**'
+      - 'sp/src/mathlib/**'
+      - 'sp/src/responserules/runtime/**'
+      - 'sp/src/tier1/**'
+      - 'sp/src/vgui2/vgui_controls/**'
+      - 'sp/src/vscript/**'
+  workflow_dispatch:
+
+jobs:
+  games:
+    uses: ./.github/workflows/mapbase_build-base.yml
+    with:
+      configuration: Release
+      branch: 'sp'
+      game: 'hl2'            # DOD-SP is built on mapbase_hl2
+      project-group: 'game'
+      solution-name: 'games'
+      build-on-linux: false  # Windows only

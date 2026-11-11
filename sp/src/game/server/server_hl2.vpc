@@ -21,6 +21,11 @@ $Configuration
 
 $Project "Server (HL2)"
 {
+	$Folder	"DOD-SP"
+	{
+		$File	"dodsp\npc_german_soldier.cpp"
+	}
+
 	$Folder	"Source Files"
 	{
 		$File	"ai_eventresponse.cpp"
