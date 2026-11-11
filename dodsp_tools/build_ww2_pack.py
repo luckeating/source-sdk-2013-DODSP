@@ -130,7 +130,19 @@ L.append('// DoD:S German skeleton: DoD bone lengths, DoD weapon holds. For priv
 L.append('$modelname "german\\npc_ww2_anims.mdl"')
 L.append('$cdmaterials "models\\german\\"')
 L.append('$bodygroup "skeleton"\n{\n\tstudio "ww2_skeleton.smd"\n}')
-L.append('$weightlist "ww2_upperbody"\n{\n\t"ValveBiped.Bip01_Pelvis" 0\n\t"ValveBiped.Bip01_Spine" 0.3\n\t"ValveBiped.Bip01_Spine1" 0.7\n\t"ValveBiped.Bip01_Spine2" 1\n}')
+# studiomdl wants the brace on the $weightlist line; every bone is listed explicitly
+# (legs and pelvis 0, a soft ramp up the spine, everything above it 1).
+def _upper_weight(name):
+    n = name.lower()
+    if 'thigh' in n or 'calf' in n or 'foot' in n or 'toe' in n or 'knee' in n or n.endswith('pelvis'): return 0
+    if n.endswith('bip01_spine'): return 0.3
+    if n.endswith('bip01_spine1'): return 0.7
+    return 1
+L.append('$weightlist "ww2_upperbody" {')
+for n, _ in ref.nodes:
+    if 'knee' in n.lower(): continue   # unweighted in the DoD mesh; studiomdl drops it
+    L.append(f'\t"{n}" {_upper_weight(n)}')
+L.append('}')
 L.append('')
 for a in used_anims:
     _, opts = animations[a]
