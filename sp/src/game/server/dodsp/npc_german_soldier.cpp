@@ -2422,6 +2422,18 @@ bool CNPC_GermanSoldier::IsSpotBad( const Vector &vecPos ) const
 // Squadmates' spots and spots he recently failed to reach are skipped. The best few are then
 // checked with a real route (the node graph), and the run is scored by the route's length -
 // a spot on the far side of a wall is a long run, not a short one, or no run at all.
+// npc_german_debug 2: every node a search looked at, coloured by why it was or wasn't used,
+// for 4 s - tells "the map has no nodes there" apart from "the nodes there aren't cover".
+//   grey = out of reach (too high/low, too far, too close to you, taken, recently failed)
+//   dark grey = wrong place for this order (not closer / not further back / not on the flank side)
+//   red = you'd see him hiding there    orange = hides him but he can't shoot from it (corner/tall wall)
+//   green = usable cover                 blue = the one he picked
+static void DrawSearchNode( const Vector &vecPos, int r, int g, int b )
+{
+	if ( npc_german_debug.GetInt() >= 2 )
+		NDebugOverlay::Box( vecPos, Vector( -6, -6, 0 ), Vector( 6, 6, 12 ), r, g, b, 160, 4.0f );
+}
+
 bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, int nMode )
 {
 	if ( !pEnemy || !g_pBigAINet )
@@ -2448,15 +2460,25 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, int nMode )
 			continue;
 		Vector vecPos = pNode->GetPosition( GetHullType() );
 		float flDist = ( vecPos - vecMe ).Length();
-		if ( flDist > flRadius || fabsf( vecPos.z - vecMe.z ) > 160.0f || flDist < 24.0f )
+		if ( flDist > flRadius )
 			continue;
+		if ( fabsf( vecPos.z - vecMe.z ) > 160.0f || flDist < 24.0f )
+		{
+			DrawSearchNode( vecPos, 120, 120, 120 );
+			continue;
+		}
 		float flFoe = ( vecPos - vecFoe ).Length2D();
 		if ( flFoe < 192.0f || IsSpotBad( vecPos ) || IsCoverSpotTaken( vecPos ) )
+		{
+			DrawSearchNode( vecPos, 120, 120, 120 );
 			continue;
-		if ( bAdvance && flFoe > flMyFoe - 128.0f )
-			continue;	// bounding forward: only cover that actually gains ground
-		if ( bRetreat && flFoe < flMyFoe + 192.0f )
-			continue;	// falling back: only cover that gives ground
+		}
+		if ( ( bAdvance && flFoe > flMyFoe - 128.0f ) ||		// bounding forward: only cover that actually gains ground
+			 ( bRetreat && flFoe < flMyFoe + 192.0f ) )		// falling back: only cover that gives ground
+		{
+			DrawSearchNode( vecPos, 50, 50, 50 );
+			continue;
+		}
 		float flFlankDeg = 0.0f;
 		if ( bFlank )
 		{
@@ -2465,23 +2487,37 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, int nMode )
 			Vector vecOff = vecPos - vecFoe;
 			vecOff.z = 0.0f;
 			if ( flFoe < 256.0f || flFoe > 1000.0f )
+			{
+				DrawSearchNode( vecPos, 50, 50, 50 );
 				continue;
+			}
 			vecOff /= flFoe;
 			float flCos = vecOff.x * m_vecFlankFrom.x + vecOff.y * m_vecFlankFrom.y;
-			if ( flCos > 0.64f )
-				continue;
 			bool bLeft = vecOff.x * vecLeft.x + vecOff.y * vecLeft.y > 0.0f;
-			if ( bLeft != ( nMode == SEARCH_FLANK_LEFT ) )
+			if ( flCos > 0.64f || bLeft != ( nMode == SEARCH_FLANK_LEFT ) )
+			{
+				DrawSearchNode( vecPos, 50, 50, 50 );
 				continue;
+			}
 			flFlankDeg = RAD2DEG( acosf( clamp( flCos, -1.0f, 1.0f ) ) );
 		}
 		float flCloser = flMyFoe - flFoe;	// how much ground toward the enemy this spot takes
 		if ( bOrdinary && flCloser > 256.0f )
+		{
+			DrawSearchNode( vecPos, 50, 50, 50 );
 			continue;	// taking cover is not attacking: ground is only taken by bounding / flanking
+		}
 		nTested++;
 		int nCover = CoverAt( vecPos, pEnemy );
 		if ( nCover <= COVER_FULL )
+		{
+			if ( nCover == COVER_FULL )
+				DrawSearchNode( vecPos, 255, 140, 0 );
+			else
+				DrawSearchNode( vecPos, 255, 0, 0 );
 			continue;
+		}
+		DrawSearchNode( vecPos, 0, 255, 0 );
 		Cand_t c;
 		c.pos = vecPos;
 		c.cover = ( nCover == COVER_CROUCH ? 100.0f : 80.0f )
@@ -2561,6 +2597,8 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, int nMode )
 			 flBest > -FLT_MAX ? "going" : "nothing usable", flBestLen, flBestExposed );
 	if ( flBest == -FLT_MAX )
 		return false;
+	if ( npc_german_debug.GetInt() >= 2 )
+		NDebugOverlay::Box( vecBest, Vector( -8, -8, 0 ), Vector( 8, 8, 24 ), 0, 80, 255, 200, 4.0f );
 	m_vecCoverSpot = vecBest;
 	m_vecCoverSearchEye = pEnemy->EyePosition();
 	m_bHasCoverSpot = true;
