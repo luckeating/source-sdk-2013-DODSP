@@ -242,6 +242,9 @@ private:
 	bool		IsInStanceTransition( void ) const { return m_actStanceTransition != ACT_INVALID; }
 	void		UpdatePlaybackRate( void );		// the one owner of the animation's playback rate
 	void		SyncStance( void );
+	static bool	IsCoverStance( Stance_t s ) { return s == STANCE_HIDE || s == STANCE_LOW_UP || s == STANCE_MID_UP; }
+	bool		CoverStanceAllowed( int iSchedule );	// the cover stances belong to the cover loop
+	void		OnStartSchedule( int scheduleType );
 
 	//-------------------------------------------------------------------------
 	// The cover he occupies (R2): measured once when he takes it - type, and the exposed
@@ -276,7 +279,7 @@ private:
 	//-------------------------------------------------------------------------
 	// Watchdog (R1): passive. Prints INVARIANT lines when a rule is broken; changes nothing.
 	//-------------------------------------------------------------------------
-	enum Invariant_t { INV_STANCE_FLIPS, INV_STANCE_OWNER, INV_SCHED_CHURN, INV_DECISION_CHURN, INV_COVER_CHURN, INV_POSE_FLIPS, INV_ANIM_STUCK, NUM_INVARIANTS };
+	enum Invariant_t { INV_STANCE_FLIPS, INV_STANCE_OWNER, INV_SCHED_CHURN, INV_DECISION_CHURN, INV_COVER_CHURN, INV_POSE_FLIPS, INV_ANIM_STUCK, INV_COVER_STANCE, NUM_INVARIANTS };
 	void		WatchdogPose( void );		// what the body actually plays: down / crouched / standing flips
 	bool		IsClipEmpty( void );		// one owner for "he has no rounds in the gun"
 	void		Invariant( Invariant_t eWhich, const char *pszFormat, ... );
@@ -1168,6 +1171,13 @@ bool CNPC_GermanSoldier::SetStance( Stance_t s, const char *pszWhy, bool bForce 
 // the one outside change we accept: moving means standing. Anything else is a bug.
 void CNPC_GermanSoldier::SyncStance( void )
 {
+	if ( IsCoverStance( m_eStance ) && IsAlive() )
+	{
+		const CAI_Schedule *pSched = GetCurSchedule();
+		int iLocal = pSched ? GetClassScheduleIdSpace()->ScheduleGlobalToLocal( pSched->GetId() ) : -1;
+		if ( pSched && !CoverStanceAllowed( iLocal ) )
+			Invariant( INV_COVER_STANCE, "in cover stance '%s' during %s (not the cover loop)", s_pszStance[m_eStance], pSched->GetName() );
+	}
 	bool bCrouched = IsCrouching();
 	if ( bCrouched == StanceIsCrouched( m_eStance ) )
 		return;
@@ -1179,6 +1189,23 @@ void CNPC_GermanSoldier::SyncStance( void )
 	m_pszStanceWhy = IsMoving() ? "moving (engine stands movers)" : "resynced";
 }
 
+// The cover stances (hidden, up over a wall) exist only where there is a wall: in the cover
+// loop, on the run into it (its last task), watching over his own cover, and in a pain he takes
+// there. Any other schedule starts by bringing him back to an ordinary crouch / stand -
+// otherwise a flanked man stays huddled in the open with his gun below his own eyes.
+bool CNPC_GermanSoldier::CoverStanceAllowed( int iSchedule )
+{
+	return iSchedule == SCHED_GERMAN_COVER || iSchedule == SCHED_GERMAN_MOVE_TO_COVER || iSchedule == SCHED_BIG_FLINCH ||
+		   ( iSchedule == SCHED_GERMAN_HOLD_COVER && IsAtCoverSpot() && m_eStance != STANCE_HIDE );
+}
+
+void CNPC_GermanSoldier::OnStartSchedule( int scheduleType )
+{
+	BaseClass::OnStartSchedule( scheduleType );
+	if ( IsCoverStance( m_eStance ) && !CoverStanceAllowed( scheduleType ) )
+		SetStance( m_eStance == STANCE_MID_UP ? STANCE_STAND : STANCE_CROUCH, "left the cover loop", true );
+}
+
 //=============================================================================
 // R1 - watchdog
 //=============================================================================
@@ -1187,7 +1214,7 @@ void CNPC_GermanSoldier::Invariant( Invariant_t eWhich, const char *pszFormat, .
 	if ( gpGlobals->curtime < m_flInvariantNext[eWhich] )
 		return;
 	m_flInvariantNext[eWhich] = gpGlobals->curtime + 2.0f;
-	static const char *s_pszNames[] = { "STANCE_FLIPS", "STANCE_OWNER", "SCHED_CHURN", "DECISION_CHURN", "COVER_CHURN", "POSE_FLIPS", "ANIM_STUCK" };
+	static const char *s_pszNames[] = { "STANCE_FLIPS", "STANCE_OWNER", "SCHED_CHURN", "DECISION_CHURN", "COVER_CHURN", "POSE_FLIPS", "ANIM_STUCK", "COVER_STANCE" };
 	char sz[512];
 	va_list ap;
 	va_start( ap, pszFormat );
