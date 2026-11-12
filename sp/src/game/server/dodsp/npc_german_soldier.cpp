@@ -109,6 +109,11 @@ public:
 		TASK_GERMAN_HIDE = BaseClass::NEXT_TASK,
 		NEXT_TASK
 	};
+	enum
+	{
+		COND_GERMAN_FLANKED = BaseClass::NEXT_CONDITION,	// the enemy can see where he hides
+		NEXT_CONDITION
+	};
 
 	CNPC_GermanSoldier();
 
@@ -183,7 +188,11 @@ private:
 	CoverFamily_t PoseFamily( Activity act ) const;
 	bool		IsCoverTransition( Activity act ) const;
 	bool		IsHidingInCover( void );
-	int			LowCoverAgainst( CBaseEntity *pEnemy );	// 0 none, 1 crouch-fire cover, 2 stand-fire cover
+	enum { COVER_EXPOSED = -1, COVER_FULL = 0, COVER_CROUCH = 1, COVER_STAND = 2 };
+	int			LowCoverAgainst( CBaseEntity *pEnemy );	// COVER_*: > 0 means low cover he can fire from
+	bool		IsWounded( void ) const { return GetMaxHealth() > 0 && GetHealth() < GetMaxHealth() * m_flWoundedHealth; }
+	void		NoteUnderFire( void );
+	void		UpdateCoverAwareness( void );
 	void		UpdateCoverTransition( void );
 	bool		IsInCrouchPose( void );
 	Activity	PickUpperPain( void );
@@ -211,6 +220,15 @@ private:
 	float				m_flCoverCheckTime;		// LowCoverAgainst cache
 	int					m_nCoverCheckResult;
 	EHANDLE				m_hCoverCheckEnemy;
+	Activity			m_actCoverReload;		// CoD2 reload done hidden behind low cover
+	bool				m_bInCoverSpot;			// he has hidden at this spot (cleared when he moves)
+	float				m_flWantHideTime;		// something asked him to duck (under fire, a pain ended)
+	float				m_flUnderFireUntil;		// near misses / hits: stay down until then
+	float				m_flUnderFireHide;		// script tuning
+	float				m_flWoundedHealth;
+	float				m_flWoundedHideScale;
+	float				m_flWoundedBurstScale;
+	float				m_flHideStarted;
 	int					m_iFireEvent;
 	float				m_flPitchSign;
 	float				m_flYawSign;
@@ -302,6 +320,15 @@ CNPC_GermanSoldier::CNPC_GermanSoldier() : m_AnimMap( DefLessFunc( int ) )
 	m_flLastBurstEnd = 0.0f;
 	m_flCoverCheckTime = 0.0f;
 	m_nCoverCheckResult = 0;
+	m_actCoverReload = ACT_INVALID;
+	m_bInCoverSpot = false;
+	m_flWantHideTime = 0.0f;
+	m_flUnderFireUntil = 0.0f;
+	m_flUnderFireHide = 2.5f;
+	m_flWoundedHealth = 0.5f;
+	m_flWoundedHideScale = 1.75f;
+	m_flWoundedBurstScale = 0.5f;
+	m_flHideStarted = 0.0f;
 	m_iFireEvent = 0;
 	m_flPitchSign = 1.0f;
 	m_flYawSign = 1.0f;
@@ -574,6 +601,10 @@ void CNPC_GermanSoldier::BuildAnimMap( void )
 	m_flFullFlinchCooldown = pScript->GetFloat( "full_flinch_cooldown", 3.0f );
 	m_flCoverHideMin = MAX( 0.2f, pScript->GetFloat( "cover_hide_min", 1.5f ) );
 	m_flCoverHideMax = MAX( m_flCoverHideMin, pScript->GetFloat( "cover_hide_max", 4.0f ) );
+	m_flUnderFireHide = MAX( 0.0f, pScript->GetFloat( "under_fire_hide", 2.5f ) );
+	m_flWoundedHealth = clamp( pScript->GetFloat( "wounded_health", 0.5f ), 0.0f, 1.0f );
+	m_flWoundedHideScale = MAX( 1.0f, pScript->GetFloat( "wounded_hide_scale", 1.75f ) );
+	m_flWoundedBurstScale = clamp( pScript->GetFloat( "wounded_burst_scale", 0.5f ), 0.1f, 1.0f );
 	m_flStillPainChance = clamp( pScript->GetFloat( "still_pain_chance", 1.0f ), 0.0f, 1.0f );
 
 	// Which DoD animation set does this weapon use?
@@ -620,6 +651,7 @@ void CNPC_GermanSoldier::BuildAnimMap( void )
 	m_actAim2Hide	= ResolveNamedActivity( "ACT_WW2_AIM2HIDE" );
 	m_actStand2Hide	= ResolveNamedActivity( "ACT_WW2_STAND2HIDE" );
 	m_actHide2Stand	= ResolveNamedActivity( "ACT_WW2_HIDE2STAND" );
+	m_actCoverReload	= ResolveNamedActivity( "ACT_WW2_COVER_LOW_RELOAD" );
 
 	if ( npc_german_debug.GetBool() )
 	{
@@ -683,7 +715,7 @@ int CNPC_GermanSoldier::LowCoverAgainst( CBaseEntity *pEnemy )
 		return m_nCoverCheckResult;
 	m_hCoverCheckEnemy = pEnemy;
 	m_flCoverCheckTime = gpGlobals->curtime + 0.5f;
-	m_nCoverCheckResult = 0;
+	m_nCoverCheckResult = COVER_EXPOSED;
 
 	CTraceFilterSkipTwoEntities filter( this, pEnemy, COLLISION_GROUP_NONE );
 	Vector vecEye = pEnemy->EyePosition();
@@ -692,15 +724,59 @@ int CNPC_GermanSoldier::LowCoverAgainst( CBaseEntity *pEnemy )
 	Vector vecHide = vecOrg + Vector( 0, 0, COVER_HIDE_TOP );
 	UTIL_TraceLine( vecEye, vecHide, MASK_BLOCKLOS, &filter, &tr );
 	if ( tr.fraction >= 1.0f || ( vecHide - tr.endpos ).Length2D() > COVER_MAX_GAP )
-		return 0;	// he'd be seen hiding here, or what's in the way is far off (not his cover)
+		return COVER_EXPOSED;	// he'd be seen hiding here, or what's in the way is far off (not his cover)
 
 	UTIL_TraceLine( vecEye, vecOrg + Vector( 0, 0, COVER_CROUCH_EYE ), MASK_BLOCKLOS, &filter, &tr );
 	if ( tr.fraction >= 1.0f )
-		return m_nCoverCheckResult = 1;
+		return m_nCoverCheckResult = COVER_CROUCH;
 	UTIL_TraceLine( vecEye, vecOrg + Vector( 0, 0, COVER_STAND_EYE ), MASK_BLOCKLOS, &filter, &tr );
 	if ( tr.fraction >= 1.0f )
-		return m_nCoverCheckResult = 2;
-	return 0;	// full cover: can't shoot from here at all
+		return m_nCoverCheckResult = COVER_STAND;
+	return m_nCoverCheckResult = COVER_FULL;	// full cover: can't shoot from here at all
+}
+
+// Rounds hitting near him (or into him): keep his head down for a while; if he's up in
+// low cover, duck right now.
+void CNPC_GermanSoldier::NoteUnderFire( void )
+{
+	m_flUnderFireUntil = gpGlobals->curtime + m_flUnderFireHide;
+	if ( !GetEnemy() || IsCurSchedule( SCHED_GERMAN_COVER_HIDE, false ) || IsCurSchedule( SCHED_BIG_FLINCH, false ) ||
+		 m_actFullBodyPain != ACT_INVALID || LowCoverAgainst( GetEnemy() ) <= COVER_FULL )
+		return;
+	m_flWantHideTime = gpGlobals->curtime;
+	const Task_t *pTask = GetTask();
+	if ( pTask && ( pTask->iTask == TASK_RANGE_ATTACK1 || pTask->iTask == TASK_FACE_ENEMY || pTask->iTask == TASK_WAIT_RANDOM ) )
+		ClearSchedule( "German soldier ducks under fire" );
+}
+
+void CNPC_GermanSoldier::UpdateCoverAwareness( void )
+{
+	if ( !IsAlive() )
+		return;
+	if ( IsMoving() )
+		m_bInCoverSpot = false;		// left his spot
+
+	// Near misses: bullet impacts from someone he's hostile to, close to him.
+	if ( HasCondition( COND_HEAR_BULLET_IMPACT ) )
+	{
+		CSound *pSound = GetBestSound( SOUND_BULLET_IMPACT );
+		CBaseEntity *pOwner = pSound ? pSound->m_hOwner.Get() : NULL;
+		if ( pSound && pOwner && pOwner != this && IRelationType( pOwner ) == D_HT &&
+			 ( pSound->GetSoundOrigin() - WorldSpaceCenter() ).Length() < 96.0f )
+			NoteUnderFire();
+	}
+
+	// Flanked: the enemy can now see where he hides. Get out (SelectSchedule picks new cover).
+	if ( m_bInCoverSpot && GetEnemy() && !IsCurSchedule( SCHED_BIG_FLINCH, false ) && m_actFullBodyPain == ACT_INVALID &&
+		 LowCoverAgainst( GetEnemy() ) == COVER_EXPOSED )
+	{
+		if ( npc_german_debug.GetBool() )
+			Msg( "npc_german_soldier %d: cover - flanked, moving\n", entindex() );
+		m_bInCoverSpot = false;
+		m_flWantHideTime = 0.0f;
+		SetCondition( COND_GERMAN_FLANKED );
+		ClearSchedule( "German soldier flanked" );
+	}
 }
 
 // A transition animation has finished: pick the real animation again (the translation
@@ -897,6 +973,7 @@ void CNPC_GermanSoldier::PrescheduleThink( void )
 	UpdateMovingReload();
 	UpdatePainRecovery();
 	UpdateCoverTransition();
+	UpdateCoverAwareness();
 	UpdateTestPainAll();
 	if ( m_bTestCrouch && !IsCrouching() )
 	{
@@ -917,6 +994,8 @@ void CNPC_GermanSoldier::StartTask( const Task_t *pTask )
 			if ( pWeapon && !TaskIsComplete() )
 			{
 				m_nShotsLeft = MAX( 1, pWeapon->GetRandomBurst() );
+				if ( IsWounded() )
+					m_nShotsLeft = MAX( 1, (int)( m_nShotsLeft * m_flWoundedBurstScale + 0.5f ) );	// hurt: short bursts
 				m_flShotInterval = pWeapon->GetFireRate();
 				// Settle the aim first, and respect the gun's own cycle time (bolt-action rifles
 				// set m_flNextPrimaryAttack after each NPC shot; HL2 guns leave it alone).
@@ -942,6 +1021,20 @@ void CNPC_GermanSoldier::StartTask( const Task_t *pTask )
 				ClearCondition( COND_LOW_PRIMARY_AMMO );
 				ClearCondition( COND_NO_PRIMARY_AMMO );
 				TaskComplete();
+				break;
+			}
+
+			// Behind low cover: reload hidden (CoD2's low-wall reload keeps his head below ~32).
+			if ( m_actCoverReload != ACT_INVALID && GetEnemy() && LowCoverAgainst( GetEnemy() ) > COVER_FULL && !IsHitReacting() )
+			{
+				Crouch();
+				ResetIdealActivity( m_actCoverReload );
+				int iSeq = SelectWeightedSequence( m_actCoverReload );
+				m_flReloadDoneTime = gpGlobals->curtime + ( iSeq != ACTIVITY_NOT_AVAILABLE ? SequenceDuration( iSeq ) : 2.0f ) * 0.85f;
+				m_flGestureReloadDone = 0.0f;
+				m_bInCoverSpot = true;
+				if ( npc_german_debug.GetBool() )
+					Msg( "npc_german_soldier %d: cover - reloading hidden\n", entindex() );
 				break;
 			}
 
@@ -986,10 +1079,18 @@ void CNPC_GermanSoldier::StartTask( const Task_t *pTask )
 		}
 		Crouch();
 		SetIdealActivity( m_actHide );	// the translation plays the duck-down transition first
-		m_flCoverHideUntil = gpGlobals->curtime + random->RandomFloat( m_flCoverHideMin, m_flCoverHideMax );
-		if ( npc_german_debug.GetBool() )
-			Msg( "npc_german_soldier %d: cover - hiding %.1f s (%s cover)\n", entindex(), m_flCoverHideUntil - gpGlobals->curtime,
-				 LowCoverAgainst( GetEnemy() ) == 2 ? "stand-fire" : "crouch-fire" );
+		{
+			float flHide = random->RandomFloat( m_flCoverHideMin, m_flCoverHideMax );
+			if ( IsWounded() )
+				flHide *= m_flWoundedHideScale;		// hurt: keeps his head down longer
+			m_flHideStarted = gpGlobals->curtime;
+			m_flCoverHideUntil = gpGlobals->curtime + flHide;
+			m_bInCoverSpot = true;
+			if ( npc_german_debug.GetBool() )
+				Msg( "npc_german_soldier %d: cover - hiding %.1f s (%s cover)%s%s\n", entindex(), flHide,
+					 LowCoverAgainst( GetEnemy() ) == COVER_STAND ? "stand-fire" : "crouch-fire",
+					 IsWounded() ? ", wounded" : "", gpGlobals->curtime < m_flUnderFireUntil ? ", under fire" : "" );
+		}
 		break;
 
 	case TASK_DIE:
@@ -1026,8 +1127,16 @@ void CNPC_GermanSoldier::RunTask( const Task_t *pTask )
 	case TASK_GERMAN_HIDE:
 		if ( GetEnemy() )
 			GetMotor()->SetIdealYawToTargetAndUpdate( GetEnemyLKP(), AI_KEEP_YAW_SPEED );	// keep facing his cover
-		if ( gpGlobals->curtime >= m_flCoverHideUntil || !GetEnemy() || !LowCoverAgainst( GetEnemy() ) )
-			TaskComplete();	// time to pop up again (or the cover stopped covering)
+		if ( !GetEnemy() || LowCoverAgainst( GetEnemy() ) <= COVER_FULL )
+			TaskComplete();	// the cover stopped covering (flanked) - SelectSchedule moves him
+		else if ( gpGlobals->curtime >= m_flCoverHideUntil &&
+				  ( gpGlobals->curtime >= m_flUnderFireUntil || gpGlobals->curtime - m_flHideStarted > 10.0f ) )
+		{
+			// time to pop up again (rounds still cracking past keep him down, 10 s at most -
+			// then he comes up anyway, or suppression would pin him for good)
+			m_flUnderFireUntil = 0.0f;
+			TaskComplete();
+		}
 		break;
 
 	case TASK_BIG_FLINCH:
@@ -1288,7 +1397,10 @@ int CNPC_GermanSoldier::OnTakeDamage_Alive( const CTakeDamageInfo &info )
 {
 	int nResult = BaseClass::OnTakeDamage_Alive( info );
 	if ( nResult && IsAlive() && info.GetDamage() > 0.0f )
+	{
 		DoHitReaction( info );
+		NoteUnderFire();
+	}
 	return nResult;
 }
 
@@ -1603,10 +1715,27 @@ int CNPC_GermanSoldier::SelectSchedule( void )
 	// Cover rhythm: just fired a burst from low cover -> duck for a few seconds, then the
 	// Combine AI pops him back up to shoot (or moves him on, as it sees fit).
 	bool bJustFired = m_flLastBurstEnd > 0.0f && gpGlobals->curtime - m_flLastBurstEnd < 1.5f;
+	bool bWantHide = m_flWantHideTime > 0.0f && gpGlobals->curtime - m_flWantHideTime < 3.0f;
+	bool bFlanked = HasCondition( COND_GERMAN_FLANKED );
 	m_flLastBurstEnd = 0.0f;
-	if ( bJustFired && IsAlive() && GetState() == NPC_STATE_COMBAT && GetEnemy() && !HasCondition( COND_HEAR_DANGER ) &&
-		 m_actHide != ACT_INVALID && LowCoverAgainst( GetEnemy() ) )
-		return SCHED_GERMAN_COVER_HIDE;
+	m_flWantHideTime = 0.0f;
+	ClearCondition( COND_GERMAN_FLANKED );
+	if ( IsAlive() && GetState() == NPC_STATE_COMBAT && GetEnemy() && !HasCondition( COND_HEAR_DANGER ) )
+	{
+		if ( bFlanked )
+			return SCHED_TAKE_COVER_FROM_ENEMY;		// his cover is no good any more: find new cover
+		int nCover = LowCoverAgainst( GetEnemy() );
+		if ( nCover > COVER_FULL )
+		{
+			CBaseCombatWeapon *pWeapon = GetActiveWeapon();
+			bool bNeedReload = pWeapon && pWeapon->UsesClipsForAmmo1() && pWeapon->Clip1() < pWeapon->GetMaxClip1() &&
+							   ( HasCondition( COND_NO_PRIMARY_AMMO ) || HasCondition( COND_LOW_PRIMARY_AMMO ) );
+			if ( bNeedReload )
+				return SCHED_RELOAD;				// reload right here, hidden (TASK_RELOAD)
+			if ( ( bJustFired || bWantHide || gpGlobals->curtime < m_flUnderFireUntil ) && m_actHide != ACT_INVALID )
+				return SCHED_GERMAN_COVER_HIDE;
+		}
+	}
 
 	return BaseClass::SelectSchedule();
 }
@@ -1997,6 +2126,7 @@ CON_COMMAND( npc_german_test_crouch, "Toggle forced crouching on the German sold
 AI_BEGIN_CUSTOM_NPC( npc_german_soldier, CNPC_GermanSoldier )
 
 	DECLARE_TASK( TASK_GERMAN_HIDE )
+	DECLARE_CONDITION( COND_GERMAN_FLANKED )
 
 	//=========================================================
 	// SCHED_GERMAN_COVER_HIDE: duck behind low cover for a few seconds after a burst.
