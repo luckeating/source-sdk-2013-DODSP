@@ -59,6 +59,7 @@ def upper_sequence(seqname, smd, activity, nframes):
 
 
 MP40_MUZZLE = np.array([0.8, 4.5, 26.5])     # w_mp40 muzzle, in its weapon_bone frame
+MIN_TRAVEL = 12.0                             # feet must end this far away for a pain to carry motion
 HIP_SPIN_KEEP = 0.0                           # share of CoD's hip spin kept as torso twist
 TWIST_LIMIT = math.radians(45)                # torso twist over DoD's hips is eased toward at most this
 
@@ -123,6 +124,14 @@ def walkframe_lines(smd_path, step=6):
     ~30 units): piecewise walkframes so the engine moves the NPC along (AutoMovement)
     instead of the feet stepping away and sliding back when DoD takes over. X/Y only - the
     turn stays in the pose and the cross-fade back to DoD squares him up again."""
-    n = len(SMD(smd_path).frames)
+    s = SMD(smd_path)
+    n = len(s.frames)
+    # Only animations that really go somewhere: judged by the feet, not the hips. Falling to
+    # a hand or a knee swings the hips around while the feet stay put - extracting that
+    # moved the NPC's origin under planted feet (sliding while he got back up).
+    lf, rf = s.index('ValveBiped.Bip01_L_Foot'), s.index('ValveBiped.Bip01_R_Foot')
+    feet = lambda f: (lambda W: (W[lf][1][:2] + W[rf][1][:2]) / 2)(worlds(s, f))
+    if np.linalg.norm(feet(s.frames[-1][1]) - feet(s.frames[0][1])) < MIN_TRAVEL:
+        return []
     keys = list(range(step, n - 1, step)) + [n - 1]
     return [f'walkframe {k} LX LY' for k in keys if k > 0]
