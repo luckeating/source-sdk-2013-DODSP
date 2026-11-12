@@ -154,7 +154,12 @@ private:
 	void		FinishDeathAnim( void );
 	void		DoHitReaction( const CTakeDamageInfo &info );
 	void		StartFallToHand( void );
+	void		StartPainOverlay( int iSequence );
+	void		UpdatePainRecovery( void );
+	bool		IsUpperBodyGesture( Activity act ) const;
 	void		UpdateTestPainAll( void );
+	// One owner for "the upper body is taken by a hit reaction": no shots, no fire or
+	// reload gestures until then (pain overlays, the kick's short stun).
 	bool		IsHitReacting( void ) const { return gpGlobals->curtime < m_flFlinchUntil; }
 	bool		IsInCrouchPose( void );
 	Activity	PickUpperPain( void );
@@ -218,6 +223,7 @@ private:
 	float				m_flLastHitDamage;
 	bool				m_bLastHitCrouched;		// crouch state at the moment of the last hit
 	bool				m_bFallToHandPending;	// next full-body flinch is "fall to a hand"
+	bool				m_bReloadInterrupted;	// a pain cut a reload short; it restarts when the pain lets go
 
 	// Test commands (not saved)
 	bool				m_bTestForcePain;		// next DoHitReaction skips chance and cooldown
@@ -286,6 +292,7 @@ CNPC_GermanSoldier::CNPC_GermanSoldier() : m_AnimMap( DefLessFunc( int ) )
 	m_flLastHitDamage = 0.0f;
 	m_bLastHitCrouched = false;
 	m_bFallToHandPending = false;
+	m_bReloadInterrupted = false;
 	m_bTestForcePain = false;
 	m_iTestPainLayer = -1;
 	m_iForceDeathSeq = -1;
@@ -562,6 +569,11 @@ void CNPC_GermanSoldier::BuildAnimMap( void )
 
 Activity CNPC_GermanSoldier::NPC_TranslateActivity( Activity eNewActivity )
 {
+	// A pain overlay owns the upper body: the move-and-shoot code gets no fire or reload
+	// gesture to lay on top of it (it adds nothing when the activity is invalid).
+	if ( ( eNewActivity == ACT_GESTURE_RANGE_ATTACK1 || eNewActivity == ACT_GESTURE_RELOAD ) && IsHitReacting() )
+		return ACT_INVALID;
+
 	Activity eCombine = BaseClass::NPC_TranslateActivity( eNewActivity );
 
 	EnsureAnimMap();
@@ -607,6 +619,9 @@ bool CNPC_GermanSoldier::FireOneShot( bool bPlayGesture )
 
 	if ( pWeapon->UsesClipsForAmmo1() && pWeapon->Clip1() <= 0 )
 		return false;
+
+	if ( IsHitReacting() )
+		return false;		// every shot comes through here: none while a hit reaction has the upper body
 
 	if ( m_iFireEvent > 0 )
 	{
@@ -697,6 +712,7 @@ void CNPC_GermanSoldier::PrescheduleThink( void )
 {
 	BaseClass::PrescheduleThink();
 	UpdateMovingReload();
+	UpdatePainRecovery();
 	UpdateTestPainAll();
 }
 
@@ -748,6 +764,14 @@ void CNPC_GermanSoldier::StartTask( const Task_t *pTask )
 				// take over its timer instead of starting a second one.
 				m_flReloadDoneTime = m_flGestureReloadDone;
 				m_flGestureReloadDone = -1.0f;
+				break;
+			}
+
+			if ( IsHitReacting() )
+			{
+				// Hit mid-pain: the reload starts when the pain lets go (UpdatePainRecovery).
+				m_bReloadInterrupted = true;
+				m_flReloadDoneTime = gpGlobals->curtime + 1000.0f;
 				break;
 			}
 
@@ -1142,19 +1166,86 @@ void CNPC_GermanSoldier::DoHitReaction( const CTakeDamageInfo &info )
 		return;
 	}
 
-	RestartGesture( actPain );
-	float flDuration = 1.0f;
 	int iSeq = SelectWeightedSequence( actPain );
 	if ( iSeq != ACTIVITY_NOT_AVAILABLE )
-		flDuration = SequenceDuration( iSeq );
+		StartPainOverlay( iSeq );
+}
 
-	// Out of the fight for most of it; a reload in progress waits too.
-	float flOut = flDuration * 0.7f;
-	m_flFlinchUntil = MAX( m_flFlinchUntil, gpGlobals->curtime + flOut );
-	if ( m_flReloadDoneTime > gpGlobals->curtime )
-		m_flReloadDoneTime += flOut;
-	if ( m_flGestureReloadDone > gpGlobals->curtime )
-		m_flGestureReloadDone += flOut;
+bool CNPC_GermanSoldier::IsUpperBodyGesture( Activity act ) const
+{
+	return act != ACT_INVALID && ( act == m_actFireGesture || act == m_actReloadGesture || act == m_actReloadCrouchGesture );
+}
+
+// Every upper-body pain starts here (real hits and the test commands). The pain owns
+// the upper body until its overlay starts fading out: fire and reload gestures stop,
+// no shots, and a reload it cut short starts over once it lets go.
+void CNPC_GermanSoldier::StartPainOverlay( int iSequence )
+{
+	for ( int i = 0; i < GetNumAnimOverlays(); i++ )
+	{
+		CAnimationLayer *pLayer = GetAnimOverlay( i );
+		if ( !pLayer || !pLayer->IsActive() || pLayer->IsKillMe() || !IsUpperBodyGesture( pLayer->m_nActivity ) )
+			continue;
+		if ( pLayer->m_nActivity != m_actFireGesture )
+			m_bReloadInterrupted = true;
+		RemoveLayer( i, 0.1f );
+	}
+	if ( m_bReloadInterrupted )
+	{
+		// hold both reload timers until UpdatePainRecovery restarts the reload
+		if ( m_flReloadDoneTime > gpGlobals->curtime )
+			m_flReloadDoneTime = gpGlobals->curtime + 1000.0f;
+		if ( m_flGestureReloadDone > 0.0f )
+			m_flGestureReloadDone = gpGlobals->curtime + 1000.0f;
+	}
+
+	Activity act = (Activity)GetSequenceActivity( iSequence );
+	int iLayer = FindGestureLayer( act );
+	if ( iLayer >= 0 && GetAnimOverlay( iLayer )->m_nSequence == iSequence )
+		RestartGesture( act );
+	else
+	{
+		if ( iLayer >= 0 )
+			FastRemoveLayer( iLayer );
+		iLayer = AddGestureSequence( iSequence );
+		if ( iLayer >= 0 )
+			GetAnimOverlay( iLayer )->m_nActivity = act;	// so a repeat hit restarts it instead of stacking
+	}
+
+	// The overlay fades out over its last ~0.35 s (ww2_upper sequences): he's back in
+	// the fight as it starts fading, not before.
+	float flDuration = SequenceDuration( iSequence );
+	float flRelease = MAX( flDuration - 0.35f, flDuration * 0.6f );
+	m_flFlinchUntil = MAX( m_flFlinchUntil, gpGlobals->curtime + flRelease );
+}
+
+void CNPC_GermanSoldier::UpdatePainRecovery( void )
+{
+	if ( !m_bReloadInterrupted || IsHitReacting() || !IsAlive() )
+		return;
+	m_bReloadInterrupted = false;
+
+	CBaseCombatWeapon *pWeapon = GetActiveWeapon();
+	if ( !pWeapon || ( pWeapon->UsesClipsForAmmo1() && pWeapon->Clip1() >= pWeapon->GetMaxClip1() ) )
+		return;
+
+	const Task_t *pTask = GetTask();
+	bool bTask = pTask && pTask->iTask == TASK_RELOAD;
+	bool bCrouched = IsInCrouchPose();
+	Activity gesture = ( bCrouched && m_actReloadCrouchGesture != ACT_INVALID ) ? m_actReloadCrouchGesture : m_actReloadGesture;
+	if ( gesture == ACT_INVALID )
+		return;
+
+	RestartGesture( gesture );
+	float flDuration = 1.5f;
+	int iSeq = SelectWeightedSequence( gesture );
+	if ( iSeq != ACTIVITY_NOT_AVAILABLE )
+		flDuration = SequenceDuration( iSeq );
+	float flDone = gpGlobals->curtime + flDuration * 0.85f;
+	if ( bTask )
+		m_flReloadDoneTime = flDone;
+	else
+		m_flGestureReloadDone = flDone;		// UpdateMovingReload fills the clip
 }
 
 void CNPC_GermanSoldier::StartFallToHand( void )
@@ -1283,10 +1374,13 @@ void CNPC_GermanSoldier::TestPain( int iSequence )
 		return;
 	}
 
+	// cycling through pains: drop the previous test pain so they don't stack
 	if ( m_iTestPainLayer >= 0 && IsValidLayer( m_iTestPainLayer ) )
 		FastRemoveLayer( m_iTestPainLayer );
-	m_iTestPainLayer = AddGestureSequence( iSequence );
-	m_flFlinchUntil = MAX( m_flFlinchUntil, gpGlobals->curtime + SequenceDuration( iSequence ) * 0.7f );
+	m_flFlinchUntil = 0.0f;
+	StartPainOverlay( iSequence );
+	Activity act = (Activity)GetSequenceActivity( iSequence );
+	m_iTestPainLayer = FindGestureLayer( act );
 }
 
 void CNPC_GermanSoldier::TestPainAll( void )
@@ -1448,6 +1542,28 @@ CON_COMMAND( npc_german_test, "List the German soldier test commands." )
 		 "     part: head chest chestleft chestright stomach leftarm rightarm leftleg rightleg\n"
 		 "  npc_german_test_crouch               toggle: force him to crouch (crouched pains and deaths)\n"
 		 "Tip: bind keys, e.g.  bind KP_PLUS \"npc_german_test_pain next\"\n" );
+
+	// Which animation packs did the soldier in view actually load?
+	CNPC_GermanSoldier *pNPC = GermanTestTarget();
+	CStudioHdr *pHdr = pNPC ? pNPC->GetModelPtr() : NULL;
+	if ( !pHdr )
+		return;
+	const studiohdr_t *pRoot = pHdr->GetRenderHdr();
+	Msg( "\nSoldier %d uses %s, which includes:\n", pNPC->entindex(), pRoot->pszName() );
+	for ( int i = 0; i < pRoot->numincludemodels; i++ )
+	{
+		const char *pszInc = pRoot->pModelGroup( i )->pszName();
+		Msg( "  %-45s %s\n", pszInc, filesystem->FileExists( pszInc, "GAME" ) ? "found" : "FILE NOT FOUND" );
+	}
+	int nCoD2 = 0, nCoD1 = 0;
+	for ( int i = 0; i < pHdr->GetNumSeq(); i++ )
+	{
+		const char *pszSeq = pNPC->GetSequenceName( i );
+		if ( !Q_strnicmp( pszSeq, "ww2_", 4 ) ) nCoD2++;
+		else if ( !Q_strnicmp( pszSeq, "c1_", 3 ) ) nCoD1++;
+	}
+	Msg( "Sequences: %d total, CoD2 pack %d%s, CoD1 pack %d%s\n", pHdr->GetNumSeq(),
+		 nCoD2, nCoD2 ? "" : " (NOT LOADED)", nCoD1, nCoD1 ? "" : " (NOT LOADED)" );
 }
 
 CON_COMMAND( npc_german_test_spawn, "Spawn a German soldier where you aim, facing you. Optional: weapon classname (default weapon_k98)." )
