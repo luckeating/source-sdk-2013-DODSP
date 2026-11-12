@@ -152,6 +152,89 @@ static float GetSoundPitchScale()
 //-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
+#if !defined( CLIENT_DLL )
+//-----------------------------------------------------------------------------
+// DOD-SP: Day of Defeat: Source's sound scripts have the same file names as HL2's
+// (scripts/game_sounds.txt, game_sounds_weapons.txt...) and DoD:S content is mounted after HL2,
+// so its scripts are never read and DoD:S maps' ambient_generics (Ambient.Flag...) are silent.
+// Fill the gaps: every DoD:S entry that no loaded script defines is copied into one generated
+// override file, loaded each level. It never replaces an HL2, Mapbase or mod sound.
+// Reads DoD:S's own manifest through the "dod" search path (gameinfo: game+dod ... dod_content).
+//-----------------------------------------------------------------------------
+#define DODSP_DOD_PATH			"dod"
+#define DODSP_DOD_SOUNDS_FILE	"scripts/dodsp_dod_sounds_generated.txt"
+
+static void DoDSP_WriteKeys( CUtlBuffer &buf, KeyValues *pKey, int nIndent )
+{
+	for ( int i = 0; i < nIndent; i++ ) buf.PutChar( '\t' );
+	if ( pKey->GetFirstSubKey() )
+	{
+		buf.Printf( "\"%s\"\n", pKey->GetName() );
+		for ( int i = 0; i < nIndent; i++ ) buf.PutChar( '\t' );
+		buf.Printf( "{\n" );
+		for ( KeyValues *pSub = pKey->GetFirstSubKey(); pSub; pSub = pSub->GetNextKey() )
+			DoDSP_WriteKeys( buf, pSub, nIndent + 1 );
+		for ( int i = 0; i < nIndent; i++ ) buf.PutChar( '\t' );
+		buf.Printf( "}\n" );
+	}
+	else
+	{
+		buf.Printf( "\"%s\"\t\"%s\"\n", pKey->GetName(), pKey->GetString() );
+	}
+}
+
+static void DoDSP_AddDoDSounds( void )
+{
+	KeyValues *pManifest = new KeyValues( "game_sounds_manifest" );
+	if ( !pManifest->LoadFromFile( filesystem, "scripts/game_sounds_manifest.txt", DODSP_DOD_PATH ) )
+	{
+		pManifest->deleteThis();
+		DevMsg( "DoD:S sounds: no \"" DODSP_DOD_PATH "\" search path in gameinfo.txt - DoD:S map sounds not loaded\n" );
+		return;
+	}
+
+	CUtlBuffer buf( 0, 0, CUtlBuffer::TEXT_BUFFER );
+	CUtlDict<int, int> added;
+	int nSkipped = 0;
+	for ( KeyValues *pFile = pManifest->GetFirstSubKey(); pFile; pFile = pFile->GetNextKey() )
+	{
+		const char *pszScript = pFile->GetString();
+		if ( !pszScript || !pszScript[0] )
+			continue;
+		KeyValues *pScript = new KeyValues( pszScript );
+		if ( pScript->LoadFromFile( filesystem, pszScript, DODSP_DOD_PATH ) )
+		{
+			// a sound script is a list of root-level entries
+			for ( KeyValues *pEntry = pScript; pEntry; pEntry = pEntry->GetNextKey() )
+			{
+				if ( !pEntry->GetFirstSubKey() )
+					continue;
+				if ( soundemitterbase->GetSoundIndex( pEntry->GetName() ) != soundemitterbase->InvalidIndex() ||
+					 added.Find( pEntry->GetName() ) != added.InvalidIndex() )
+				{
+					nSkipped++;		// HL2 / Mapbase / the mod already has it: theirs stays
+					continue;
+				}
+				added.Insert( pEntry->GetName(), 0 );
+				DoDSP_WriteKeys( buf, pEntry, 0 );
+			}
+		}
+		pScript->deleteThis();
+	}
+	pManifest->deleteThis();
+
+	if ( !added.Count() )
+		return;
+	if ( !filesystem->WriteFile( DODSP_DOD_SOUNDS_FILE, "DEFAULT_WRITE_PATH", buf ) )
+	{
+		Warning( "DoD:S sounds: couldn't write %s\n", DODSP_DOD_SOUNDS_FILE );
+		return;
+	}
+	soundemitterbase->AddSoundOverrides( DODSP_DOD_SOUNDS_FILE );
+	DevMsg( "DoD:S sounds: %d added, %d already defined (kept)\n", added.Count(), nSkipped );
+}
+#endif
+
 class CSoundEmitterSystem : public CBaseGameSystem
 {
 public:
@@ -333,6 +416,8 @@ public:
 #endif
 
 #if !defined( CLIENT_DLL )
+		DoDSP_AddDoDSounds();	// DOD-SP
+
 		for ( int i=soundemitterbase->First(); i != soundemitterbase->InvalidIndex(); i=soundemitterbase->Next( i ) )
 		{
 			CSoundParametersInternal *pParams = soundemitterbase->InternalGetParametersForSound( i );

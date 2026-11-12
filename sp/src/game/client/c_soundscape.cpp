@@ -362,6 +362,26 @@ bool C_SoundscapeSystem::Init()
 		Error( "Unable to load manifest file '%s'\n", SOUNDSCAPE_MANIFEST_FILE );
 	}
 
+	// DOD-SP: DoD:S's soundscape files (soundscapes_argentan.txt...) are listed in its own
+	// manifest, which HL2's hides (same name, DoD:S mounted last). Load the ones HL2's lacks.
+	{
+		KeyValues *pDoD = new KeyValues( SOUNDSCAPE_MANIFEST_FILE );
+		if ( filesystem->LoadKeyValues( *pDoD, IFileSystem::TYPE_SOUNDSCAPE, SOUNDSCAPE_MANIFEST_FILE, "dod" ) )
+		{
+			for ( KeyValues *sub = pDoD->GetFirstSubKey(); sub != NULL; sub = sub->GetNextKey() )
+			{
+				if ( Q_stricmp( sub->GetName(), "file" ) )
+					continue;
+				bool bLoaded = false;
+				for ( KeyValues *pOurs = manifest->GetFirstSubKey(); pOurs && !bLoaded; pOurs = pOurs->GetNextKey() )
+					bLoaded = !Q_stricmp( pOurs->GetString(), sub->GetString() );
+				if ( !bLoaded && filesystem->FileExists( sub->GetString(), "GAME" ) )
+					AddSoundScapeFile( sub->GetString() );
+			}
+		}
+		pDoD->deleteThis();
+	}
+
 	manifest->deleteThis();
 
 	return true;
