@@ -301,7 +301,7 @@ private:
 		Vector		vecAimEye;		// world
 	};
 	void		CornerCalibrate( void );
-	bool		MeasurePose( Activity act, float flCornerYaw, bool bNeutralAim, Vector &vecEyeLocal, matrix3x4_t &matRHand, float &flHandsYaw );
+	bool		MeasurePose( Activity act, float flCornerYaw, bool bNeutralAim, Vector &vecEyeLocal, matrix3x4_t &matRHand, float &flHandsYaw, float *pflMuzzleYaw = NULL );
 	float		GunYaw( const matrix3x4_t &matRHand ) const;	// where the gun in this right hand points, relative to his facing
 	float		CornerAimOffset( const CornerSet_t &set, float flFacing, const Vector &vecFrom, const Vector &vecTarget ) const;
 	bool		CornerFitAt( const Vector &vecPos, CBaseEntity *pEnemy, CornerFit_t &fit, const Vector *pvecEye = NULL );
@@ -2135,7 +2135,7 @@ void CNPC_GermanSoldier::RunOpenLoop( void )
 //=============================================================================
 static const char *s_pszCornerAct[] = { "ALERT", "OUT", "IN", "ENTER", "SEMI", "AUTO", "RELOAD" };
 
-bool CNPC_GermanSoldier::MeasurePose( Activity act, float flCornerYaw, bool bNeutralAim, Vector &vecEyeLocal, matrix3x4_t &matRHand, float &flHandsYaw )
+bool CNPC_GermanSoldier::MeasurePose( Activity act, float flCornerYaw, bool bNeutralAim, Vector &vecEyeLocal, matrix3x4_t &matRHand, float &flHandsYaw, float *pflMuzzleYaw )
 {
 	if ( act == ACT_INVALID || !GetModelPtr() )
 		return false;
@@ -2170,6 +2170,20 @@ bool CNPC_GermanSoldier::MeasurePose( Activity act, float flCornerYaw, bool bNeu
 	GetBonePosition( iHead, vecHead, ang );
 	GetBonePosition( iLHand, vecL, ang );
 	GetBoneTransform( iRHand, matRHand );
+	// The gun as it's actually drawn: his weapon is bone-merged to him, so its muzzle follows
+	// this pose. Grip (right hand) to muzzle is the barrel, whatever the animation's bone axes.
+	bool bMuzzle = false;
+	Vector vecMuzzle;
+	CBaseCombatWeapon *pWeapon = GetActiveWeapon();
+	if ( pflMuzzleYaw && pWeapon && pWeapon->GetModelPtr() )
+	{
+		int iAtt = pWeapon->LookupAttachment( "muzzle" );
+		if ( iAtt <= 0 )
+			iAtt = 1;
+		pWeapon->InvalidateBoneCache();
+		QAngle angMuzzle;
+		bMuzzle = pWeapon->GetAttachment( iAtt, vecMuzzle, angMuzzle );
+	}
 	SetSequence( iOldSeq );
 	SetCycle( flOldCycle );
 	if ( m_poseCornerYaw >= 0 )
@@ -2179,6 +2193,8 @@ bool CNPC_GermanSoldier::MeasurePose( Activity act, float flCornerYaw, bool bNeu
 	if ( m_poseAim_Pitch >= 0 )
 		SetPoseParameter( m_poseAim_Pitch, flOldAimPitch );
 	InvalidateBoneCache();
+	if ( pWeapon )
+		pWeapon->InvalidateBoneCache();
 
 	WorldToEntitySpace( vecHead, &vecEyeLocal );
 	vecEyeLocal.z += 3.0f;		// eyes sit a little above the head bone
@@ -2186,6 +2202,14 @@ bool CNPC_GermanSoldier::MeasurePose( Activity act, float flCornerYaw, bool bNeu
 	MatrixPosition( matRHand, vecR );
 	Vector vecHands = vecL - vecR;		// the old reading, printed alongside for comparison
 	flHandsYaw = AngleNormalize( RAD2DEG( atan2f( vecHands.y, vecHands.x ) ) - GetAbsAngles().y );
+	if ( pflMuzzleYaw )
+	{
+		Vector vecBarrel = vecMuzzle - vecR;
+		if ( bMuzzle && vecBarrel.Length2D() > 4.0f )
+			*pflMuzzleYaw = AngleNormalize( RAD2DEG( atan2f( vecBarrel.y, vecBarrel.x ) ) - GetAbsAngles().y );
+		else
+			*pflMuzzleYaw = FLT_MAX;	// no gun to read
+	}
 	return true;
 }
 
@@ -2221,8 +2245,8 @@ void CNPC_GermanSoldier::CornerCalibrate( void )
 	// the gun lies in his right hand. Every corner pose's aim is then read off the same hand axis.
 	Vector vecRef;
 	matrix3x4_t matRef;
-	float flRefHands = 0.0f;
-	if ( !MeasurePose( TranslateToDoD( ACT_IDLE_ANGRY ), 0.0f, true, vecRef, matRef, flRefHands ) )
+	float flRefHands = 0.0f, flRefMuzzle = FLT_MAX;
+	if ( !MeasurePose( TranslateToDoD( ACT_IDLE_ANGRY ), 0.0f, true, vecRef, matRef, flRefHands, &flRefMuzzle ) )
 		return;
 	Vector vecForward;
 	AngleVectors( QAngle( 0, GetAbsAngles().y, 0 ), &vecForward );
@@ -2249,20 +2273,34 @@ void CNPC_GermanSoldier::CornerCalibrate( void )
 			continue;
 		Vector vecDummy;
 		matrix3x4_t matHide, matAim, matLo, matHi;
-		float flHands, flDummy;
+		float flHands, flDummy, flMuzzle = FLT_MAX, flMuzzleLo = FLT_MAX, flMuzzleHi = FLT_MAX;
 		if ( !MeasurePose( set.act[CN_ALERT], 0.0f, false, set.vecHideEye, matHide, flDummy ) ||
-			 !MeasurePose( actFire, 0.0f, false, set.vecAimEye, matAim, flHands ) ||
-			 !MeasurePose( actFire, -1.0f, false, vecDummy, matLo, flDummy ) || !MeasurePose( actFire, 1.0f, false, vecDummy, matHi, flDummy ) )
+			 !MeasurePose( actFire, 0.0f, false, set.vecAimEye, matAim, flHands, &flMuzzle ) ||
+			 !MeasurePose( actFire, -1.0f, false, vecDummy, matLo, flDummy, &flMuzzleLo ) ||
+			 !MeasurePose( actFire, 1.0f, false, vecDummy, matHi, flDummy, &flMuzzleHi ) )
 			continue;
-		set.flAimYaw = GunYaw( matAim );
-		set.flOffLo = AngleDiff( GunYaw( matLo ), set.flAimYaw );
-		set.flOffHi = AngleDiff( GunYaw( matHi ), set.flAimYaw );
+		// Best reading first: the drawn gun's muzzle (against the same reading in DoD's straight aim);
+		// without a gun, the hand axis.
+		bool bByMuzzle = flMuzzle != FLT_MAX && flMuzzleLo != FLT_MAX && flMuzzleHi != FLT_MAX && flRefMuzzle != FLT_MAX;
+		if ( bByMuzzle )
+		{
+			set.flAimYaw = AngleNormalize( flMuzzle - flRefMuzzle );
+			set.flOffLo = AngleDiff( flMuzzleLo, flMuzzle );
+			set.flOffHi = AngleDiff( flMuzzleHi, flMuzzle );
+		}
+		else
+		{
+			set.flAimYaw = GunYaw( matAim );
+			set.flOffLo = AngleDiff( GunYaw( matLo ), set.flAimYaw );
+			set.flOffHi = AngleDiff( GunYaw( matHi ), set.flAimYaw );
+		}
 		set.bValid = true;
 		if ( npc_german_debug.GetBool() )
-			Msg( "npc_german_soldier %d: corner set %c%c %s - hide eyes (%.0f %.0f %.0f), out eyes (%.0f %.0f %.0f), gun aims %.0f deg (blend %+.0f..%+.0f) [hands said %.0f]\n",
+			Msg( "npc_german_soldier %d: corner set %c%c %s - hide eyes (%.0f %.0f %.0f), out eyes (%.0f %.0f %.0f), aims %.0f deg by %s (blend %+.0f..%+.0f) [muzzle %.0f, hand axis %.0f, hands %.0f]\n",
 				 entindex(), s_cWeapon[w], s_cStance[st], sd == 0 ? "right" : "left",
 				 set.vecHideEye.x, set.vecHideEye.y, set.vecHideEye.z, set.vecAimEye.x, set.vecAimEye.y, set.vecAimEye.z,
-				 set.flAimYaw, set.flOffLo, set.flOffHi, AngleNormalize( flHands - flRefHands ) );
+				 set.flAimYaw, bByMuzzle ? "the muzzle" : "the hand axis", set.flOffLo, set.flOffHi,
+				 bByMuzzle ? AngleNormalize( flMuzzle - flRefMuzzle ) : 999.0f, GunYaw( matAim ), AngleNormalize( flHands - flRefHands ) );
 	}
 }
 
@@ -3052,6 +3090,14 @@ void CNPC_GermanSoldier::DrawDebugOverlay( void )
 		Vector vecFwd;
 		AngleVectors( QAngle( 0, m_Cover.corner.flYaw, 0 ), &vecFwd );
 		NDebugOverlay::Line( m_Cover.vecPos + Vector( 0, 0, 4 ), m_Cover.vecPos + Vector( 0, 0, 4 ) + vecFwd * 32.0f, 0, 220, 255, true, 0.12f );
+		const CornerSet_t *pSet = CornerSet();
+		if ( pSet )
+		{
+			// where the measurement says his gun points when he's out (red): it should run along the barrel
+			Vector vecAim;
+			AngleVectors( QAngle( 0, m_Cover.corner.flYaw + pSet->flAimYaw, 0 ), &vecAim );
+			NDebugOverlay::Line( m_Cover.corner.vecAimEye, m_Cover.corner.vecAimEye + vecAim * 64.0f, 255, 0, 0, true, 0.12f );
+		}
 		Q_snprintf( sz, sizeof( sz ), "corner: %s, %s%s", m_Cover.corner.iSide == 0 ? "on his right" : "on his left",
 					m_Cover.corner.iStance == 0 ? "standing" : "crouched", m_poseCornerYaw >= 0 ? "" : "  (no corner_yaw pose param!)" );
 		NDebugOverlay::EntityText( entindex(), line++, sz, 0.12f );
