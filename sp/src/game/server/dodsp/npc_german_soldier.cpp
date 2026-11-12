@@ -1198,7 +1198,7 @@ int CNPC_GermanSoldier::LowCoverAgainst( CBaseEntity *pEnemy )
 			Q_snprintf( sz, sizeof( sz ), "in front of him: nothing solid within 512 toward you" );
 		NDebugOverlay::EntityText( entindex(), 5, sz, 0.15f );
 		NDebugOverlay::EntityText( entindex(), 6, bHidden ? "hide spot: hidden from you" :
-								   tr.fraction < 1.0f ? "hide spot: blocked, but by something too far from him" : "hide spot: YOU CAN SEE IT", 0.15f );
+								   tr.fraction < 1.0f ? "hide spot: only something far off hides it - open ground" : "hide spot: YOU CAN SEE IT", 0.15f );
 	}
 	if ( bDraw && m_bHasCoverSpot )
 		NDebugOverlay::Box( m_vecCoverSpot, Vector( -8, -8, 0 ), Vector( 8, 8, 4 ), 0, 128, 255, 96, 0.15f );	// his chosen spot
@@ -1215,15 +1215,23 @@ int CNPC_GermanSoldier::CoverAt( const Vector &vecPos, CBaseEntity *pEnemy, trac
 	UTIL_TraceLine( vecEye, vecHide, COVER_MASK, &filter, &tr );
 	if ( pHideTrace )
 		*pHideTrace = tr;
-	if ( tr.fraction >= 1.0f || ( vecHide - tr.endpos ).Length2D() > m_flCoverMaxGap )
-		return COVER_EXPOSED;	// he'd be seen hiding here, or what's in the way is far off (not his cover)
-	UTIL_TraceLine( vecEye, vecPos + Vector( 0, 0, COVER_CROUCH_EYE ), COVER_MASK, &filter, &tr );
 	if ( tr.fraction >= 1.0f )
-		return COVER_CROUCH;
-	UTIL_TraceLine( vecEye, vecPos + Vector( 0, 0, COVER_STAND_EYE ), COVER_MASK, &filter, &tr );
-	if ( tr.fraction >= 1.0f )
-		return COVER_STAND;
-	return COVER_FULL;	// full cover: can't shoot from here at all
+		return COVER_EXPOSED;	// he'd be seen hiding here
+	bool bAdjacent = ( vecHide - tr.endpos ).Length2D() <= m_flCoverMaxGap;	// the thing in the way is HIS cover
+	trace_t trFire;
+	UTIL_TraceLine( vecEye, vecPos + Vector( 0, 0, COVER_CROUCH_EYE ), COVER_MASK, &filter, &trFire );
+	int nFire = trFire.fraction >= 1.0f ? COVER_CROUCH : COVER_FULL;
+	if ( nFire == COVER_FULL )
+	{
+		UTIL_TraceLine( vecEye, vecPos + Vector( 0, 0, COVER_STAND_EYE ), COVER_MASK, &filter, &trFire );
+		if ( trFire.fraction >= 1.0f )
+			nFire = COVER_STAND;
+	}
+	if ( nFire == COVER_FULL )
+		return COVER_FULL;		// out of your sight at every height: a corner, a house, a tall wall - can't shoot from it
+	// He could shoot from here. That's low cover only if what hides him is right in front of
+	// him; hidden just by something far off (a distant wall's top) is standing in the open.
+	return bAdjacent ? nFire : COVER_EXPOSED;
 }
 
 //=============================================================================
@@ -2426,7 +2434,8 @@ bool CNPC_GermanSoldier::IsSpotBad( const Vector &vecPos ) const
 // for 4 s - tells "the map has no nodes there" apart from "the nodes there aren't cover".
 //   grey = out of reach (too high/low, too far, too close to you, taken, recently failed)
 //   dark grey = wrong place for this order (not closer / not further back / not on the flank side)
-//   red = you'd see him hiding there    orange = hides him but he can't shoot from it (corner/tall wall)
+//   red = you'd see him there (or only something far off hides him)
+//   orange = out of your sight completely, but he can't shoot from it (inside a house, behind a corner)
 //   green = usable cover                 blue = the one he picked
 static void DrawSearchNode( const Vector &vecPos, int r, int g, int b )
 {
