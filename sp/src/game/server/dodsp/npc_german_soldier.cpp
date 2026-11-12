@@ -161,6 +161,7 @@ public:
 	int			GetSoundInterests( void );
 	float		MaxYawSpeed( void );
 	Vector		Weapon_ShootPosition( void );
+	Vector		GetShootEnemyDir( const Vector &shootOrigin, bool bNoisy = true );
 	Vector		GetCrouchEyeOffset( void );
 	Vector		GetCrouchGunOffset( void );
 	int			SelectCombatSchedule( void );
@@ -221,7 +222,7 @@ private:
 	// reload gestures until then (pain overlays, the kick's short stun).
 	bool		IsHitReacting( void ) const { return gpGlobals->curtime < m_flFlinchUntil; }
 	// ...or by a cover transition (rising from / ducking into cover): no shots then either.
-	bool		IsUpperBodyBusy( void ) { return IsHitReacting() || IsCoverTransition( GetTranslatedActivity() ); }
+	bool		IsUpperBodyBusy( void ) { return IsHitReacting() || IsInStanceTransition(); }
 	// Low cover (stage 3b-1)
 	enum CoverFamily_t { POSE_OTHER, POSE_HIDE, POSE_CROUCH, POSE_STAND };
 	CoverFamily_t PoseFamily( Activity act ) const;
@@ -236,6 +237,10 @@ private:
 	enum Stance_t { STANCE_STAND, STANCE_CROUCH, STANCE_HIDE, STANCE_LOW_UP, STANCE_MID_UP, NUM_STANCES };
 	static bool	StanceIsCrouched( Stance_t s ) { return s == STANCE_CROUCH || s == STANCE_HIDE || s == STANCE_LOW_UP; }
 	bool		SetStance( Stance_t s, const char *pszWhy, bool bForce = false );
+	// The move between stances (duck down / rise up) is owned by the stance owner too: a
+	// timed state, not something the animation code works out from what happens to be playing.
+	bool		IsInStanceTransition( void ) const { return m_actStanceTransition != ACT_INVALID; }
+	void		UpdatePlaybackRate( void );		// the one owner of the animation's playback rate
 	void		SyncStance( void );
 
 	//-------------------------------------------------------------------------
@@ -271,7 +276,7 @@ private:
 	//-------------------------------------------------------------------------
 	// Watchdog (R1): passive. Prints INVARIANT lines when a rule is broken; changes nothing.
 	//-------------------------------------------------------------------------
-	enum Invariant_t { INV_STANCE_FLIPS, INV_STANCE_OWNER, INV_SCHED_CHURN, INV_DECISION_CHURN, INV_COVER_CHURN, INV_POSE_FLIPS, NUM_INVARIANTS };
+	enum Invariant_t { INV_STANCE_FLIPS, INV_STANCE_OWNER, INV_SCHED_CHURN, INV_DECISION_CHURN, INV_COVER_CHURN, INV_POSE_FLIPS, INV_ANIM_STUCK, NUM_INVARIANTS };
 	void		WatchdogPose( void );		// what the body actually plays: down / crouched / standing flips
 	bool		IsClipEmpty( void );		// one owner for "he has no rounds in the gun"
 	void		Invariant( Invariant_t eWhich, const char *pszFormat, ... );
@@ -320,6 +325,9 @@ private:
 	Stance_t			m_eStance;
 	float				m_flStanceSince;
 	const char		   *m_pszStanceWhy;
+	Activity			m_actStanceTransition;	// playing the move between stances (ACT_INVALID = none)
+	float				m_flStanceTransitionEnd;
+	float				m_flSeqStarted;			// watchdog: when the playing sequence began
 	float				m_flStanceFlipTimes[4];	// watchdog: last few stance changes
 	int					m_iStanceFlip;
 	// Cover spot + loop
@@ -476,6 +484,9 @@ CNPC_GermanSoldier::CNPC_GermanSoldier() : m_AnimMap( DefLessFunc( int ) )
 	m_eStance = STANCE_STAND;
 	m_flStanceSince = 0.0f;
 	m_pszStanceWhy = "spawn";
+	m_actStanceTransition = ACT_INVALID;
+	m_flStanceTransitionEnd = 0.0f;
+	m_flSeqStarted = 0.0f;
 	for ( int i = 0; i < 4; i++ )
 		m_flStanceFlipTimes[i] = -100.0f;
 	m_iStanceFlip = 0;
@@ -673,6 +684,35 @@ Vector CNPC_GermanSoldier::GetCrouchGunOffset( void )
 {
 	float z = m_eStance == STANCE_HIDE ? HIDE_EYE : m_eStance == STANCE_LOW_UP ? COVER_CROUCH_EYE : OPEN_CROUCH_GUN;
 	return Vector( 0, 0, z );
+}
+
+// Firing over cover: the engine aims at a random point on the target's body (legs included),
+// which from 4 units above a wall puts the round into his own wall. Aim at a part of the enemy
+// this muzzle can actually see - head and upper chest first - the same kind of line the
+// "can I see him from my firing point" check used. In the open: the engine's own aim.
+Vector CNPC_GermanSoldier::GetShootEnemyDir( const Vector &shootOrigin, bool bNoisy )
+{
+	CBaseEntity *pEnemy = GetEnemy();
+	if ( pEnemy && ( m_eStance == STANCE_LOW_UP || m_eStance == STANCE_MID_UP ) )
+	{
+		Vector vecFeet = GetEnemyLKP();
+		float flEye = pEnemy->EyePosition().z - pEnemy->GetAbsOrigin().z;
+		static const float s_flHeights[] = { 0.8f, 0.65f, 0.95f, 0.5f };	// share of his eye height
+		CTraceFilterSkipTwoEntities filter( this, pEnemy, COLLISION_GROUP_NONE );
+		for ( int i = 0; i < (int)ARRAYSIZE( s_flHeights ); i++ )
+		{
+			Vector vecTarget = vecFeet + Vector( 0, 0, flEye * s_flHeights[i] );
+			trace_t tr;
+			UTIL_TraceLine( shootOrigin, vecTarget, COVER_MASK, &filter, &tr );
+			if ( tr.fraction >= 1.0f )
+			{
+				Vector vecDir = vecTarget - shootOrigin;
+				VectorNormalize( vecDir );
+				return vecDir;		// the weapon's spread is added on top by GetActualShootTrajectory
+			}
+		}
+	}
+	return BaseClass::GetShootEnemyDir( shootOrigin, bNoisy );
 }
 
 Vector CNPC_GermanSoldier::Weapon_ShootPosition( void )
@@ -1093,6 +1133,25 @@ bool CNPC_GermanSoldier::SetStance( Stance_t s, const char *pszWhy, bool bForce 
 		Invariant( INV_STANCE_FLIPS, "4 stance changes in %.1f s (now %s -> %s: %s; before that: %s)", flSpan,
 				   s_pszStance[m_eStance], s_pszStance[s], pszWhy, m_pszStanceWhy ? m_pszStanceWhy : "?" );
 
+	// The move between the poses (CoD1/2 transitions): into hiding from crouched or standing,
+	// and up out of it. Decided here, once, from the old and new stance.
+	Activity actTrans = ACT_INVALID;
+	bool bFromHide = m_eStance == STANCE_HIDE, bToHide = s == STANCE_HIDE;
+	if ( bToHide && !bFromHide )
+		actTrans = StanceIsCrouched( m_eStance ) ? m_actAim2Hide : m_actStand2Hide;
+	else if ( bFromHide && !bToHide )
+		actTrans = StanceIsCrouched( s ) ? m_actHide2Aim : m_actHide2Stand;
+	m_actStanceTransition = ACT_INVALID;
+	if ( actTrans != ACT_INVALID && !IsMoving() )
+	{
+		int iSeq = SelectWeightedSequence( actTrans );
+		if ( iSeq != ACTIVITY_NOT_AVAILABLE )
+		{
+			m_actStanceTransition = actTrans;
+			m_flStanceTransitionEnd = gpGlobals->curtime + SequenceDuration( iSeq );
+		}
+	}
+
 	m_eStance = s;
 	m_flStanceSince = gpGlobals->curtime;
 	m_pszStanceWhy = pszWhy;
@@ -1101,7 +1160,7 @@ bool CNPC_GermanSoldier::SetStance( Stance_t s, const char *pszWhy, bool bForce 
 	else
 		Stand();
 	if ( !IsMoving() )
-		ResetActivity();	// re-pick the animation for the new stance (the translation reads the stance)
+		ResetActivity();	// re-pick the animation: the translation reads the stance (and the transition)
 	return true;
 }
 
@@ -1128,7 +1187,7 @@ void CNPC_GermanSoldier::Invariant( Invariant_t eWhich, const char *pszFormat, .
 	if ( gpGlobals->curtime < m_flInvariantNext[eWhich] )
 		return;
 	m_flInvariantNext[eWhich] = gpGlobals->curtime + 2.0f;
-	static const char *s_pszNames[] = { "STANCE_FLIPS", "STANCE_OWNER", "SCHED_CHURN", "DECISION_CHURN", "COVER_CHURN", "POSE_FLIPS" };
+	static const char *s_pszNames[] = { "STANCE_FLIPS", "STANCE_OWNER", "SCHED_CHURN", "DECISION_CHURN", "COVER_CHURN", "POSE_FLIPS", "ANIM_STUCK" };
 	char sz[512];
 	va_list ap;
 	va_start( ap, pszFormat );
@@ -1175,6 +1234,7 @@ void CNPC_GermanSoldier::WatchdogPose( void )
 			 m_iPoseSeq >= 0 ? GetSequenceName( m_iPoseSeq ) : "-", pszSeq, ActivityList_NameForIndex( GetIdealActivity() ) ? ActivityList_NameForIndex( GetIdealActivity() ) : "?",
 			 GetCurSchedule() ? GetCurSchedule()->GetName() : "-", GetTask() ? TaskName( GetTask()->iTask ) : "-", s_pszStance[m_eStance] );
 	m_iPoseSeq = iSeq;
+	m_flSeqStarted = gpGlobals->curtime;
 	if ( IsCoverTransition( actSeq ) )
 		return;
 
@@ -1481,7 +1541,7 @@ void CNPC_GermanSoldier::RunCoverLoop( void )
 		break;
 
 	case CS_RISE:
-		if ( now - m_flCoverStateStart < 0.25f || ( IsCoverTransition( GetTranslatedActivity() ) && now < m_flCoverStateUntil ) )
+		if ( now - m_flCoverStateStart < 0.25f || ( IsInStanceTransition() && now < m_flCoverStateUntil ) )
 			break;
 		if ( m_bRiseToShoot )
 			SetCoverState( CS_SHOOT, "up" );
@@ -1550,7 +1610,7 @@ void CNPC_GermanSoldier::RunCoverLoop( void )
 	case CS_DUCK:
 		{
 			float flHideUntil = m_flCoverStateUntil;
-			if ( now - m_flCoverStateStart < 0.3f || ( IsCoverTransition( GetTranslatedActivity() ) && now - m_flCoverStateStart < 1.5f ) )
+			if ( now - m_flCoverStateStart < 0.3f || ( IsInStanceTransition() && now - m_flCoverStateStart < 1.5f ) )
 				break;
 			SetCoverState( CS_HIDE, "down" );
 			m_flCoverStateUntil = MAX( flHideUntil, now + 0.3f );
@@ -1745,7 +1805,7 @@ void CNPC_GermanSoldier::DrawDebugOverlay( void )
 	const Task_t *pTask = GetTask();
 	Q_snprintf( sz, sizeof( sz ), "%s / %s", pSched ? pSched->GetName() : "-", pTask ? TaskName( pTask->iTask ) : "-" );
 	NDebugOverlay::EntityText( entindex(), line++, sz, 0.12f );
-	Q_snprintf( sz, sizeof( sz ), "anim %s%s", ActivityList_NameForIndex( GetTranslatedActivity() ) ? ActivityList_NameForIndex( GetTranslatedActivity() ) : "?",
+	Q_snprintf( sz, sizeof( sz ), "anim %s%s", GetSequence() >= 0 ? GetSequenceName( GetSequence() ) : "?",
 				IsCrouching() ? " (crouched)" : "" );
 	NDebugOverlay::EntityText( entindex(), line++, sz, 0.12f );
 	if ( GetEnemy() )
@@ -1769,8 +1829,33 @@ void CNPC_GermanSoldier::DrawDebugOverlay( void )
 // sees we're no longer in a hide/aim pose and returns the target directly).
 void CNPC_GermanSoldier::UpdateCoverTransition( void )
 {
-	if ( IsCoverTransition( GetTranslatedActivity() ) && IsSequenceFinished() )
+	if ( IsInStanceTransition() && gpGlobals->curtime >= m_flStanceTransitionEnd )
+	{
+		m_actStanceTransition = ACT_INVALID;
+		if ( !IsMoving() )
+			ResetActivity();	// the transition is over: the stance's own pose
+	}
+	// Guard: a cover transition still playing long after it should have ended.
+	if ( GetModelPtr() && GetSequence() >= 0 && IsCoverTransition( GetSequenceActivity( GetSequence() ) ) &&
+		 !IsInStanceTransition() && gpGlobals->curtime - m_flSeqStarted > 1.0f )
+	{
+		Invariant( INV_ANIM_STUCK, "transition %s still playing %.1f s after it started (stance %s) - resetting",
+				   GetSequenceName( GetSequence() ), gpGlobals->curtime - m_flSeqStarted, s_pszStance[m_eStance] );
 		ResetActivity();
+		m_flSeqStarted = gpGlobals->curtime;
+	}
+}
+
+// One owner for the playback rate: every think, from what is actually playing. The CoD2 firing
+// pose over cover holds still between shots (each shot replays its recoil); everything else
+// plays at normal speed. (Death animations set their own speed in TASK_DIE, after this.)
+void CNPC_GermanSoldier::UpdatePlaybackRate( void )
+{
+	if ( m_bDeathAnim || !GetModelPtr() || GetSequence() < 0 )
+		return;
+	Activity actSeq = GetSequenceActivity( GetSequence() );
+	bool bCoverFire = actSeq != ACT_INVALID && ( actSeq == m_actCoverLowFire || actSeq == m_actCoverMidFire );
+	SetPlaybackRate( bCoverFire && gpGlobals->curtime >= m_flCoverRecoilUntil ? 0.0f : 1.0f );
 }
 
 Activity CNPC_GermanSoldier::NPC_TranslateActivity( Activity eNewActivity )
@@ -1779,10 +1864,13 @@ Activity CNPC_GermanSoldier::NPC_TranslateActivity( Activity eNewActivity )
 	// wall, up over a chest-high one. A pure function of the stance (one owner) - it never
 	// looks at the world, so the pose can't flicker with what he senses.
 	bool bStatic = !IsMoving();
+	bool bIsReload = eNewActivity == ACT_RELOAD || eNewActivity == ACT_RELOAD_LOW;
 	bool bIdleOrAim = eNewActivity == ACT_IDLE || eNewActivity == ACT_IDLE_ANGRY || eNewActivity == ACT_IDLE_AIM_AGITATED ||
 					  eNewActivity == ACT_COVER_LOW || eNewActivity == ACT_COVER || eNewActivity == ACT_COVER_MED ||
 					  eNewActivity == ACT_CROUCHIDLE || eNewActivity == ACT_RANGE_AIM_LOW ||
 					  eNewActivity == ACT_RANGE_ATTACK1 || eNewActivity == ACT_RANGE_ATTACK1_LOW;
+	if ( bStatic && IsInStanceTransition() && ( bIdleOrAim || bIsReload ) )
+		return m_actStanceTransition;		// ducking / rising: the transition, until the stance owner says it's over
 	if ( bStatic && m_eStance == STANCE_HIDE && m_actHide != ACT_INVALID )
 	{
 		if ( ( eNewActivity == ACT_RELOAD || eNewActivity == ACT_RELOAD_LOW ) && m_actCoverReload != ACT_INVALID )
@@ -1797,27 +1885,6 @@ Activity CNPC_GermanSoldier::NPC_TranslateActivity( Activity eNewActivity )
 
 	Activity eResult = TranslateToDoD( eNewActivity );
 
-	// Moving between hiding and a static pose: the CoD1 transition first.
-	static const struct { CoverFamily_t from, to; int which; } s_Rules[] = {
-		{ POSE_HIDE, POSE_CROUCH, 0 }, { POSE_CROUCH, POSE_HIDE, 1 }, { POSE_STAND, POSE_HIDE, 2 }, { POSE_HIDE, POSE_STAND, 3 } };
-	CoverFamily_t from = PoseFamily( GetTranslatedActivity() ), to = PoseFamily( eResult );
-	if ( from != to )
-	{
-		for ( int k = 0; k < (int)ARRAYSIZE( s_Rules ); k++ )
-		{
-			if ( s_Rules[k].from != from || s_Rules[k].to != to )
-				continue;
-			Activity t = s_Rules[k].which == 0 ? m_actHide2Aim : s_Rules[k].which == 1 ? m_actAim2Hide :
-						 s_Rules[k].which == 2 ? m_actStand2Hide : m_actHide2Stand;
-			if ( t != ACT_INVALID )
-			{
-				if ( npc_german_debug.GetBool() )
-					Msg( "npc_german_soldier %d: cover %s (on the way to %s)\n", entindex(), ActivityList_NameForIndex( t ),
-						 ActivityList_NameForIndex( eResult ) );
-				return t;
-			}
-		}
-	}
 	return eResult;
 }
 
@@ -1875,6 +1942,8 @@ void CNPC_GermanSoldier::OnChangeActivity( Activity eNewActivity )
 		m_flStanceSince = gpGlobals->curtime;
 		m_pszStanceWhy = "moving (engine stands movers)";
 	}
+	if ( IsMoving() )
+		m_actStanceTransition = ACT_INVALID;
 	HoldMoveForward();
 }
 
@@ -1910,7 +1979,7 @@ bool CNPC_GermanSoldier::FireOneShot( bool bPlayGesture )
 		pWeapon->Operator_ForceNPCFire( this, false );
 	}
 
-	Activity actNow = GetTranslatedActivity();
+	Activity actNow = GetSequenceActivity( GetSequence() );
 	if ( actNow != ACT_INVALID && ( actNow == m_actCoverLowFire || actNow == m_actCoverMidFire ) )
 	{
 		// The CoD2 firing pose has its own recoil: replay it for this shot.
@@ -2001,9 +2070,7 @@ void CNPC_GermanSoldier::PrescheduleThink( void )
 	UpdateCoverAwareness();
 	if ( npc_german_debug.GetInt() >= 2 )
 		DrawDebugOverlay();
-	if ( GetTranslatedActivity() != ACT_INVALID &&
-		 ( GetTranslatedActivity() == m_actCoverLowFire || GetTranslatedActivity() == m_actCoverMidFire ) )
-		SetPlaybackRate( gpGlobals->curtime < m_flCoverRecoilUntil ? 1.0f : 0.0f );	// aim steady between shots
+	UpdatePlaybackRate();
 	UpdateTestPainAll();
 	if ( m_bTestCrouch && m_eStance != STANCE_CROUCH )
 		SetStance( STANCE_CROUCH, "npc_german_test_crouch", true );
