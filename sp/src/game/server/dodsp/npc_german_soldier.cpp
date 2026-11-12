@@ -358,7 +358,7 @@ private:
 	void		WatchdogNoteSchedule( void );
 	enum { COVER_EXPOSED = -1, COVER_FULL = 0, COVER_CROUCH = 1, COVER_STAND = 2 };
 	int			LowCoverAgainst( CBaseEntity *pEnemy );	// COVER_*: > 0 means low cover he can fire from
-	int			CoverAt( const Vector &vecPos, CBaseEntity *pEnemy, trace_t *pHideTrace = NULL );	// same test at any spot
+	int			CoverAt( const Vector &vecPos, CBaseEntity *pEnemy, trace_t *pHideTrace = NULL, const Vector *pvecEye = NULL );	// same test at any spot (pvecEye: against where his eyes were)
 	enum SearchMode_t { SEARCH_COVER, SEARCH_ADVANCE, SEARCH_FLANK_LEFT, SEARCH_FLANK_RIGHT, SEARCH_RETREAT };
 	bool		FindCoverSpot( CBaseEntity *pEnemy, int nMode = SEARCH_COVER );	// best-scoring low cover for this kind of move
 	bool		IsAtCoverSpot( void ) const { return m_bHasCoverSpot && ( m_vecCoverSpot - GetAbsOrigin() ).Length2D() < 48.0f; }
@@ -391,6 +391,7 @@ private:
 	float				m_flCoverMaxGap;		// script: the cover must be this close to him (units)
 	float				m_flCoverSearchRadius;	// script: how far he'll run for cover
 	Vector				m_vecCoverSpot;			// where he's going / sitting (claimed: squadmates pick other spots)
+	Vector				m_vecCoverSearchEye;	// where the enemy's eyes were when that spot was judged
 	bool				m_bHasCoverSpot;
 	float				m_flNextCoverSearch;
 	float				m_flNextAdvance;		// bounding forward to closer cover: not more often than this
@@ -559,6 +560,7 @@ CNPC_GermanSoldier::CNPC_GermanSoldier() : m_AnimMap( DefLessFunc( int ) )
 	m_flCoverMaxGap = 128.0f;
 	m_flCoverSearchRadius = 900.0f;
 	m_vecCoverSpot = vec3_origin;
+	m_vecCoverSearchEye = vec3_origin;
 	m_bHasCoverSpot = false;
 	m_flNextCoverSearch = 0.0f;
 	m_flNextAdvance = 0.0f;
@@ -986,6 +988,8 @@ void CNPC_GermanSoldier::EnsureAnimMap( void )
 {
 	if ( !GetModelPtr() )
 		return;
+	if ( !IsAlive() && m_iAnimMapVersion == g_iGermanScriptVersion )
+		return;		// a dead man keeps the animations he died with (his rifle is already on the ground)
 
 	string_t iszWeapon = GetActiveWeapon() ? GetActiveWeapon()->m_iClassname : NULL_STRING;
 
@@ -1202,10 +1206,10 @@ int CNPC_GermanSoldier::LowCoverAgainst( CBaseEntity *pEnemy )
 }
 
 // The cover test at any spot (feet position): is it low cover against this enemy?
-int CNPC_GermanSoldier::CoverAt( const Vector &vecPos, CBaseEntity *pEnemy, trace_t *pHideTrace )
+int CNPC_GermanSoldier::CoverAt( const Vector &vecPos, CBaseEntity *pEnemy, trace_t *pHideTrace, const Vector *pvecEye )
 {
 	CTraceFilterSkipTwoEntities filter( this, pEnemy, COLLISION_GROUP_NONE );
-	Vector vecEye = pEnemy->EyePosition();
+	Vector vecEye = pvecEye ? *pvecEye : pEnemy->EyePosition();
 	trace_t tr;
 	Vector vecHide = vecPos + Vector( 0, 0, COVER_HIDE_TOP );
 	UTIL_TraceLine( vecEye, vecHide, COVER_MASK, &filter, &tr );
@@ -2558,6 +2562,7 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, int nMode )
 	if ( flBest == -FLT_MAX )
 		return false;
 	m_vecCoverSpot = vecBest;
+	m_vecCoverSearchEye = pEnemy->EyePosition();
 	m_bHasCoverSpot = true;
 	m_flLastSearchRun = flBestLen;
 	const char *pszLandmark = GermanChatter_LandmarkAt( vecBest, pEnemy->EyePosition(), this, pEnemy );
@@ -3009,12 +3014,17 @@ void CNPC_GermanSoldier::StartTask( const Task_t *pTask )
 		VacateStrategySlot();
 		if ( !OccupyCover() )
 		{
-			if ( IsCurSchedule( SCHED_GERMAN_MOVE_TO_COVER, false ) && m_bHasCoverSpot )
+			if ( IsCurSchedule( SCHED_GERMAN_MOVE_TO_COVER, false ) && m_bHasCoverSpot && GetEnemy() )
 			{
-				// Arrived, but it doesn't cover him where he actually stopped: don't come back here.
+				// Arrived, but it doesn't cover him now. Blame the spot only if it was wrong all
+				// along (it doesn't cover him even from where the enemy was when it was chosen);
+				// if the enemy has simply moved, the spot is fine - he just needs another one now.
+				bool bSpotWasRight = CoverAt( GetAbsOrigin(), GetEnemy(), NULL, &m_vecCoverSearchEye ) > COVER_FULL;
 				if ( npc_german_debug.GetBool() )
-					Msg( "npc_german_soldier %d: reached his spot but it doesn't cover him - skipping it\n", entindex() );
-				MarkSpotBad( m_vecCoverSpot );
+					Msg( "npc_german_soldier %d: reached his spot but it doesn't cover him - %s\n", entindex(),
+						 bSpotWasRight ? "you moved since he picked it; looking again" : "the spot was wrong, skipping it" );
+				if ( !bSpotWasRight )
+					MarkSpotBad( m_vecCoverSpot );
 			}
 			m_bHasCoverSpot = false;
 			m_flNextCoverSearch = 0.0f;

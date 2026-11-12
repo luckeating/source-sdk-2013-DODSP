@@ -339,17 +339,25 @@ void CGermanChatter::Update( void )
 //-----------------------------------------------------------------------------
 void CGermanChatter::LevelPrecache( void )
 {
-	static string_t s_iszPrecachedMap = NULL_STRING;
-	static float s_flPrecachedAt = -1.0f;
-	if ( s_iszPrecachedMap == gpGlobals->mapname && gpGlobals->curtime >= s_flPrecachedAt )
-		return;
-	s_iszPrecachedMap = gpGlobals->mapname;
-	s_flPrecachedAt = gpGlobals->curtime;
-
+	// The sound system drops every override script at level end (ClearSoundOverrides), so
+	// whether the lines are loaded is asked of the sound system itself, every time - never
+	// remembered here. (A remembered "done for this map" broke on reloading the same map.)
 	char szTest[128];
 	Q_snprintf( szTest, sizeof( szTest ), "GermanChatter.v0.response_ack_yes.%s", s_szNation );
 	if ( !soundemitterbase->IsValidIndex( soundemitterbase->GetSoundIndex( szTest ) ) )
+	{
 		soundemitterbase->AddSoundOverrides( CHATTER_SCRIPT, true );
+		if ( !soundemitterbase->IsValidIndex( soundemitterbase->GetSoundIndex( szTest ) ) )
+		{
+			static float s_flNextWarn = 0.0f;
+			if ( Plat_FloatTime() >= s_flNextWarn )
+			{
+				s_flNextWarn = Plat_FloatTime() + 30.0f;
+				Warning( "German chatter: %s didn't load (no %s) - soldiers will be silent\n", CHATTER_SCRIPT, szTest );
+			}
+			return;
+		}
+	}
 
 	int nPrecached = 0;
 	char szName[128];
