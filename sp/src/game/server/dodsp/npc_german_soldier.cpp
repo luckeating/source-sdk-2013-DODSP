@@ -104,6 +104,7 @@ public:
 	void		Spawn( void );
 
 	Activity	NPC_TranslateActivity( Activity eNewActivity );
+	Activity	TranslateToDoD( Activity eNewActivity );
 	void		OnChangeActivity( Activity eNewActivity );
 
 	void		PrescheduleThink( void );
@@ -163,6 +164,14 @@ private:
 	// One owner for "the upper body is taken by a hit reaction": no shots, no fire or
 	// reload gestures until then (pain overlays, the kick's short stun).
 	bool		IsHitReacting( void ) const { return gpGlobals->curtime < m_flFlinchUntil; }
+	// ...or by a cover transition (rising from / ducking into cover): no shots then either.
+	bool		IsUpperBodyBusy( void ) { return IsHitReacting() || IsCoverTransition( GetTranslatedActivity() ); }
+	// Low cover (stage 3b-1)
+	enum CoverFamily_t { POSE_OTHER, POSE_HIDE, POSE_CROUCH, POSE_STAND };
+	CoverFamily_t PoseFamily( Activity act ) const;
+	bool		IsCoverTransition( Activity act ) const;
+	bool		IsHidingInCover( void );
+	void		UpdateCoverTransition( void );
 	bool		IsInCrouchPose( void );
 	Activity	PickUpperPain( void );
 	Activity	PickFullBodyPain( const CTakeDamageInfo &info );
@@ -177,6 +186,11 @@ private:
 	Activity			m_actFireGesture;
 	Activity			m_actReloadGesture;
 	Activity			m_actReloadCrouchGesture;
+	Activity			m_actHide;				// CoD1 hide pose behind low cover, and the moves in and out of it
+	Activity			m_actHide2Aim;
+	Activity			m_actAim2Hide;
+	Activity			m_actStand2Hide;
+	Activity			m_actHide2Stand;
 	int					m_iFireEvent;
 	float				m_flPitchSign;
 	float				m_flYawSign;
@@ -261,6 +275,7 @@ CNPC_GermanSoldier::CNPC_GermanSoldier() : m_AnimMap( DefLessFunc( int ) )
 	m_actFireGesture = ACT_INVALID;
 	m_actReloadGesture = ACT_INVALID;
 	m_actReloadCrouchGesture = ACT_INVALID;
+	m_actHide = m_actHide2Aim = m_actAim2Hide = m_actStand2Hide = m_actHide2Stand = ACT_INVALID;
 	m_iFireEvent = 0;
 	m_flPitchSign = 1.0f;
 	m_flYawSign = 1.0f;
@@ -510,6 +525,7 @@ void CNPC_GermanSoldier::BuildAnimMap( void )
 	m_actFireGesture = ACT_INVALID;
 	m_actReloadGesture = ACT_INVALID;
 	m_actReloadCrouchGesture = ACT_INVALID;
+	m_actHide = m_actHide2Aim = m_actAim2Hide = m_actStand2Hide = m_actHide2Stand = ACT_INVALID;
 	m_iFireEvent = 0;
 	m_actLastDebug = ACT_INVALID;
 
@@ -570,6 +586,13 @@ void CNPC_GermanSoldier::BuildAnimMap( void )
 		m_actReloadCrouchGesture = ResolveActivity( pGestures->GetString( "reload_crouch" ), pszSet );
 	}
 
+	// Low cover: the CoD1 "hide B" pose and its transitions (all share one pose, so they chain).
+	m_actHide		= ResolveNamedActivity( "ACT_WW2_HIDEB_IDLE" );
+	m_actHide2Aim	= ResolveNamedActivity( "ACT_WW2_HIDE2AIM" );
+	m_actAim2Hide	= ResolveNamedActivity( "ACT_WW2_AIM2HIDE" );
+	m_actStand2Hide	= ResolveNamedActivity( "ACT_WW2_STAND2HIDE" );
+	m_actHide2Stand	= ResolveNamedActivity( "ACT_WW2_HIDE2STAND" );
+
 	if ( npc_german_debug.GetBool() )
 	{
 		Msg( "npc_german_soldier %d: weapon %s -> DoD set %s, %d activities mapped, fire event %d\n",
@@ -577,11 +600,88 @@ void CNPC_GermanSoldier::BuildAnimMap( void )
 	}
 }
 
+//-----------------------------------------------------------------------------
+// Low cover (stage 3b-1). The Combine AI waits in cover (SCHED_COMBINE_WAIT_IN_COVER,
+// crouched) and pops out to shoot when it has a line of fire. While waiting he now
+// hides fully behind the cover in CoD1's hide pose; between poses the CoD1 transition
+// plays first (hide -> crouched aim, aim -> hide, stand -> hide, hide -> stand), and no
+// shots go off until he's up. One rule table, applied wherever an animation is chosen.
+//-----------------------------------------------------------------------------
+CNPC_GermanSoldier::CoverFamily_t CNPC_GermanSoldier::PoseFamily( Activity act ) const
+{
+	if ( act == ACT_INVALID )
+		return POSE_OTHER;
+	if ( act == m_actHide )
+		return POSE_HIDE;
+	const char *psz = ActivityList_NameForIndex( act );
+	if ( !psz )
+		return POSE_OTHER;
+	if ( !Q_strnicmp( psz, "ACT_DOD_CROUCH_", 15 ) )		// crouched aim / idle (not CROUCHWALK)
+		return POSE_CROUCH;
+	if ( !Q_strnicmp( psz, "ACT_DOD_STAND_", 14 ) )
+		return POSE_STAND;
+	return POSE_OTHER;
+}
+
+bool CNPC_GermanSoldier::IsCoverTransition( Activity act ) const
+{
+	return act != ACT_INVALID && ( act == m_actHide2Aim || act == m_actAim2Hide || act == m_actStand2Hide || act == m_actHide2Stand );
+}
+
+bool CNPC_GermanSoldier::IsHidingInCover( void )
+{
+	if ( m_actHide == ACT_INVALID || !GetEnemy() || !IsCrouching() || !HasMemory( bits_MEMORY_INCOVER ) )
+		return false;
+	const CAI_Schedule *pSched = GetCurSchedule();
+	return pSched && !Q_stricmp( pSched->GetName(), "SCHED_COMBINE_WAIT_IN_COVER" );
+}
+
+// A transition animation has finished: pick the real animation again (the translation
+// sees we're no longer in a hide/aim pose and returns the target directly).
+void CNPC_GermanSoldier::UpdateCoverTransition( void )
+{
+	if ( IsCoverTransition( GetTranslatedActivity() ) && IsSequenceFinished() )
+		ResetActivity();
+}
+
 Activity CNPC_GermanSoldier::NPC_TranslateActivity( Activity eNewActivity )
+{
+	// Waiting in low cover: hide instead of crouching in the open.
+	if ( IsHidingInCover() && ( eNewActivity == ACT_IDLE || eNewActivity == ACT_COVER_LOW || eNewActivity == ACT_COVER ||
+								eNewActivity == ACT_COVER_MED || eNewActivity == ACT_RANGE_AIM_LOW || eNewActivity == ACT_CROUCHIDLE ) )
+		eNewActivity = m_actHide;
+
+	Activity eResult = TranslateToDoD( eNewActivity );
+
+	// Moving between hiding and a static pose: the CoD1 transition first.
+	static const struct { CoverFamily_t from, to; int which; } s_Rules[] = {
+		{ POSE_HIDE, POSE_CROUCH, 0 }, { POSE_CROUCH, POSE_HIDE, 1 }, { POSE_STAND, POSE_HIDE, 2 }, { POSE_HIDE, POSE_STAND, 3 } };
+	CoverFamily_t from = PoseFamily( GetTranslatedActivity() ), to = PoseFamily( eResult );
+	if ( from != to )
+	{
+		for ( int k = 0; k < (int)ARRAYSIZE( s_Rules ); k++ )
+		{
+			if ( s_Rules[k].from != from || s_Rules[k].to != to )
+				continue;
+			Activity t = s_Rules[k].which == 0 ? m_actHide2Aim : s_Rules[k].which == 1 ? m_actAim2Hide :
+						 s_Rules[k].which == 2 ? m_actStand2Hide : m_actHide2Stand;
+			if ( t != ACT_INVALID )
+			{
+				if ( npc_german_debug.GetBool() )
+					Msg( "npc_german_soldier %d: cover %s (on the way to %s)\n", entindex(), ActivityList_NameForIndex( t ),
+						 ActivityList_NameForIndex( eResult ) );
+				return t;
+			}
+		}
+	}
+	return eResult;
+}
+
+Activity CNPC_GermanSoldier::TranslateToDoD( Activity eNewActivity )
 {
 	// A pain overlay owns the upper body: the move-and-shoot code gets no fire or reload
 	// gesture to lay on top of it (it adds nothing when the activity is invalid).
-	if ( ( eNewActivity == ACT_GESTURE_RANGE_ATTACK1 || eNewActivity == ACT_GESTURE_RELOAD ) && IsHitReacting() )
+	if ( ( eNewActivity == ACT_GESTURE_RANGE_ATTACK1 || eNewActivity == ACT_GESTURE_RELOAD ) && IsUpperBodyBusy() )
 		return ACT_INVALID;
 
 	// npc_german_test_crouch: every idle becomes the crouched aim (the base only crouches plain ACT_IDLE)
@@ -636,8 +736,8 @@ bool CNPC_GermanSoldier::FireOneShot( bool bPlayGesture )
 	if ( pWeapon->UsesClipsForAmmo1() && pWeapon->Clip1() <= 0 )
 		return false;
 
-	if ( IsHitReacting() )
-		return false;		// every shot comes through here: none while a hit reaction has the upper body
+	if ( IsUpperBodyBusy() )
+		return false;		// every shot comes through here: none while a hit reaction or a cover move has the upper body
 
 	if ( m_iFireEvent > 0 )
 	{
@@ -684,7 +784,7 @@ void CNPC_GermanSoldier::OnRangeAttack1( void )
 
 	const Task_t *pTask = GetTask();
 	bool bStandingFire = pTask && pTask->iTask == TASK_RANGE_ATTACK1;	// that task shoots by itself
-	if ( !bStandingFire && !IsHitReacting() )
+	if ( !bStandingFire && !IsUpperBodyBusy() )
 	{
 		FireOneShot( false );	// the move-and-shoot code plays the gesture
 	}
@@ -729,6 +829,7 @@ void CNPC_GermanSoldier::PrescheduleThink( void )
 	BaseClass::PrescheduleThink();
 	UpdateMovingReload();
 	UpdatePainRecovery();
+	UpdateCoverTransition();
 	UpdateTestPainAll();
 	if ( m_bTestCrouch && !IsCrouching() )
 	{
@@ -868,6 +969,8 @@ void CNPC_GermanSoldier::RunTask( const Task_t *pTask )
 
 			if ( IsHitReacting() )
 				m_flNextShotTime = MAX( m_flNextShotTime, m_flFlinchUntil );	// can't shoot mid-flinch
+			else if ( IsUpperBodyBusy() )
+				m_flNextShotTime = MAX( m_flNextShotTime, gpGlobals->curtime + 0.1f );	// still rising out of cover
 
 			if ( gpGlobals->curtime >= m_flNextShotTime )
 			{
