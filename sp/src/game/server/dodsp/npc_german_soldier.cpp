@@ -165,6 +165,7 @@ private:
 	bool		IsHitReacting( void ) const { return gpGlobals->curtime < m_flFlinchUntil; }
 	bool		IsInCrouchPose( void );
 	Activity	PickUpperPain( void );
+	Activity	PickFullBodyPain( const CTakeDamageInfo &info );
 	Activity	ResolveNamedActivity( const char *pszName );
 	void		FinishReload( void );
 	void		UpdateMovingReload( void );
@@ -221,6 +222,7 @@ private:
 	float				m_flFullFlinchDamage;
 	float				m_flFullFlinchChance;
 	float				m_flFullFlinchCooldown;
+	float				m_flStillPainChance;	// chance a hit on a soldier standing/crouched still plays a full-body pain
 	float				m_flLastHitSide;		// where the last hit landed across his body: + = his right, - = his left (units)
 	float				m_flLastHitDamage;
 	bool				m_bLastHitCrouched;		// crouch state at the moment of the last hit
@@ -231,6 +233,7 @@ private:
 	bool				m_bTestForcePain;		// next DoHitReaction skips chance and cooldown
 	int					m_iTestPainLayer;		// overlay layer started by npc_german_test_pain
 	int					m_iForceDeathSeq;		// npc_german_test_death: exact death sequence, -1 = none
+	int					m_iForceFlinchSeq;		// npc_german_test_pain: exact full-body pain sequence, -1 = none
 	int					m_iTestPainAllNext;		// npc_german_test_pain all: next list entry, -1 = off
 	float				m_flTestPainAllTime;
 	bool				m_bTestCrouch;			// npc_german_test_crouch: hold a crouch whatever the AI wants
@@ -290,6 +293,7 @@ CNPC_GermanSoldier::CNPC_GermanSoldier() : m_AnimMap( DefLessFunc( int ) )
 	m_flHitKickScale = 1.0f;
 	m_flFullFlinchDamage = 30.0f;
 	m_flFullFlinchChance = 0.2f;
+	m_flStillPainChance = 1.0f;
 	m_flFullFlinchCooldown = 3.0f;
 	m_flLastHitSide = 0.0f;
 	m_flLastHitDamage = 0.0f;
@@ -299,6 +303,7 @@ CNPC_GermanSoldier::CNPC_GermanSoldier() : m_AnimMap( DefLessFunc( int ) )
 	m_bTestForcePain = false;
 	m_iTestPainLayer = -1;
 	m_iForceDeathSeq = -1;
+	m_iForceFlinchSeq = -1;
 	m_iTestPainAllNext = -1;
 	m_flTestPainAllTime = 0.0f;
 	m_bTestCrouch = false;
@@ -525,6 +530,7 @@ void CNPC_GermanSoldier::BuildAnimMap( void )
 	m_flFullFlinchDamage = pScript->GetFloat( "full_flinch_damage", 30.0f );
 	m_flFullFlinchChance = clamp( pScript->GetFloat( "full_flinch_chance", 0.2f ), 0.0f, 1.0f );
 	m_flFullFlinchCooldown = pScript->GetFloat( "full_flinch_cooldown", 3.0f );
+	m_flStillPainChance = clamp( pScript->GetFloat( "still_pain_chance", 1.0f ), 0.0f, 1.0f );
 
 	// Which DoD animation set does this weapon use?
 	const char *pszWeapon = GetActiveWeapon() ? GetActiveWeapon()->GetClassname() : "none";
@@ -817,6 +823,12 @@ void CNPC_GermanSoldier::StartTask( const Task_t *pTask )
 	case TASK_BIG_FLINCH:
 		BaseClass::StartTask( pTask );		// uses GetFlinchActivity -> the pending full-body pain
 		m_actFullBodyPain = ACT_INVALID;
+		if ( m_iForceFlinchSeq >= 0 )
+		{
+			// npc_german_test_pain asked for one exact sequence (an activity can have several)
+			SetIdealActivity( ACT_DO_NOT_DISTURB );
+			SetSequenceById( m_iForceFlinchSeq );
+		}
 		break;
 
 	default:
@@ -829,6 +841,21 @@ void CNPC_GermanSoldier::RunTask( const Task_t *pTask )
 {
 	switch ( pTask->iTask )
 	{
+	case TASK_BIG_FLINCH:
+		AutoMovement();		// full-body pains carry their stagger as extracted motion
+		if ( m_iForceFlinchSeq >= 0 )
+		{
+			if ( IsSequenceFinished() )
+			{
+				m_iForceFlinchSeq = -1;
+				SetIdealActivity( GetStoppedActivity() );
+				TaskComplete();
+			}
+			break;
+		}
+		BaseClass::RunTask( pTask );
+		break;
+
 	case TASK_RANGE_ATTACK1:
 		{
 			AutoMovement();
@@ -1145,36 +1172,26 @@ void CNPC_GermanSoldier::DoHitReaction( const CTakeDamageInfo &info )
 	Activity actFull = ACT_INVALID;		// or a full-body pain
 	bool bForce = m_bTestForcePain;
 	m_bTestForcePain = false;
-	// (npc_german_test_hit forces a reaction: no cooldown, no chance roll)
+	bool bStill = !IsMoving();
+	// Standing or crouched still, a hit is a big deal: he plays a full-body CoD pain and is
+	// out of the fight for it (the cooldown keeps him from being stun-locked). On the move:
+	// big hits (or the chance roll) give an upper-body pain over his running legs, else the
+	// kick alone. npc_german_test_hit forces a reaction: no cooldown, no chance roll.
 	if ( !bForce && gpGlobals->curtime < m_flNextFullFlinch )	pszSkip = "cooldown";
 	else if ( IsCurSchedule( SCHED_BIG_FLINCH ) )				pszSkip = "already down";
-	else if ( !bForce && info.GetDamage() < m_flFullFlinchDamage && random->RandomFloat( 0.0f, 1.0f ) > m_flFullFlinchChance )
-																pszSkip = "small hit, chance roll failed";
-	else
+	else if ( bStill )
 	{
-		bool bStill = !m_bLastHitCrouched && !IsMoving();
-		if ( LastHitGroup() == HITGROUP_HEAD && !m_bLastHitCrouched )
-		{
-			// The helmet hit is a full-body duck - as an overlay on DoD's legs the balancing arm
-			// made no sense. Standing still: the whole thing. On the move: the head snap (kick) only.
-			if ( bStill )
-				actFull = ResolveNamedActivity( "ACT_FLINCH_HEAD" );
-			if ( actFull == ACT_INVALID )
-				pszSkip = bStill ? "no full-body head pain animation" : "head hit on the move";
-		}
-		else
-		{
-			if ( bStill && LastHitGroup() != HITGROUP_HEAD && info.GetDamage() >= m_flFullFlinchDamage &&
-				 random->RandomFloat( 0.0f, 1.0f ) < 0.35f )
-				actFull = ResolveNamedActivity( "ACT_WW2_PAIN_FALLTOHAND" );
-			if ( actFull == ACT_INVALID )
-			{
-				actPain = PickUpperPain();
-				if ( actPain == ACT_INVALID )
-					pszSkip = "no animation (is npc_ww2_anims_cod1 included?)";
-			}
-		}
+		if ( !bForce && random->RandomFloat( 0.0f, 1.0f ) > m_flStillPainChance )
+			pszSkip = "still, chance roll failed";
+		else if ( ( actFull = PickFullBodyPain( info ) ) == ACT_INVALID )
+			pszSkip = "no full-body pain animation (are both WW2 packs included?)";
 	}
+	else if ( !bForce && info.GetDamage() < m_flFullFlinchDamage && random->RandomFloat( 0.0f, 1.0f ) > m_flFullFlinchChance )
+		pszSkip = "small hit on the move, chance roll failed";
+	else if ( LastHitGroup() == HITGROUP_HEAD && !m_bLastHitCrouched )
+		pszSkip = "head hit on the move";	// the helmet hit is a full-body duck - no overlay version
+	else if ( ( actPain = PickUpperPain() ) == ACT_INVALID )
+		pszSkip = "no animation (is npc_ww2_anims_cod1 included?)";
 
 	if ( npc_german_debug.GetBool() || bForce )
 	{
@@ -1283,6 +1300,11 @@ void CNPC_GermanSoldier::StartFullBodyPain( Activity act )
 {
 	m_actFullBodyPain = act;
 	m_flWantFullFlinch = gpGlobals->curtime;
+	// Pains that end on one knee (fall to a hand, the leg hit, the crouch pain) leave him
+	// crouched, so DoD's crouch takes over instead of him popping up; the AI stands him later.
+	const char *pszAct = ActivityList_NameForIndex( act );
+	if ( pszAct && ( Q_stristr( pszAct, "FALLTOHAND" ) || Q_stristr( pszAct, "LEG" ) || Q_stristr( pszAct, "CROUCH" ) ) )
+		Crouch();
 	SetCondition( COND_HEAVY_DAMAGE );
 	ClearSchedule( "German soldier full-body pain" );	// SelectSchedule starts it next think
 }
@@ -1328,6 +1350,42 @@ Activity CNPC_GermanSoldier::PickUpperPain( void )
 	return a;
 }
 
+// Full-body pain for a soldier standing or crouched still, by where he was hit. Several
+// sequences can share an activity (CoD2 and CoD1 shoulder pains) - the engine picks one.
+Activity CNPC_GermanSoldier::PickFullBodyPain( const CTakeDamageInfo &info )
+{
+	Activity a = ACT_INVALID;
+	if ( m_bLastHitCrouched )
+		return ResolveNamedActivity( "ACT_WW2_CROUCH_PAIN" );
+
+	const float flCentre = 3.0f;
+	switch ( LastHitGroup() )
+	{
+	case HITGROUP_HEAD:		a = ResolveNamedActivity( "ACT_FLINCH_HEAD" ); break;
+	case HITGROUP_LEFTARM:	a = ResolveNamedActivity( "ACT_FLINCH_LEFTARM" ); break;
+	case HITGROUP_RIGHTARM:	a = ResolveNamedActivity( "ACT_FLINCH_RIGHTARM" ); break;
+	case HITGROUP_LEFTLEG:	a = ResolveNamedActivity( "ACT_FLINCH_LEFTLEG" ); break;
+	case HITGROUP_RIGHTLEG:	a = ResolveNamedActivity( "ACT_FLINCH_RIGHTLEG" ); break;
+	case HITGROUP_CHEST:
+	case HITGROUP_GENERIC:
+	case HITGROUP_GEAR:
+		if ( m_flLastHitSide > flCentre )		a = ResolveNamedActivity( "ACT_FLINCH_RIGHTARM" );
+		else if ( m_flLastHitSide < -flCentre )	a = ResolveNamedActivity( "ACT_FLINCH_LEFTARM" );
+		break;
+	default:
+		break;
+	}
+	if ( a == ACT_INVALID )
+	{
+		// gut and centre chest: the hunch, or for a big hit sometimes falling to a hand
+		if ( info.GetDamage() >= m_flFullFlinchDamage && random->RandomFloat( 0.0f, 1.0f ) < 0.35f )
+			a = ResolveNamedActivity( "ACT_WW2_PAIN_FALLTOHAND" );
+		if ( a == ACT_INVALID )
+			a = ResolveNamedActivity( "ACT_FLINCH_STOMACH" );
+	}
+	return a;
+}
+
 // Full-body flinch schedules are only used for "fall to a hand"; everything else is
 // the upper-body overlay above. Returning nothing here also keeps the base AI from
 // starting its own full-body flinch on heavy damage (one owner for pain reactions).
@@ -1348,6 +1406,7 @@ int CNPC_GermanSoldier::SelectSchedule( void )
 			return SCHED_BIG_FLINCH;
 		m_actFullBodyPain = ACT_INVALID;
 	}
+	m_iForceFlinchSeq = -1;		// a test pain that never started (or was cut short) is over
 	return BaseClass::SelectSchedule();
 }
 
@@ -1368,8 +1427,16 @@ int CNPC_GermanSoldier::MeleeAttack1Conditions( float flDot, float flDist )
 //-----------------------------------------------------------------------------
 static bool IsPainTestActivity( const char *pszAct )
 {
-	return pszAct && ( Q_stristr( pszAct, "_UPPER_" ) || !Q_stricmp( pszAct, "ACT_WW2_PAIN_FALLTOHAND" ) ||
-					   !Q_stricmp( pszAct, "ACT_FLINCH_HEAD" ) );
+	if ( !pszAct )
+		return false;
+	static const char *s_Full[] = { "ACT_WW2_PAIN_FALLTOHAND", "ACT_FLINCH_HEAD", "ACT_FLINCH_LEFTARM", "ACT_FLINCH_RIGHTARM",
+									"ACT_FLINCH_STOMACH", "ACT_FLINCH_LEFTLEG", "ACT_FLINCH_RIGHTLEG", "ACT_WW2_CROUCH_PAIN" };
+	for ( int i = 0; i < (int)ARRAYSIZE( s_Full ); i++ )
+	{
+		if ( !Q_stricmp( pszAct, s_Full[i] ) )
+			return true;
+	}
+	return Q_stristr( pszAct, "_UPPER_" ) != NULL;
 }
 
 static bool IsDeathTestActivity( const char *pszAct )
@@ -1400,7 +1467,8 @@ void CNPC_GermanSoldier::TestPain( int iSequence )
 
 	if ( pszAct && !Q_stristr( pszAct, "_UPPER_" ) )
 	{
-		StartFullBodyPain( (Activity)GetSequenceActivity( iSequence ) );	// full-body ones go through their real schedule
+		m_iForceFlinchSeq = iSequence;		// full-body ones go through their real schedule
+		StartFullBodyPain( (Activity)GetSequenceActivity( iSequence ) );
 		return;
 	}
 

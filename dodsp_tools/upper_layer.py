@@ -116,3 +116,13 @@ def rebase_upper(src_path, dst_path, stance_path):
         f[spine1] = tuple(f[spine1][:3]) + euler(R1)
     s.write(dst_path)
     return math.degrees(psi)
+
+
+def walkframe_lines(smd_path, step=6):
+    """Motion extraction for a full-body pain that travels (CoD2's shoulder pains stagger
+    ~30 units): piecewise walkframes so the engine moves the NPC along (AutoMovement)
+    instead of the feet stepping away and sliding back when DoD takes over. X/Y only - the
+    turn stays in the pose and the cross-fade back to DoD squares him up again."""
+    n = len(SMD(smd_path).frames)
+    keys = list(range(step, n - 1, step)) + [n - 1]
+    return [f'walkframe {k} LX LY' for k in keys if k > 0]

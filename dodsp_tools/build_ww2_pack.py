@@ -19,7 +19,7 @@ import os, re, sys, shutil, math
 import numpy as np
 sys.path.insert(0, os.path.dirname(__file__))
 from smd import SMD
-from upper_layer import weightlist_lines, upper_sequence, ikchain_lines, hand_release_lines, rebase_upper
+from upper_layer import weightlist_lines, upper_sequence, ikchain_lines, hand_release_lines, rebase_upper, walkframe_lines
 from gun_follow import GunReference, place_guns, inv
 
 # Upper-body pain overlays (see upper_layer.py): source animation -> activity
@@ -27,6 +27,9 @@ UPPER_PAINS = {'a_stand_helmet_hit': 'ACT_WW2_UPPER_PAIN_HEAD',
                'a_stand_pain_front_lshoulder': 'ACT_WW2_UPPER_PAIN_LARM',
                'a_stand_pain_front_rshoulder': 'ACT_WW2_UPPER_PAIN_RARM',
                'a_stand_pain_hunch': 'ACT_WW2_UPPER_PAIN_GUT'}
+
+# Full-body pains (played when he's standing or crouched still) travel: extract their motion.
+FULL_BODY_PAINS = {'a_stand_helmet_hit', 'a_stand_pain_front_lshoulder', 'a_stand_pain_front_rshoulder', 'a_stand_pain_hunch'}
 
 SRC_DIR, SRC_QC, DOD_REF, DOD_BOLT, DOD_MP40, OUT = sys.argv[1:7]
 
@@ -219,6 +222,8 @@ for a in used_anims:
     L.append(f'$animation "{a}" "ww2_{a}.smd" {{')
     for o in opts: L.append('\t' + o)
     for o in hand_release_lines(frames[a]): L.append('\t' + o)
+    if a in FULL_BODY_PAINS:
+        for o in walkframe_lines(os.path.join(OUT, f'ww2_{a}.smd')): L.append('\t' + o)
     L.append('}')
 L.append('')
 

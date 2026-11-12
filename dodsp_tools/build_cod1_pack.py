@@ -9,11 +9,14 @@ usage: build_cod1_pack.py <assault_dir> <dod_player_shared_dir> <german_rifleman
 import os, re, sys, shutil
 sys.path.insert(0, os.path.dirname(__file__))
 from cod1_setup import make_retargeter
-from upper_layer import weightlist_lines, upper_sequence, ikchain_lines, hand_release_lines, rebase_upper
+from upper_layer import weightlist_lines, upper_sequence, ikchain_lines, hand_release_lines, rebase_upper, walkframe_lines
 from smd import SMD
 
 UPPER_PAINS = {'pain_lshoulder': 'ACT_WW2_UPPER_PAIN_LSHOULDER', 'pain_rshoulder': 'ACT_WW2_UPPER_PAIN_RSHOULDER',
                'pain_hunch': 'ACT_WW2_UPPER_PAIN_HUNCH', 'crouch_pain': 'ACT_WW2_UPPER_CROUCH_PAIN'}
+
+# Full-body pains (played when he's standing or crouched still): extract their motion.
+FULL_BODY_PAINS = {'pain_lshoulder', 'pain_rshoulder', 'pain_hunch', 'crouch_pain', 'pain_falltohand', 'pain_leg'}
 
 SRC, DOD_DIR, DOD_REF, SKELETON, OUT = sys.argv[1:6]
 qc = open(os.path.join(SRC, 'assault.qc'), encoding='latin1').read().replace('\r\n', '\n')
@@ -96,6 +99,8 @@ for name, b in seqs:
         for l in keep: body.append('\t' + l)
         if len(smds) == 1:
             for l in hand_release_lines(converted[smds[0]][1]): body.append('\t' + l)
+            if name in FULL_BODY_PAINS:
+                for l in walkframe_lines(os.path.join(OUT, converted[smds[0]][0])): body.append('\t' + l)
         body.append('}')
         rows.append((seqname, act, smds[0], converted[smds[0]][1]))
 
