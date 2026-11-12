@@ -137,6 +137,7 @@ public:
 	void		TestPainAll( void );
 	void		TestHit( int nHitGroup, float flSide, float flDamage, CBaseEntity *pAttacker );
 	void		TestDeath( int iSequence, CBaseEntity *pAttacker );
+	bool		TestToggleCrouch( void );
 
 protected:
 	void		PopulatePoseParameters( void );
@@ -231,6 +232,7 @@ private:
 	int					m_iForceDeathSeq;		// npc_german_test_death: exact death sequence, -1 = none
 	int					m_iTestPainAllNext;		// npc_german_test_pain all: next list entry, -1 = off
 	float				m_flTestPainAllTime;
+	bool				m_bTestCrouch;			// npc_german_test_crouch: hold a crouch whatever the AI wants
 
 	// Networked to the client for the procedural hit kick
 	CNetworkVector( m_vecHitDir );			// horizontal direction the bullet travelled
@@ -298,6 +300,7 @@ CNPC_GermanSoldier::CNPC_GermanSoldier() : m_AnimMap( DefLessFunc( int ) )
 	m_iForceDeathSeq = -1;
 	m_iTestPainAllNext = -1;
 	m_flTestPainAllTime = 0.0f;
+	m_bTestCrouch = false;
 	m_vecHitDir.Init( 1, 0, 0 );
 	m_nHitGroup = 0;
 	m_flHitTime = 0.0f;
@@ -574,6 +577,12 @@ Activity CNPC_GermanSoldier::NPC_TranslateActivity( Activity eNewActivity )
 	if ( ( eNewActivity == ACT_GESTURE_RANGE_ATTACK1 || eNewActivity == ACT_GESTURE_RELOAD ) && IsHitReacting() )
 		return ACT_INVALID;
 
+	// npc_german_test_crouch: every idle becomes the crouched aim (the base only crouches plain ACT_IDLE)
+	if ( m_bTestCrouch && ( eNewActivity == ACT_IDLE || eNewActivity == ACT_IDLE_RELAXED || eNewActivity == ACT_IDLE_STIMULATED ||
+							eNewActivity == ACT_IDLE_AGITATED || eNewActivity == ACT_IDLE_ANGRY || eNewActivity == ACT_IDLE_SMG1 ||
+							eNewActivity == ACT_IDLE_AIM_RELAXED || eNewActivity == ACT_IDLE_AIM_STIMULATED || eNewActivity == ACT_IDLE_AIM_AGITATED ) )
+		eNewActivity = ACT_RANGE_AIM_LOW;
+
 	Activity eCombine = BaseClass::NPC_TranslateActivity( eNewActivity );
 
 	EnsureAnimMap();
@@ -714,6 +723,11 @@ void CNPC_GermanSoldier::PrescheduleThink( void )
 	UpdateMovingReload();
 	UpdatePainRecovery();
 	UpdateTestPainAll();
+	if ( m_bTestCrouch && !IsCrouching() )
+	{
+		Crouch();
+		ResetActivity();
+	}
 }
 
 void CNPC_GermanSoldier::StartTask( const Task_t *pTask )
@@ -1439,6 +1453,17 @@ void CNPC_GermanSoldier::TestDeath( int iSequence, CBaseEntity *pAttacker )
 	TakeDamage( info );
 }
 
+bool CNPC_GermanSoldier::TestToggleCrouch( void )
+{
+	m_bTestCrouch = !m_bTestCrouch;
+	if ( m_bTestCrouch )
+		ForceCrouch();
+	else
+		ClearForceCrouch();
+	ResetActivity();		// re-pick the animation now, not at the next activity change
+	return m_bTestCrouch;
+}
+
 // --- console side ------------------------------------------------------------
 static CNPC_GermanSoldier *GermanTestTarget( void )
 {
@@ -1677,14 +1702,5 @@ CON_COMMAND( npc_german_test_crouch, "Toggle forced crouching on the German sold
 	CNPC_GermanSoldier *pNPC = GermanTestTarget();
 	if ( !pNPC )
 		return;
-	if ( pNPC->CrouchIsDesired() )
-	{
-		pNPC->ClearForceCrouch();
-		Msg( "npc_german_soldier %d: stands\n", pNPC->entindex() );
-	}
-	else
-	{
-		pNPC->ForceCrouch();
-		Msg( "npc_german_soldier %d: forced to crouch\n", pNPC->entindex() );
-	}
+	Msg( "npc_german_soldier %d: %s\n", pNPC->entindex(), pNPC->TestToggleCrouch() ? "forced to crouch" : "stands" );
 }
