@@ -140,7 +140,7 @@ CWeaponDODSPGun::CWeaponDODSPGun()
 	m_nTracerFreq = 2;
 	m_flBoltSoundDelay = 0.0f;
 	m_fMinRange1 = 0;
-	m_fMaxRange1 = 4096;
+	m_fMaxRange1 = 8192;	// the NPC's sight_distance limits engagement; spread limits hits
 }
 
 void CWeaponDODSPGun::Precache( void )

@@ -50,6 +50,7 @@
 #include "ai_network.h"
 #include "ai_node.h"
 #include "ai_navigator.h"
+#include "ai_senses.h"
 #include "activitylist.h"
 #include "animation.h"
 #include "npcevent.h"
@@ -111,12 +112,14 @@ public:
 	{
 		SCHED_GERMAN_COVER_HIDE = BaseClass::NEXT_SCHEDULE,	// duck behind low cover between bursts
 		SCHED_GERMAN_MOVE_TO_COVER,							// run to the best-scoring low cover nearby
+		SCHED_GERMAN_HOLD_COVER,							// can't see / reach the enemy: stay in cover, watch his last spot
 		NEXT_SCHEDULE
 	};
 	enum
 	{
 		TASK_GERMAN_HIDE = BaseClass::NEXT_TASK,
 		TASK_GERMAN_PATH_TO_COVER,
+		TASK_GERMAN_WATCH,
 		NEXT_TASK
 	};
 	enum
@@ -209,7 +212,8 @@ private:
 	enum { COVER_EXPOSED = -1, COVER_FULL = 0, COVER_CROUCH = 1, COVER_STAND = 2 };
 	int			LowCoverAgainst( CBaseEntity *pEnemy );	// COVER_*: > 0 means low cover he can fire from
 	int			CoverAt( const Vector &vecPos, CBaseEntity *pEnemy, trace_t *pHideTrace = NULL );	// same test at any spot
-	bool		FindCoverSpot( CBaseEntity *pEnemy );		// best-scoring low cover nearby -> m_vecCoverSpot
+	bool		FindCoverSpot( CBaseEntity *pEnemy, bool bAdvance = false );	// best-scoring low cover nearby (bAdvance: only spots closer to him)
+	bool		IsAtCoverSpot( void ) const { return m_bHasCoverSpot && ( m_vecCoverSpot - GetAbsOrigin() ).Length2D() < 48.0f; }
 	bool		IsCoverSpotTaken( const Vector &vecPos );
 	bool		IsWounded( void ) const { return GetMaxHealth() > 0 && GetHealth() < GetMaxHealth() * m_flWoundedHealth; }
 	void		NoteUnderFire( void );
@@ -241,6 +245,10 @@ private:
 	Vector				m_vecCoverSpot;			// where he's going / sitting (claimed: squadmates pick other spots)
 	bool				m_bHasCoverSpot;
 	float				m_flNextCoverSearch;
+	float				m_flNextAdvance;		// bounding forward to closer cover: not more often than this
+	float				m_flCoverHoldTime;		// script: enemy out of sight this long -> advance to closer cover
+	float				m_flLastCombatTime;		// last think in combat (alert-state holding)
+	float				m_flWatchUntil;
 	float				m_flCoverHideUntil;
 	float				m_flLastBurstEnd;		// a standing/crouched burst just finished (cover rhythm)
 	float				m_flCoverCheckTime;		// LowCoverAgainst cache
@@ -351,6 +359,10 @@ CNPC_GermanSoldier::CNPC_GermanSoldier() : m_AnimMap( DefLessFunc( int ) )
 	m_vecCoverSpot = vec3_origin;
 	m_bHasCoverSpot = false;
 	m_flNextCoverSearch = 0.0f;
+	m_flNextAdvance = 0.0f;
+	m_flCoverHoldTime = 8.0f;
+	m_flLastCombatTime = -1000.0f;
+	m_flWatchUntil = 0.0f;
 	m_flCoverHideUntil = 0.0f;
 	m_flLastBurstEnd = 0.0f;
 	m_flCoverCheckTime = 0.0f;
@@ -465,6 +477,9 @@ void CNPC_GermanSoldier::Spawn( void )
 	NPCInit();
 
 	SetViewOffset( Vector( 0, 0, 64 ) );	// DoD German's eyes standing (crouched: GetCrouchEyeOffset)
+	// How far he sees. The engine default (2048) made him lose you across a modest field, go
+	// "alert" and wander off his cover. Rifles reach further than that.
+	GetSenses()->SetDistLook( g_pGermanScript ? clamp( g_pGermanScript->GetFloat( "sight_distance", 6000.0f ), 512.0f, 16384.0f ) : 6000.0f );
 	HoldMoveForward();
 }
 
@@ -687,6 +702,7 @@ void CNPC_GermanSoldier::BuildAnimMap( void )
 	m_flCoverHideMax = MAX( m_flCoverHideMin, pScript->GetFloat( "cover_hide_max", 4.0f ) );
 	m_flCoverMaxGap = clamp( pScript->GetFloat( "cover_max_gap", 128.0f ), 16.0f, 512.0f );
 	m_flCoverSearchRadius = clamp( pScript->GetFloat( "cover_search_radius", 900.0f ), 128.0f, 4096.0f );
+	m_flCoverHoldTime = clamp( pScript->GetFloat( "cover_hold_time", 8.0f ), 0.0f, 120.0f );
 	m_flUnderFireHide = MAX( 0.0f, pScript->GetFloat( "under_fire_hide", 2.5f ) );
 	m_flWoundedHealth = clamp( pScript->GetFloat( "wounded_health", 0.5f ), 0.0f, 1.0f );
 	m_flWoundedHideScale = MAX( 1.0f, pScript->GetFloat( "wounded_hide_scale", 1.75f ) );
@@ -899,11 +915,12 @@ bool CNPC_GermanSoldier::IsCoverSpotTaken( const Vector &vecPos )
 // Position evaluation (Killzone-style): score every ground node within reach by the cover it
 // gives against this enemy, how far he has to run, and how close it puts him to the enemy.
 // Squadmates' spots are skipped. Picks the best; the move schedule finds the path.
-bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy )
+bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, bool bAdvance )
 {
 	if ( !pEnemy || !g_pBigAINet )
 		return false;
 	Vector vecMe = GetAbsOrigin(), vecFoe = pEnemy->GetAbsOrigin();
+	float flMyFoe = ( vecMe - vecFoe ).Length2D();
 	float flBest = -FLT_MAX;
 	Vector vecBest;
 	int nTested = 0;
@@ -919,6 +936,8 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy )
 		float flFoe = ( vecPos - vecFoe ).Length2D();
 		if ( flFoe < 192.0f || IsCoverSpotTaken( vecPos ) )
 			continue;
+		if ( bAdvance && flFoe > flMyFoe - 128.0f )
+			continue;	// bounding forward: only cover that actually gains ground
 		nTested++;
 		int nCover = CoverAt( vecPos, pEnemy );
 		if ( nCover <= COVER_FULL )
@@ -933,7 +952,7 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy )
 		}
 	}
 	if ( npc_german_debug.GetBool() )
-		Msg( "npc_german_soldier %d: cover search - %d spots tested, %s\n", entindex(), nTested,
+		Msg( "npc_german_soldier %d: %s - %d spots tested, %s\n", entindex(), bAdvance ? "advance search (closer cover)" : "cover search", nTested,
 			 flBest > -FLT_MAX ? "found one" : "no low cover within reach" );
 	if ( flBest == -FLT_MAX )
 		return false;
@@ -1351,6 +1370,20 @@ void CNPC_GermanSoldier::StartTask( const Task_t *pTask )
 		}
 		break;
 
+	case TASK_GERMAN_WATCH:
+		{
+			// Overwatch from his cover: up at the wall (crouched behind low cover, standing behind
+			// chest-high), aimed at where he last saw you. Short, so the brain re-decides often.
+			int nCover = GetEnemy() ? LowCoverAgainst( GetEnemy() ) : COVER_CROUCH;
+			if ( nCover == COVER_STAND )
+				Stand();
+			else
+				Crouch();
+			SetIdealActivity( ACT_IDLE_ANGRY );
+			m_flWatchUntil = gpGlobals->curtime + random->RandomFloat( 1.5f, 3.0f );
+		}
+		break;
+
 	case TASK_GERMAN_HIDE:
 		if ( m_actHide == ACT_INVALID )
 		{
@@ -1404,6 +1437,13 @@ void CNPC_GermanSoldier::RunTask( const Task_t *pTask )
 {
 	switch ( pTask->iTask )
 	{
+	case TASK_GERMAN_WATCH:
+		if ( GetEnemy() )
+			GetMotor()->SetIdealYawToTargetAndUpdate( GetEnemyLKP(), AI_KEEP_YAW_SPEED );
+		if ( gpGlobals->curtime >= m_flWatchUntil )
+			TaskComplete();
+		break;
+
 	case TASK_GERMAN_HIDE:
 		if ( GetEnemy() )
 			GetMotor()->SetIdealYawToTargetAndUpdate( GetEnemyLKP(), AI_KEEP_YAW_SPEED );	// keep facing his cover
@@ -1993,7 +2033,15 @@ int CNPC_GermanSoldier::SelectSchedule( void )
 	m_iForceFlinchSeq = -1;		// a test pain that never started (or was cut short) is over
 
 	if ( IsAlive() && GetState() == NPC_STATE_COMBAT && GetEnemy() )
+	{
+		m_flLastCombatTime = gpGlobals->curtime;
 		return SelectCombatSchedule();
+	}
+	// Lost track of the enemy after a fight: hold the cover he's in for a while instead of
+	// wandering off it (the engine's alert schedules walk to sounds and patrol).
+	if ( IsAlive() && GetState() == NPC_STATE_ALERT && IsAtCoverSpot() &&
+		 gpGlobals->curtime - m_flLastCombatTime < 4.0f * m_flCoverHoldTime && !HasCondition( COND_HEAR_DANGER ) )
+		return SCHED_GERMAN_HOLD_COVER;
 	return BaseClass::SelectSchedule();		// idle / alert: the engine's own (patrol, investigate, face)
 }
 
@@ -2068,12 +2116,29 @@ int CNPC_GermanSoldier::SelectCombatSchedule( void )
 		}
 		return bCanHide ? SCHED_GERMAN_COVER_HIDE : SCHED_COMBAT_FACE;	// no slot, no cover: hold and watch (no dithering)
 	}
-	// 6. Can't see him (or too far): one slot holder moves to get a shot, the rest hold.
+	// 6. Can't see him (or too far to shoot).
 	if ( HasCondition( COND_ENEMY_OCCLUDED ) || HasCondition( COND_TOO_FAR_TO_ATTACK ) || !HasCondition( COND_SEE_ENEMY ) )
 	{
+		// In cover: never leave it just to look for a shot. Hold and watch his last spot; once
+		// he's been out of sight a while, bound forward to closer cover (two at a time - the
+		// squad's attack slots - so the rest keep watching).
+		if ( bCanHide || IsAtCoverSpot() )
+		{
+			float flUnseen = gpGlobals->curtime - GetEnemyLastTimeSeen();
+			if ( flUnseen > m_flCoverHoldTime && gpGlobals->curtime >= m_flNextAdvance &&
+				 ( !m_pSquad || OccupyStrategySlotRange( SQUAD_SLOT_ATTACK1, SQUAD_SLOT_ATTACK2 ) ) )
+			{
+				m_flNextAdvance = gpGlobals->curtime + 4.0f;
+				if ( FindCoverSpot( GetEnemy(), true ) )
+					return SCHED_GERMAN_MOVE_TO_COVER;
+				VacateStrategySlot();
+			}
+			return HasCondition( COND_SEE_ENEMY ) ? SCHED_COMBAT_FACE : SCHED_GERMAN_HOLD_COVER;
+		}
+		// In the open: one slot holder moves to get a shot, the rest hold.
 		if ( !m_pSquad || OccupyStrategySlotRange( SQUAD_SLOT_ATTACK1, SQUAD_SLOT_ATTACK2 ) )
 			return SCHED_ESTABLISH_LINE_OF_FIRE;
-		return bCanHide ? SCHED_GERMAN_COVER_HIDE : SCHED_COMBAT_FACE;
+		return SCHED_COMBAT_FACE;
 	}
 	// 7. Anything else: the engine's generic combat choice.
 	return BaseClass::SelectSchedule();
@@ -2467,6 +2532,7 @@ AI_BEGIN_CUSTOM_NPC( npc_german_soldier, CNPC_GermanSoldier )
 
 	DECLARE_TASK( TASK_GERMAN_HIDE )
 	DECLARE_TASK( TASK_GERMAN_PATH_TO_COVER )
+	DECLARE_TASK( TASK_GERMAN_WATCH )
 	DECLARE_CONDITION( COND_GERMAN_FLANKED )
 
 	//=========================================================
@@ -2502,6 +2568,27 @@ AI_BEGIN_CUSTOM_NPC( npc_german_soldier, CNPC_GermanSoldier )
 		"	Interrupts"
 		"		COND_ENEMY_DEAD"
 		"		COND_HEAR_DANGER"
+	)
+
+	//=========================================================
+	// SCHED_GERMAN_HOLD_COVER: stay at the cover, up and watching his last known spot.
+	//=========================================================
+	DEFINE_SCHEDULE
+	(
+		SCHED_GERMAN_HOLD_COVER,
+
+		"	Tasks"
+		"		TASK_STOP_MOVING			0"
+		"		TASK_GERMAN_WATCH			0"
+		""
+		"	Interrupts"
+		"		COND_NEW_ENEMY"
+		"		COND_ENEMY_DEAD"
+		"		COND_CAN_RANGE_ATTACK1"
+		"		COND_LIGHT_DAMAGE"
+		"		COND_HEAVY_DAMAGE"
+		"		COND_HEAR_DANGER"
+		"		COND_GERMAN_FLANKED"
 	)
 
 AI_END_CUSTOM_NPC()
