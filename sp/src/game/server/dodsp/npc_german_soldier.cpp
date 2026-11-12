@@ -1022,6 +1022,9 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, bool bAdvance )
 			continue;
 		if ( bAdvance && flFoe > flMyFoe - 128.0f )
 			continue;	// bounding forward: only cover that actually gains ground
+		float flCloser = flMyFoe - flFoe;	// how much ground toward the enemy this spot takes
+		if ( !bAdvance && flCloser > 256.0f )
+			continue;	// taking cover is not attacking: ground is only taken by bounding (rule 7)
 		nTested++;
 		int nCover = CoverAt( vecPos, pEnemy );
 		if ( nCover <= COVER_FULL )
@@ -1031,6 +1034,8 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, bool bAdvance )
 		c.cover = ( nCover == COVER_CROUCH ? 100.0f : 80.0f )
 				- ( flFoe < 400.0f ? ( 400.0f - flFoe ) * 0.1f : 0.0f );	// not right in his face
 		c.foe = flFoe;
+		if ( !bAdvance && flCloser > 0.0f )
+			c.cover -= flCloser * 0.15f;		// prefer cover that doesn't close on him
 		c.score = c.cover - flDist * 0.08f;		// straight-line estimate (a route is never shorter)
 		// keep the best MAX_CANDS by estimate
 		int iSlot = nCands < MAX_CANDS ? nCands++ : -1;
