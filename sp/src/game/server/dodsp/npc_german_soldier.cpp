@@ -97,6 +97,15 @@ CON_COMMAND( npc_german_reload_script, "Reload scripts/npc_german_soldier.txt; G
 	Msg( "npc_german_soldier: reloaded %s\n", GERMAN_SOLDIER_SCRIPT );
 }
 
+#define COVER_HIDE_TOP		32.0f	// top of the helmet in the CoD2 hide pose (+2)
+#define HIDE_EYE			28.0f	// his eyes while hidden (he can't see over the wall)
+#define COVER_CROUCH_EYE	44.0f	// muzzle height firing over a low wall crouched (CoD2 low-wall fire)
+#define COVER_STAND_EYE		58.0f	// ...and standing (CoD2 / DoD standing fire)
+#define OPEN_CROUCH_GUN		36.0f	// DoD crouched aim in the open
+#define OPEN_CROUCH_EYE		40.0f
+#define COVER_MASK			( CONTENTS_SOLID | CONTENTS_MOVEABLE | CONTENTS_WINDOW | CONTENTS_BLOCKLOS )	// what stops bullets / sight
+
+
 //-----------------------------------------------------------------------------
 // The NPC
 //-----------------------------------------------------------------------------
@@ -152,6 +161,9 @@ public:
 	int			GetSoundInterests( void );
 	float		MaxYawSpeed( void );
 	Vector		Weapon_ShootPosition( void );
+	Vector		GetCrouchEyeOffset( void );
+	Vector		GetCrouchGunOffset( void );
+	int			CrouchPose( void );
 	int			SelectCombatSchedule( void );
 	int			Decide( int iSched, const char *pszWhy );	// every combat choice goes through here (decision log)
 	int			SelectFailSchedule( int failedSchedule, int failedTask, AI_TaskFailureCode_t taskFailCode );
@@ -495,7 +507,7 @@ void CNPC_GermanSoldier::Spawn( void )
 	CapabilitiesAdd( bits_CAP_TURN_HEAD | bits_CAP_MOVE_GROUND | bits_CAP_AIM_GUN | bits_CAP_SQUAD | bits_CAP_USE_WEAPONS |
 					 bits_CAP_DUCK | bits_CAP_NO_HIT_SQUADMATES | bits_CAP_MOVE_SHOOT | bits_CAP_DOORS_GROUP );
 
-	m_HackedGunPos = Vector( 0, 0, 58 );
+	m_HackedGunPos = Vector( 0, 0, COVER_STAND_EYE );
 	m_MoveAndShootOverlay.SetInitialDelay( 0.75f );
 
 	NPCInit();
@@ -524,11 +536,41 @@ float CNPC_GermanSoldier::MaxYawSpeed( void )
 	}
 }
 
+//-----------------------------------------------------------------------------
+// Heights. ONE owner for every "how high is his gun / eye / helmet" fact: the cover test, the
+// engine's sight check (eye) and its firing-line check (gun) all read these, so a wall the
+// cover test calls "fire over it" is a wall the engine lets him fire over. (They disagreed:
+// the cover test fired crouched at 44, the engine's crouched gun sat at 36 - behind a 38 wall
+// he saw you but was never allowed to shoot.)
+//-----------------------------------------------------------------------------
+// Crouched pose right now: hidden, up firing over low cover (CoD2 pose), or crouched in the open (DoD).
+int CNPC_GermanSoldier::CrouchPose( void )
+{
+	if ( IsHidingInCover() )
+		return 0;
+	if ( m_actCoverLowFire != ACT_INVALID && GetEnemy() && !IsMoving() && GetState() == NPC_STATE_COMBAT &&
+		 LowCoverAgainst( GetEnemy() ) > COVER_FULL )
+		return 1;
+	return 2;
+}
+
+Vector CNPC_GermanSoldier::GetCrouchEyeOffset( void )
+{
+	static const float s_flEye[] = { HIDE_EYE, COVER_CROUCH_EYE + 2.0f, OPEN_CROUCH_EYE };
+	return Vector( 0, 0, s_flEye[ CrouchPose() ] );
+}
+
+Vector CNPC_GermanSoldier::GetCrouchGunOffset( void )
+{
+	static const float s_flGun[] = { HIDE_EYE, COVER_CROUCH_EYE, OPEN_CROUCH_GUN };
+	return Vector( 0, 0, s_flGun[ CrouchPose() ] );
+}
+
 Vector CNPC_GermanSoldier::Weapon_ShootPosition( void )
 {
 	if ( IsCrouching() || IsCrouchedActivity( GetActivity() ) )
 		return GetAbsOrigin() + GetCrouchGunOffset();
-	return GetAbsOrigin() + m_HackedGunPos;
+	return GetAbsOrigin() + Vector( 0, 0, COVER_STAND_EYE );
 }
 
 //-----------------------------------------------------------------------------
@@ -839,10 +881,6 @@ bool CNPC_GermanSoldier::IsHidingInCover( void )
 // sandbag, with or without hint nodes: the enemy can't see where his hidden helmet would be,
 // the thing in the way is right in front of him, and he can see the enemy from a crouched
 // (1) or standing (2) firing position.
-#define COVER_HIDE_TOP		32.0f	// top of the helmet in the CoD2 hide pose (+2)
-#define COVER_CROUCH_EYE	44.0f	// muzzle height firing over a low wall crouched
-#define COVER_STAND_EYE		62.0f	// ...and standing
-#define COVER_MASK			( CONTENTS_SOLID | CONTENTS_MOVEABLE | CONTENTS_WINDOW | CONTENTS_BLOCKLOS )	// what stops bullets / sight
 int CNPC_GermanSoldier::LowCoverAgainst( CBaseEntity *pEnemy )
 {
 	if ( !pEnemy )
