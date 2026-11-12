@@ -51,6 +51,8 @@
 #include "ai_node.h"
 #include "ai_navigator.h"
 #include "ai_senses.h"
+#include "ai_pathfinder.h"
+#include "ai_waypoint.h"
 #include "activitylist.h"
 #include "animation.h"
 #include "npcevent.h"
@@ -151,6 +153,10 @@ public:
 	float		MaxYawSpeed( void );
 	Vector		Weapon_ShootPosition( void );
 	int			SelectCombatSchedule( void );
+	int			Decide( int iSched, const char *pszWhy );	// every combat choice goes through here (decision log)
+	int			SelectFailSchedule( int failedSchedule, int failedTask, AI_TaskFailureCode_t taskFailCode );
+	void		MarkSpotBad( const Vector &vecPos );		// unreachable / got stuck: skip it for a while
+	bool		IsSpotBad( const Vector &vecPos ) const;
 	void		DrawDebugOverlay( void );
 
 	// Death animations
@@ -249,6 +255,14 @@ private:
 	float				m_flCoverHoldTime;		// script: enemy out of sight this long -> advance to closer cover
 	float				m_flLastCombatTime;		// last think in combat (alert-state holding)
 	float				m_flWatchUntil;
+	enum { NUM_BAD_SPOTS = 8 };
+	Vector				m_vecBadSpot[NUM_BAD_SPOTS];	// refusal memory: spots he couldn't reach
+	float				m_flBadSpotUntil[NUM_BAD_SPOTS];
+	int					m_iNextBadSpot;
+	float				m_flProgressCheck;		// stuck guard while running to cover
+	float				m_flProgressDist;
+	int					m_iLastDecision;
+	const char		   *m_pszLastWhy;
 	float				m_flCoverHideUntil;
 	float				m_flLastBurstEnd;		// a standing/crouched burst just finished (cover rhythm)
 	float				m_flCoverCheckTime;		// LowCoverAgainst cache
@@ -363,6 +377,16 @@ CNPC_GermanSoldier::CNPC_GermanSoldier() : m_AnimMap( DefLessFunc( int ) )
 	m_flCoverHoldTime = 8.0f;
 	m_flLastCombatTime = -1000.0f;
 	m_flWatchUntil = 0.0f;
+	for ( int i = 0; i < NUM_BAD_SPOTS; i++ )
+	{
+		m_vecBadSpot[i] = vec3_origin;
+		m_flBadSpotUntil[i] = 0.0f;
+	}
+	m_iNextBadSpot = 0;
+	m_flProgressCheck = 0.0f;
+	m_flProgressDist = 0.0f;
+	m_iLastDecision = -1;
+	m_pszLastWhy = NULL;
 	m_flCoverHideUntil = 0.0f;
 	m_flLastBurstEnd = 0.0f;
 	m_flCoverCheckTime = 0.0f;
@@ -915,15 +939,37 @@ bool CNPC_GermanSoldier::IsCoverSpotTaken( const Vector &vecPos )
 // Position evaluation (Killzone-style): score every ground node within reach by the cover it
 // gives against this enemy, how far he has to run, and how close it puts him to the enemy.
 // Squadmates' spots are skipped. Picks the best; the move schedule finds the path.
+void CNPC_GermanSoldier::MarkSpotBad( const Vector &vecPos )
+{
+	m_vecBadSpot[m_iNextBadSpot] = vecPos;
+	m_flBadSpotUntil[m_iNextBadSpot] = gpGlobals->curtime + 15.0f;
+	m_iNextBadSpot = ( m_iNextBadSpot + 1 ) % NUM_BAD_SPOTS;
+}
+
+bool CNPC_GermanSoldier::IsSpotBad( const Vector &vecPos ) const
+{
+	for ( int i = 0; i < NUM_BAD_SPOTS; i++ )
+		if ( gpGlobals->curtime < m_flBadSpotUntil[i] && ( m_vecBadSpot[i] - vecPos ).Length2D() < 32.0f )
+			return true;
+	return false;
+}
+
+// Position evaluation (Killzone-style): score every ground node within reach by the cover it
+// gives against this enemy, how far he has to run, and how close it puts him to the enemy.
+// Squadmates' spots and spots he recently failed to reach are skipped. The best few are then
+// checked with a real route (the node graph), and the run is scored by the route's length -
+// a spot on the far side of a wall is a long run, not a short one, or no run at all.
 bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, bool bAdvance )
 {
 	if ( !pEnemy || !g_pBigAINet )
 		return false;
 	Vector vecMe = GetAbsOrigin(), vecFoe = pEnemy->GetAbsOrigin();
 	float flMyFoe = ( vecMe - vecFoe ).Length2D();
-	float flBest = -FLT_MAX;
-	Vector vecBest;
-	int nTested = 0;
+
+	struct Cand_t { Vector pos; float cover; float foe; float score; };
+	const int MAX_CANDS = 6;
+	Cand_t cands[MAX_CANDS];
+	int nCands = 0, nTested = 0;
 	for ( int i = 0; i < g_pBigAINet->NumNodes(); i++ )
 	{
 		CAI_Node *pNode = g_pBigAINet->GetNode( i, false );
@@ -931,10 +977,10 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, bool bAdvance )
 			continue;
 		Vector vecPos = pNode->GetPosition( GetHullType() );
 		float flDist = ( vecPos - vecMe ).Length();
-		if ( flDist > m_flCoverSearchRadius || fabsf( vecPos.z - vecMe.z ) > 160.0f )
+		if ( flDist > m_flCoverSearchRadius || fabsf( vecPos.z - vecMe.z ) > 160.0f || flDist < 24.0f )
 			continue;
 		float flFoe = ( vecPos - vecFoe ).Length2D();
-		if ( flFoe < 192.0f || IsCoverSpotTaken( vecPos ) )
+		if ( flFoe < 192.0f || IsSpotBad( vecPos ) || IsCoverSpotTaken( vecPos ) )
 			continue;
 		if ( bAdvance && flFoe > flMyFoe - 128.0f )
 			continue;	// bounding forward: only cover that actually gains ground
@@ -942,18 +988,69 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, bool bAdvance )
 		int nCover = CoverAt( vecPos, pEnemy );
 		if ( nCover <= COVER_FULL )
 			continue;
-		float flScore = ( nCover == COVER_CROUCH ? 100.0f : 80.0f )
-					  - flDist * 0.08f								// short dash beats a long run
-					  - ( flFoe < 400.0f ? ( 400.0f - flFoe ) * 0.1f : 0.0f );	// not right in his face
+		Cand_t c;
+		c.pos = vecPos;
+		c.cover = ( nCover == COVER_CROUCH ? 100.0f : 80.0f )
+				- ( flFoe < 400.0f ? ( 400.0f - flFoe ) * 0.1f : 0.0f );	// not right in his face
+		c.foe = flFoe;
+		c.score = c.cover - flDist * 0.08f;		// straight-line estimate (a route is never shorter)
+		// keep the best MAX_CANDS by estimate
+		int iSlot = nCands < MAX_CANDS ? nCands++ : -1;
+		if ( iSlot < 0 )
+		{
+			int iWorst = 0;
+			for ( int k = 1; k < MAX_CANDS; k++ )
+				if ( cands[k].score < cands[iWorst].score )
+					iWorst = k;
+			if ( cands[iWorst].score >= c.score )
+				continue;
+			iSlot = iWorst;
+		}
+		cands[iSlot] = c;
+	}
+
+	// Check the candidates best-first with a real route; score by route length.
+	float flBest = -FLT_MAX;
+	Vector vecBest = vec3_origin;
+	int nNoRoute = 0;
+	for ( int pass = 0; pass < nCands; pass++ )
+	{
+		int iTop = -1;
+		for ( int k = 0; k < nCands; k++ )
+			if ( cands[k].score > -FLT_MAX && ( iTop < 0 || cands[k].score > cands[iTop].score ) )
+				iTop = k;
+		if ( iTop < 0 || cands[iTop].score <= flBest )
+			break;	// estimates only get worse from here; a route can't beat its estimate
+		Cand_t &c = cands[iTop];
+		c.score = -FLT_MAX;		// taken
+		AI_Waypoint_t *pRoute = GetPathfinder()->BuildRoute( vecMe, c.pos, NULL, 16.0f, NAV_GROUND );
+		if ( !pRoute )
+		{
+			nNoRoute++;
+			MarkSpotBad( c.pos );
+			continue;
+		}
+		float flLen = 0.0f;
+		Vector vecPrev = vecMe;
+		for ( AI_Waypoint_t *pWp = pRoute; pWp; pWp = pWp->GetNext() )
+		{
+			flLen += ( pWp->GetPos() - vecPrev ).Length();
+			vecPrev = pWp->GetPos();
+		}
+		DeleteAll( pRoute );
+		if ( flLen > m_flCoverSearchRadius * 1.5f )
+			continue;	// reachable, but only the long way round
+		float flScore = c.cover - flLen * 0.08f;
 		if ( flScore > flBest )
 		{
 			flBest = flScore;
-			vecBest = vecPos;
+			vecBest = c.pos;
 		}
 	}
 	if ( npc_german_debug.GetBool() )
-		Msg( "npc_german_soldier %d: %s - %d spots tested, %s\n", entindex(), bAdvance ? "advance search (closer cover)" : "cover search", nTested,
-			 flBest > -FLT_MAX ? "found one" : "no low cover within reach" );
+		Msg( "npc_german_soldier %d: %s - %d spots tested, %d gave cover, %d had no route: %s\n", entindex(),
+			 bAdvance ? "advance search (closer cover)" : "cover search", nTested, nCands, nNoRoute,
+			 flBest > -FLT_MAX ? "going" : "nothing usable" );
 	if ( flBest == -FLT_MAX )
 		return false;
 	m_vecCoverSpot = vecBest;
@@ -1113,7 +1210,7 @@ Activity CNPC_GermanSoldier::TranslateToDoD( Activity eNewActivity )
 	if ( i != m_AnimMap.InvalidIndex() )
 	{
 		Activity eDoD = (Activity)m_AnimMap[i];
-		if ( npc_german_debug.GetBool() && eCombine != m_actLastDebug )
+		if ( npc_german_debug.GetInt() >= 3 && eCombine != m_actLastDebug )
 		{
 			m_actLastDebug = eCombine;
 			Msg( "npc_german_soldier %d: %s -> %s\n", entindex(), ActivityList_NameForIndex( eCombine ), ActivityList_NameForIndex( eDoD ) );
@@ -1360,12 +1457,18 @@ void CNPC_GermanSoldier::StartTask( const Task_t *pTask )
 			AI_NavGoal_t goal( m_vecCoverSpot, ACT_RUN, 16.0f );
 			if ( !m_bHasCoverSpot || !GetNavigator()->SetGoal( goal ) )
 			{
+				if ( m_bHasCoverSpot )
+					MarkSpotBad( m_vecCoverSpot );
 				m_bHasCoverSpot = false;
-				m_flNextCoverSearch = gpGlobals->curtime + 2.0f;
+				m_flNextCoverSearch = gpGlobals->curtime + 1.0f;
+				if ( npc_german_debug.GetBool() )
+					Msg( "npc_german_soldier %d: no path to his cover spot - skipping it\n", entindex() );
 				TaskFail( FAIL_NO_ROUTE );
 				break;
 			}
 			Stand();
+			m_flProgressCheck = gpGlobals->curtime + 1.5f;
+			m_flProgressDist = ( m_vecCoverSpot - GetAbsOrigin() ).Length2D();
 			TaskComplete();
 		}
 		break;
@@ -1385,6 +1488,17 @@ void CNPC_GermanSoldier::StartTask( const Task_t *pTask )
 		break;
 
 	case TASK_GERMAN_HIDE:
+		if ( IsCurSchedule( SCHED_GERMAN_MOVE_TO_COVER, false ) && GetEnemy() && LowCoverAgainst( GetEnemy() ) <= COVER_FULL )
+		{
+			// Arrived, but it doesn't cover him where he actually stopped: don't come back here.
+			if ( npc_german_debug.GetBool() )
+				Msg( "npc_german_soldier %d: reached his spot but it doesn't cover him - skipping it\n", entindex() );
+			MarkSpotBad( m_vecCoverSpot );
+			m_bHasCoverSpot = false;
+			m_flNextCoverSearch = 0.0f;
+			TaskComplete();
+			break;
+		}
 		if ( m_actHide == ACT_INVALID )
 		{
 			TaskComplete();
@@ -1437,6 +1551,28 @@ void CNPC_GermanSoldier::RunTask( const Task_t *pTask )
 {
 	switch ( pTask->iTask )
 	{
+	case TASK_WAIT_FOR_MOVEMENT:
+		// Stuck guard on the run to cover: every 1.5 s he must have closed 24 units, or the
+		// spot goes on his refusal list and he re-decides (no humping walls).
+		if ( IsCurSchedule( SCHED_GERMAN_MOVE_TO_COVER, false ) && m_bHasCoverSpot && gpGlobals->curtime >= m_flProgressCheck )
+		{
+			float flDist = ( m_vecCoverSpot - GetAbsOrigin() ).Length2D();
+			if ( flDist > m_flProgressDist - 24.0f && flDist > 32.0f )
+			{
+				if ( npc_german_debug.GetBool() )
+					Msg( "npc_german_soldier %d: stuck on the way to cover (%.0f units left) - giving up on that spot\n", entindex(), flDist );
+				MarkSpotBad( m_vecCoverSpot );
+				m_bHasCoverSpot = false;
+				GetNavigator()->StopMoving();
+				TaskFail( FAIL_NO_ROUTE );
+				break;
+			}
+			m_flProgressDist = flDist;
+			m_flProgressCheck = gpGlobals->curtime + 1.5f;
+		}
+		BaseClass::RunTask( pTask );
+		break;
+
 	case TASK_GERMAN_WATCH:
 		if ( GetEnemy() )
 			GetMotor()->SetIdealYawToTargetAndUpdate( GetEnemyLKP(), AI_KEEP_YAW_SPEED );
@@ -2046,9 +2182,34 @@ int CNPC_GermanSoldier::SelectSchedule( void )
 }
 
 //-----------------------------------------------------------------------------
+// Decision log: at npc_german_debug 1+ every change of mind prints once, with its reason.
+//-----------------------------------------------------------------------------
+int CNPC_GermanSoldier::Decide( int iSched, const char *pszWhy )
+{
+	if ( npc_german_debug.GetBool() && ( iSched != m_iLastDecision || pszWhy != m_pszLastWhy ) )
+		Msg( "npc_german_soldier %d: decide %s - %s\n", entindex(), GetSchedulingSymbols()->ScheduleIdToSymbol( GetGlobalScheduleId( iSched ) ), pszWhy );
+	m_iLastDecision = iSched;
+	m_pszLastWhy = pszWhy;
+	return iSched;
+}
+
+// A failed schedule (no route, stuck) never falls back to the engine's stand-around SCHED_FAIL
+// in a fight: he gets low and keeps facing you while the brain re-decides next think.
+int CNPC_GermanSoldier::SelectFailSchedule( int failedSchedule, int failedTask, AI_TaskFailureCode_t taskFailCode )
+{
+	if ( IsAlive() && GetState() == NPC_STATE_COMBAT && GetEnemy() )
+	{
+		Crouch();
+		return Decide( SCHED_COMBAT_FACE, "last plan failed - crouch and face" );
+	}
+	return BaseClass::SelectFailSchedule( failedSchedule, failedTask, taskFailCode );
+}
+
+//-----------------------------------------------------------------------------
 // The combat brain. A prioritized list - the first rule that applies wins - so it is
-// readable and doesn't dither. Building blocks are the engine's generic schedules
-// (take cover, establish line of fire, reload, attack) plus our cover hide.
+// readable and doesn't dither. Every movement is ours: run to scored, route-checked low
+// cover (never the engine's take-cover / establish-line-of-fire, which don't understand low
+// walls and send him into them). With nowhere better to go he holds where he is.
 //-----------------------------------------------------------------------------
 int CNPC_GermanSoldier::SelectCombatSchedule( void )
 {
@@ -2062,44 +2223,55 @@ int CNPC_GermanSoldier::SelectCombatSchedule( void )
 	VacateStrategySlot();		// every decision re-claims its squad slot
 
 	int nCover = LowCoverAgainst( GetEnemy() );
-	if ( npc_german_debug.GetBool() && ( bJustFired || bWantHide ) )
-	{
-		static const char *s_Cover[] = { "exposed (the enemy could see him hiding here, or no cover close enough)",
-										 "full cover (can't fire from here)", "low wall, fires crouched", "chest-high wall, fires standing" };
-		Msg( "npc_german_soldier %d: %s - cover check: %s\n", entindex(), bJustFired ? "burst done" : "wants to duck", s_Cover[ nCover + 1 ] );
-	}
-
 	CBaseCombatWeapon *pWeapon = GetActiveWeapon();
 	bool bEmpty = HasCondition( COND_NO_PRIMARY_AMMO );
 	bool bLow = pWeapon && pWeapon->UsesClipsForAmmo1() && pWeapon->Clip1() < pWeapon->GetMaxClip1() && HasCondition( COND_LOW_PRIMARY_AMMO );
-	bool bCanHide = nCover > COVER_FULL && m_actHide != ACT_INVALID;
-
-	// 1. A grenade or anything dangerous: get away from it.
-	if ( HasCondition( COND_HEAR_DANGER ) )
-		return SCHED_TAKE_COVER_FROM_BEST_SOUND;
-	// 2. His cover stopped covering: find new low cover (or any cover).
-	if ( bFlanked )
-		return FindCoverSpot( GetEnemy() ) ? SCHED_GERMAN_MOVE_TO_COVER : SCHED_TAKE_COVER_FROM_ENEMY;
-	// 3. Empty: reload hidden right here if he can, otherwise get to cover and reload.
-	if ( bEmpty || ( bLow && bCanHide ) )
-		return bCanHide ? SCHED_RELOAD : SCHED_HIDE_AND_RELOAD;
-	// 4a. Not in low cover he can fight from: run to the best spot nearby (firing on the move).
-	if ( nCover <= COVER_FULL && gpGlobals->curtime >= m_flNextCoverSearch )
-	{
-		m_flNextCoverSearch = gpGlobals->curtime + 3.0f;	// don't re-search every think
-		if ( FindCoverSpot( GetEnemy() ) )
-			return SCHED_GERMAN_MOVE_TO_COVER;
-	}
-	if ( nCover > COVER_FULL )
+	bool bInCover = nCover > COVER_FULL;
+	bool bCanHide = bInCover && m_actHide != ACT_INVALID;
+	bool bCanSearch = gpGlobals->curtime >= m_flNextCoverSearch;
+	if ( bInCover )
 	{
 		m_vecCoverSpot = GetAbsOrigin();	// he's in cover here: keep squadmates off his spot
 		m_bHasCoverSpot = true;
 	}
-	// 4. Just fired, under fire, or asked to duck - and he's in low cover: hide.
+
+	// 1. A grenade or anything dangerous: get away from it.
+	if ( HasCondition( COND_HEAR_DANGER ) )
+		return Decide( SCHED_TAKE_COVER_FROM_BEST_SOUND, "danger heard" );
+	// 2. His cover stopped covering (you flanked him): new low cover.
+	if ( bFlanked )
+	{
+		m_flNextCoverSearch = gpGlobals->curtime + 3.0f;
+		if ( FindCoverSpot( GetEnemy() ) )
+			return Decide( SCHED_GERMAN_MOVE_TO_COVER, "flanked - moving to new cover" );
+	}
+	// 3. Empty: reload hidden in cover; otherwise get to cover first (reloads on the run);
+	//    nowhere to go - crouch and reload right here.
+	if ( bEmpty || ( bLow && bCanHide ) )
+	{
+		if ( bCanHide )
+			return Decide( SCHED_RELOAD, "reload, hidden in cover" );
+		if ( bCanSearch )
+		{
+			m_flNextCoverSearch = gpGlobals->curtime + 3.0f;
+			if ( FindCoverSpot( GetEnemy() ) )
+				return Decide( SCHED_GERMAN_MOVE_TO_COVER, "empty, no cover here - run to cover" );
+		}
+		Crouch();
+		return Decide( SCHED_RELOAD, "empty, nowhere to go - crouch and reload" );
+	}
+	// 4. Not in low cover he can fight from: run to the best reachable spot (firing on the move).
+	if ( !bInCover && bCanSearch )
+	{
+		m_flNextCoverSearch = gpGlobals->curtime + 3.0f;
+		if ( FindCoverSpot( GetEnemy() ) )
+			return Decide( SCHED_GERMAN_MOVE_TO_COVER, "in the open - run to cover" );
+	}
+	// 5. Just fired, under fire, or asked to duck - and he's in low cover: hide.
 	if ( bCanHide && ( bJustFired || bWantHide || bUnderFire ) )
-		return SCHED_GERMAN_COVER_HIDE;
-	// 5. He can shoot: if the squad has a free firing slot, shoot (crouched or standing to
-	//    suit his cover; crouched at range in the open); otherwise wait hidden or get covered.
+		return Decide( SCHED_GERMAN_COVER_HIDE, bUnderFire ? "under fire - duck" : "burst done - duck" );
+	// 6. He can shoot: if the squad has a free firing slot, shoot (crouched or standing to
+	//    suit his cover; crouched at range in the open); otherwise wait hidden / watching.
 	if ( HasCondition( COND_CAN_RANGE_ATTACK1 ) )
 	{
 		if ( !m_pSquad || OccupyStrategySlotRange( SQUAD_SLOT_ATTACK1, SQUAD_SLOT_ATTACK2 ) )
@@ -2112,36 +2284,27 @@ int CNPC_GermanSoldier::SelectCombatSchedule( void )
 				Crouch();
 			else
 				Stand();
-			return SCHED_RANGE_ATTACK1;
+			return Decide( SCHED_RANGE_ATTACK1, bInCover ? "fire from cover" : "fire (no cover)" );
 		}
-		return bCanHide ? SCHED_GERMAN_COVER_HIDE : SCHED_COMBAT_FACE;	// no slot, no cover: hold and watch (no dithering)
+		if ( bCanHide )
+			return Decide( SCHED_GERMAN_COVER_HIDE, "squad firing slots full - stay down" );
+		return Decide( SCHED_COMBAT_FACE, "squad firing slots full - watch" );
 	}
-	// 6. Can't see him (or too far to shoot).
-	if ( HasCondition( COND_ENEMY_OCCLUDED ) || HasCondition( COND_TOO_FAR_TO_ATTACK ) || !HasCondition( COND_SEE_ENEMY ) )
+	// 7. Can't see him (or can't shoot him): hold where he is and watch his last spot; once
+	//    he's been gone a while, bound forward to closer cover (two at a time - the squad's
+	//    attack slots - so the rest keep watching).
+	float flUnseen = gpGlobals->curtime - GetEnemyLastTimeSeen();
+	if ( flUnseen > m_flCoverHoldTime && gpGlobals->curtime >= m_flNextAdvance &&
+		 ( !m_pSquad || OccupyStrategySlotRange( SQUAD_SLOT_ATTACK1, SQUAD_SLOT_ATTACK2 ) ) )
 	{
-		// In cover: never leave it just to look for a shot. Hold and watch his last spot; once
-		// he's been out of sight a while, bound forward to closer cover (two at a time - the
-		// squad's attack slots - so the rest keep watching).
-		if ( bCanHide || IsAtCoverSpot() )
-		{
-			float flUnseen = gpGlobals->curtime - GetEnemyLastTimeSeen();
-			if ( flUnseen > m_flCoverHoldTime && gpGlobals->curtime >= m_flNextAdvance &&
-				 ( !m_pSquad || OccupyStrategySlotRange( SQUAD_SLOT_ATTACK1, SQUAD_SLOT_ATTACK2 ) ) )
-			{
-				m_flNextAdvance = gpGlobals->curtime + 4.0f;
-				if ( FindCoverSpot( GetEnemy(), true ) )
-					return SCHED_GERMAN_MOVE_TO_COVER;
-				VacateStrategySlot();
-			}
-			return HasCondition( COND_SEE_ENEMY ) ? SCHED_COMBAT_FACE : SCHED_GERMAN_HOLD_COVER;
-		}
-		// In the open: one slot holder moves to get a shot, the rest hold.
-		if ( !m_pSquad || OccupyStrategySlotRange( SQUAD_SLOT_ATTACK1, SQUAD_SLOT_ATTACK2 ) )
-			return SCHED_ESTABLISH_LINE_OF_FIRE;
-		return SCHED_COMBAT_FACE;
+		m_flNextAdvance = gpGlobals->curtime + 4.0f;
+		if ( FindCoverSpot( GetEnemy(), true ) )
+			return Decide( SCHED_GERMAN_MOVE_TO_COVER, "lost sight a while - bound forward" );
+		VacateStrategySlot();
 	}
-	// 7. Anything else: the engine's generic combat choice.
-	return BaseClass::SelectSchedule();
+	if ( HasCondition( COND_SEE_ENEMY ) )
+		return Decide( SCHED_COMBAT_FACE, "sees him, can't shoot - face" );
+	return Decide( SCHED_GERMAN_HOLD_COVER, bInCover ? "can't see him - hold cover, watch" : "can't see him - hold, watch" );
 }
 
 
