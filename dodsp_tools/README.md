@@ -21,3 +21,9 @@ Python helpers used to build DOD-SP model assets (not part of the game build).
   (must match the German's, same order) and the hand IK "release" rules every CoD animation carries
   (DoD's own sequences lock the left hand to the right with `ikrule "lhand" touch`).
 - `render_pose.py`, `render_compare.py` – forward kinematics + quick pose plots for checking retargets.
+
+## landmark_report.py
+
+`python3 landmark_report.py dod_somemap.bsp` lists every prop model in a map and the cover
+callout German soldiers give it ("behind the crates!"), using the rules in german_chatter.cpp.
+A `-` means the generic line; paint a `trigger_german_landmark` there if that cover matters.

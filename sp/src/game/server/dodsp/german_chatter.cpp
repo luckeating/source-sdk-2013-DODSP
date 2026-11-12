@@ -428,38 +428,168 @@ BEGIN_DATADESC( CGermanLandmark )
 	DEFINE_KEYFIELD( m_iszLandmark, FIELD_STRING, "landmark" ),
 END_DATADESC()
 
-// prop model name pieces -> landmark (specific before general: "boxcar" before "box", "haycart" before "car")
-static const char *s_pszKeywords[][2] =
+//-----------------------------------------------------------------------------
+// Prop model -> landmark. Matched on whole WORDS of the model's file name, not on pieces of
+// text: "lights_streetlight01" is not a tree, "trainstation_bench" is not a train. A file name
+// is split at _ - . and each word loses its numbering ("woodbarrel001" -> "woodbarrel",
+// "riverbed02c" -> "riverbed"). The first rule (in this order) that any word matches decides.
+// Tested against every prop in dod_argentan (dodsp_tools/landmark_report.py).
+//-----------------------------------------------------------------------------
+enum
 {
-	{ "boxcar", "boxcar" }, { "flatbed", "flatbed" }, { "streetcar", "streetcar" }, { "tram", "streetcar" },
-	{ "brencarrier", "brencarrier" }, { "bren_carrier", "brencarrier" }, { "carrier", "brencarrier" },
-	{ "halftrack", "halftrack" }, { "half_track", "halftrack" }, { "sdkfz", "halftrack" },
-	{ "kubel", "kubelwagon" }, { "schwimm", "kubelwagon" }, { "jeep", "car" },
-	{ "truck", "truck" }, { "opel", "truck" }, { "lorry", "truck" },
-	{ "tractor", "tractor" }, { "haycart", "haycart" }, { "hay", "haycart" }, { "cart", "haycart" }, { "wagon", "haycart" },
-	{ "plane", "crashedplane" }, { "wreck", "crashedplane" }, { "flak", "antiairgun" }, { "aagun", "antiairgun" },
-	{ "locomotive", "train" }, { "train", "train" },
-	{ "barrel", "barrels" }, { "drum", "barrels" }, { "crate", "crates" }, { "box", "crates" },
-	{ "sandbag", "sandbags" }, { "tire", "tires" }, { "tyre", "tires" },
-	{ "woodpile", "woodpile" }, { "logpile", "woodpile" }, { "firewood", "woodpile" }, { "log", "woodpile" },
-	{ "pipe", "largepipe" }, { "fountain", "fountain" }, { "statue", "statue" }, { "well", "well" },
-	{ "tree", "tree" }, { "stump", "tree" }, { "rock", "rocks" }, { "boulder", "rocks" },
-	{ "brokenwall", "brokenwall" }, { "wall_broken", "brokenwall" }, { "ruin", "brokenwall" },
-	{ "rubble", "rubble" }, { "debris", "rubble" }, { "wall", "wall" },
-	{ "bunker", "bunker" }, { "silo", "silo" }, { "church", "church" }, { "barn", "barn" }, { "house", "house" },
-	{ "factory", "factory" }, { "bridge", "bridge" }, { "trench", "trench" }, { "ditch", "ditch" },
-	{ "car", "car" },
+	LM_WORD   = 1,		// the word itself, or its plural ("crate", "crates", "boxes")
+	LM_PREFIX = 2,		// a word starting with it ("sandbags_line1" "kubelwagen")
+	LM_SUFFIX = 4,		// a word ending with it ("woodbarrel" "farmhouse" "concretewall")
 };
 
-static const char *LandmarkFromName( const char *pszName )
+struct LandmarkRule_t
 {
-	if ( !pszName || !pszName[0] )
+	const char	*pszWord;
+	const char	*pszLandmark;	// "" = known dressing, never named as cover (the generic line)
+	int			fMatch;
+};
+
+static const LandmarkRule_t s_LandmarkRules[] =
+{
+	// dressing whose name would otherwise match something below
+	{ "phonepole", "", LM_PREFIX },		{ "pole", "", LM_WORD },		{ "crane", "", LM_WORD },
+	{ "gunbarrel", "", LM_PREFIX },		{ "chimney", "", LM_PREFIX },	{ "roof", "", LM_PREFIX },
+	{ "gutter", "", LM_PREFIX },		{ "light", "", LM_PREFIX },		{ "lamp", "", LM_PREFIX },
+	{ "sign", "", LM_PREFIX },
+
+	// vehicles (specific before general: "flatbed" before "train", "kubel" before "car")
+	{ "boxcar", "boxcar", LM_PREFIX },			{ "flatbed", "flatbed", LM_PREFIX },
+	{ "streetcar", "streetcar", LM_PREFIX },	{ "tram", "streetcar", LM_WORD },
+	{ "brencarrier", "brencarrier", LM_PREFIX },{ "carrier", "brencarrier", LM_WORD },
+	{ "halftrack", "halftrack", LM_PREFIX },	{ "sdkfz", "halftrack", LM_PREFIX },
+	{ "kubel", "kubelwagon", LM_PREFIX },		{ "schwimm", "kubelwagon", LM_PREFIX },
+	{ "jeep", "car", LM_PREFIX },				{ "222", "car", LM_WORD },		// Sd.Kfz. 222 armoured car
+	{ "truck", "truck", LM_PREFIX | LM_SUFFIX },{ "opel", "truck", LM_PREFIX },	{ "lorry", "truck", LM_PREFIX },
+	{ "tractor", "tractor", LM_PREFIX },
+	{ "haycart", "haycart", LM_PREFIX },		{ "cart", "haycart", LM_WORD },	{ "wagon", "haycart", LM_WORD | LM_SUFFIX },
+	{ "crashedplane", "crashedplane", LM_PREFIX }, { "plane", "crashedplane", LM_WORD | LM_SUFFIX },
+	{ "flak", "antiairgun", LM_PREFIX },		{ "aagun", "antiairgun", LM_PREFIX },
+	{ "locomotive", "train", LM_PREFIX },		{ "train", "train", LM_WORD },
+
+	// things soldiers hide behind
+	{ "barrel", "barrels", LM_PREFIX | LM_SUFFIX },	{ "drum", "barrels", LM_WORD | LM_SUFFIX },
+	{ "crate", "crates", LM_PREFIX | LM_SUFFIX },	{ "box", "crates", LM_WORD },
+	{ "sandbag", "sandbags", LM_PREFIX | LM_SUFFIX },
+	{ "tire", "tires", LM_PREFIX | LM_SUFFIX },	{ "tyre", "tires", LM_PREFIX | LM_SUFFIX },
+	{ "woodpile", "woodpile", LM_PREFIX },		{ "logpile", "woodpile", LM_PREFIX },
+	{ "firewood", "woodpile", LM_PREFIX },		{ "log", "woodpile", LM_WORD },
+	{ "pipe", "largepipe", LM_WORD | LM_SUFFIX },
+	{ "fountain", "fountain", LM_PREFIX | LM_SUFFIX }, { "statue", "statue", LM_PREFIX },
+	{ "well", "well", LM_WORD },
+	{ "tree", "tree", LM_PREFIX | LM_SUFFIX },	{ "stump", "tree", LM_WORD },
+	{ "rock", "rocks", LM_PREFIX | LM_SUFFIX },	{ "boulder", "rocks", LM_PREFIX },
+	{ "brokenwall", "brokenwall", LM_PREFIX },	{ "ruin", "brokenwall", LM_PREFIX },
+	{ "rubble", "rubble", LM_PREFIX | LM_SUFFIX },	{ "debris", "rubble", LM_PREFIX },
+	{ "destroyed", "rubble", LM_WORD },
+	{ "wall", "wall", LM_WORD | LM_SUFFIX },
+	{ "bunker", "bunker", LM_PREFIX | LM_SUFFIX },	{ "pillbox", "bunker", LM_PREFIX },
+	{ "silo", "silo", LM_PREFIX },
+	{ "church", "church", LM_PREFIX | LM_SUFFIX },
+	{ "barn", "barn", LM_WORD },				{ "stable", "barn", LM_PREFIX },
+	{ "house", "house", LM_WORD | LM_SUFFIX },
+	{ "factory", "factory", LM_PREFIX },		{ "bridge", "bridge", LM_WORD },
+	{ "trench", "trench", LM_PREFIX },			{ "ditch", "ditch", LM_PREFIX },
+	{ "embankment", "embankment", LM_PREFIX },	{ "gully", "gully", LM_PREFIX },
+	{ "car", "car", LM_WORD },
+};
+
+static bool LandmarkWordMatches( const char *pszWord, int nLen, const LandmarkRule_t &rule )
+{
+	int nRule = Q_strlen( rule.pszWord );
+	if ( nRule > nLen )
+		return false;
+	if ( rule.fMatch & LM_WORD )
+	{
+		if ( nLen == nRule && !Q_strnicmp( pszWord, rule.pszWord, nRule ) )
+			return true;
+		if ( !Q_strnicmp( pszWord, rule.pszWord, nRule ) &&
+			 ( ( nLen == nRule + 1 && pszWord[nRule] == 's' ) ||
+			   ( nLen == nRule + 2 && pszWord[nRule] == 'e' && pszWord[nRule + 1] == 's' ) ) )
+			return true;
+	}
+	if ( ( rule.fMatch & LM_PREFIX ) && !Q_strnicmp( pszWord, rule.pszWord, nRule ) )
+		return true;
+	if ( rule.fMatch & LM_SUFFIX )
+	{
+		if ( !Q_strnicmp( pszWord + nLen - nRule, rule.pszWord, nRule ) )
+			return true;
+		if ( nLen > nRule && pszWord[nLen - 1] == 's' && !Q_strnicmp( pszWord + nLen - 1 - nRule, rule.pszWord, nRule ) )
+			return true;
+	}
+	return false;
+}
+
+// bFound: a rule decided (even if it decided "dressing", which returns NULL)
+static const char *LandmarkFromModel( const char *pszName, bool *pbFound = NULL )
+{
+	if ( pbFound )
+		*pbFound = false;
+	if ( !pszName || !pszName[0] || pszName[0] == '*' || Q_stristr( pszName, "skybox" ) )
 		return NULL;
 	const char *pszFile = Q_strrchr( pszName, '/' );		// the model's own name, not its folder
 	pszFile = pszFile ? pszFile + 1 : pszName;
-	for ( int i = 0; i < (int)ARRAYSIZE( s_pszKeywords ); i++ )
-		if ( Q_stristr( pszFile, s_pszKeywords[i][0] ) )
-			return s_pszKeywords[i][1];
+
+	// split into words
+	char szWords[8][32];
+	int nWords = 0;
+	for ( const char *p = pszFile; *p && *p != '.' && nWords < 8; )
+	{
+		while ( *p && *p != '.' && !V_isalnum( *p ) )
+			p++;
+		int n = 0;
+		while ( V_isalnum( *p ) )
+		{
+			if ( n < 31 )
+				szWords[nWords][n++] = (char)tolower( (unsigned char)*p );
+			p++;
+		}
+		if ( !n )
+			break;
+		szWords[nWords][n] = 0;
+		// drop the numbering: "001a" "02c" "3" (all-digit words like "222" stay)
+		int m = n;
+		if ( m > 1 && V_isalpha( szWords[nWords][m - 1] ) && V_isdigit( szWords[nWords][m - 2] ) )
+			m--;
+		while ( m > 0 && V_isdigit( szWords[nWords][m - 1] ) )
+			m--;
+		if ( m > 0 )
+			szWords[nWords][m] = 0;
+		nWords++;
+	}
+
+	for ( int r = 0; r < (int)ARRAYSIZE( s_LandmarkRules ); r++ )
+	{
+		for ( int w = 0; w < nWords; w++ )
+		{
+			if ( LandmarkWordMatches( szWords[w], Q_strlen( szWords[w] ), s_LandmarkRules[r] ) )
+			{
+				if ( pbFound )
+					*pbFound = true;
+				return s_LandmarkRules[r].pszLandmark[0] ? s_LandmarkRules[r].pszLandmark : NULL;
+			}
+		}
+	}
+	return NULL;
+}
+
+// Brushwork has no model name - only its material, and that only says something useful for a
+// few things ("nature/argentan_blendrubbledirt", "dod_sandbags01").
+static const char *LandmarkFromMaterial( const char *pszMaterial )
+{
+	static const char *s_pszMaterialWords[][2] =
+	{
+		{ "rubble", "rubble" }, { "debris", "rubble" }, { "sandbag", "sandbags" }, { "crate", "crates" },
+	};
+	if ( !pszMaterial || !pszMaterial[0] )
+		return NULL;
+	for ( int i = 0; i < (int)ARRAYSIZE( s_pszMaterialWords ); i++ )
+		if ( Q_stristr( pszMaterial, s_pszMaterialWords[i][0] ) )
+			return s_pszMaterialWords[i][1];
 	return NULL;
 }
 
@@ -485,21 +615,66 @@ const char *GermanChatter_LandmarkAt( const Vector &vecSpot, const Vector &vecTh
 	UTIL_TraceLine( vecFrom, vecFrom + vecDir * 160.0f, MASK_SOLID, &filter, &tr );
 	if ( tr.fraction >= 1.0f )
 		return NULL;
+
+	bool bBrush = true;
 	if ( tr.m_pEnt && !tr.m_pEnt->IsWorld() )
 	{
-		const char *psz = LandmarkFromName( STRING( tr.m_pEnt->GetModelName() ) );
-		return psz ? psz : LandmarkFromName( tr.m_pEnt->GetClassname() );
+		const char *pszModel = STRING( tr.m_pEnt->GetModelName() );
+		if ( pszModel && pszModel[0] && pszModel[0] != '*' )
+			return LandmarkFromModel( pszModel );		// a prop entity: its model decides
+		// a brush entity (func_brush, func_breakable...): treat as brushwork below
 	}
-	// world: a static prop there?
-	CUtlVector<ICollideable *> props;
-	Vector vecPad( 12, 12, 12 );
-	staticpropmgr->GetAllStaticPropsInAABB( tr.endpos - vecPad, tr.endpos + vecPad, &props );
-	for ( int i = 0; i < props.Count(); i++ )
+	else
 	{
-		const model_t *pModel = props[i] ? props[i]->GetCollisionModel() : NULL;
-		const char *psz = pModel ? LandmarkFromName( modelinfo->GetModelName( pModel ) ) : NULL;
-		if ( psz )
-			return psz;
+		// a static prop there? Its model decides, even when that's "nothing known" (a hedge is
+		// not a low wall).
+		CUtlVector<ICollideable *> props;
+		Vector vecPad( 12, 12, 12 );
+		staticpropmgr->GetAllStaticPropsInAABB( tr.endpos - vecPad, tr.endpos + vecPad, &props );
+		bool bAnyProp = false;
+		for ( int i = 0; i < props.Count(); i++ )
+		{
+			const model_t *pModel = props[i] ? props[i]->GetCollisionModel() : NULL;
+			const char *pszModel = pModel ? modelinfo->GetModelName( pModel ) : NULL;
+			if ( !pszModel || Q_stristr( pszModel, "skybox" ) )
+				continue;
+			bAnyProp = true;
+			bool bFound;
+			const char *psz = LandmarkFromModel( pszModel, &bFound );
+			if ( psz )
+				return psz;
+		}
+		if ( bAnyProp )
+			bBrush = false;
 	}
-	return NULL;
+	if ( !bBrush )
+		return NULL;
+
+	// 3. Brushwork / displacement.
+	const char *pszMaterial = LandmarkFromMaterial( tr.surface.name );
+	if ( tr.IsDispSurface() && tr.plane.normal.z > 0.2f )
+		return pszMaterial ? pszMaterial : "embankment";	// ground rising toward the enemy
+
+	// Low enough to shoot over (clear at standing chest height, a little past it) = a wall.
+	// Taller brushwork is usually a building: unnamed unless a trigger_german_landmark says.
+	trace_t trHigh;
+	Vector vecHigh = vecSpot + Vector( 0, 0, 64 );
+	float flDist = ( tr.endpos - vecFrom ).Length2D();
+	UTIL_TraceLine( vecHigh, vecHigh + vecDir * ( flDist + 48.0f ), MASK_SOLID, &filter, &trHigh );
+	if ( trHigh.fraction >= 1.0f )
+		return pszMaterial ? pszMaterial : "wall";
+	return pszMaterial;
+}
+
+// Aim at something and see what a soldier crouched where you stand would call it.
+CON_COMMAND( npc_german_landmark, "What a German soldier at your position would call the cover in front of you." )
+{
+	CBasePlayer *pPlayer = UTIL_GetCommandClient();
+	if ( !pPlayer )
+		return;
+	Vector vecForward;
+	pPlayer->EyeVectors( &vecForward );
+	Vector vecSpot = pPlayer->GetAbsOrigin();
+	const char *psz = GermanChatter_LandmarkAt( vecSpot, vecSpot + vecForward * 1000.0f, pPlayer, NULL );
+	Msg( "landmark: %s\n", psz ? psz : "(generic)" );
 }
