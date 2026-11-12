@@ -140,7 +140,7 @@ CWeaponDODSPGun::CWeaponDODSPGun()
 	m_nTracerFreq = 2;
 	m_flBoltSoundDelay = 0.0f;
 	m_fMinRange1 = 0;
-	m_fMaxRange1 = 8192;	// the NPC's sight_distance limits engagement; spread limits hits
+	m_fMaxRange1 = 32768;	// whole map: a K98 is effective to ~500 m, longer than any Source map. sight_distance and spread limit him
 }
 
 void CWeaponDODSPGun::Precache( void )

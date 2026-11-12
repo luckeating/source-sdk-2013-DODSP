@@ -479,7 +479,7 @@ void CNPC_GermanSoldier::Spawn( void )
 	SetViewOffset( Vector( 0, 0, 64 ) );	// DoD German's eyes standing (crouched: GetCrouchEyeOffset)
 	// How far he sees. The engine default (2048) made him lose you across a modest field, go
 	// "alert" and wander off his cover. Rifles reach further than that.
-	GetSenses()->SetDistLook( g_pGermanScript ? clamp( g_pGermanScript->GetFloat( "sight_distance", 6000.0f ), 512.0f, 16384.0f ) : 6000.0f );
+	GetSenses()->SetDistLook( g_pGermanScript ? clamp( g_pGermanScript->GetFloat( "sight_distance", 16000.0f ), 512.0f, 32768.0f ) : 16000.0f );
 	HoldMoveForward();
 }
 
