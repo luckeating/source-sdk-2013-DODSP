@@ -208,7 +208,7 @@ private:
 	Activity			m_actFireGesture;
 	Activity			m_actReloadGesture;
 	Activity			m_actReloadCrouchGesture;
-	Activity			m_actHide;				// CoD1 hide pose behind low cover, and the moves in and out of it
+	Activity			m_actHide;				// CoD2 low-wall hide pose, and the moves in and out of it
 	Activity			m_actHide2Aim;
 	Activity			m_actAim2Hide;
 	Activity			m_actStand2Hide;
@@ -221,6 +221,10 @@ private:
 	int					m_nCoverCheckResult;
 	EHANDLE				m_hCoverCheckEnemy;
 	Activity			m_actCoverReload;		// CoD2 reload done hidden behind low cover
+	Activity			m_actCoverLowFire;		// CoD2 firing over a low wall (crouched) / a chest-high one (standing)
+	Activity			m_actCoverMidFire;
+	bool				m_bCoverFireSemi;		// single shots: the firing loop plays once per shot
+	float				m_flCoverRecoilUntil;
 	bool				m_bInCoverSpot;			// he has hidden at this spot (cleared when he moves)
 	float				m_flWantHideTime;		// something asked him to duck (under fire, a pain ended)
 	float				m_flUnderFireUntil;		// near misses / hits: stay down until then
@@ -321,6 +325,9 @@ CNPC_GermanSoldier::CNPC_GermanSoldier() : m_AnimMap( DefLessFunc( int ) )
 	m_flCoverCheckTime = 0.0f;
 	m_nCoverCheckResult = 0;
 	m_actCoverReload = ACT_INVALID;
+	m_actCoverLowFire = m_actCoverMidFire = ACT_INVALID;
+	m_bCoverFireSemi = true;
+	m_flCoverRecoilUntil = 0.0f;
 	m_bInCoverSpot = false;
 	m_flWantHideTime = 0.0f;
 	m_flUnderFireUntil = 0.0f;
@@ -645,13 +652,23 @@ void CNPC_GermanSoldier::BuildAnimMap( void )
 		m_actReloadCrouchGesture = ResolveActivity( pGestures->GetString( "reload_crouch" ), pszSet );
 	}
 
-	// Low cover: the CoD1 "hide B" pose and its transitions (all share one pose, so they chain).
-	m_actHide		= ResolveNamedActivity( "ACT_WW2_HIDEB_IDLE" );
-	m_actHide2Aim	= ResolveNamedActivity( "ACT_WW2_HIDE2AIM" );
-	m_actAim2Hide	= ResolveNamedActivity( "ACT_WW2_AIM2HIDE" );
-	m_actStand2Hide	= ResolveNamedActivity( "ACT_WW2_STAND2HIDE" );
-	m_actHide2Stand	= ResolveNamedActivity( "ACT_WW2_HIDE2STAND" );
+	// Low cover: CoD2's low-wall set. One hide pose that rises to a crouched firing pose over
+	// a low wall or to a standing one over a chest-high wall, fires, ducks back and reloads
+	// hidden - all chained. (Built for walls: hides below ~30 units, fires over up to ~42
+	// crouched / ~58 standing.)
+	m_actHide		= ResolveNamedActivity( "ACT_WW2_COVER_LOW_HIDE" );
+	m_actHide2Aim	= ResolveNamedActivity( "ACT_WW2_COVER_LOW_UP" );
+	m_actAim2Hide	= ResolveNamedActivity( "ACT_WW2_COVER_LOW_DOWN" );
+	m_actStand2Hide	= ResolveNamedActivity( "ACT_WW2_COVER_MID_DOWN" );
+	m_actHide2Stand	= ResolveNamedActivity( "ACT_WW2_COVER_MID_UP" );
 	m_actCoverReload	= ResolveNamedActivity( "ACT_WW2_COVER_LOW_RELOAD" );
+	{
+		// automatic weapons fire the burst loop, everything else single shots
+		m_bCoverFireSemi = !( Q_stristr( pszSet, "MP40" ) || Q_stristr( pszSet, "MP44" ) || Q_stristr( pszSet, "TOMMY" ) ||
+							  Q_stristr( pszSet, "BAR" ) || Q_stristr( pszSet, "30CAL" ) || Q_stristr( pszSet, "MG" ) );
+		m_actCoverLowFire = ResolveNamedActivity( m_bCoverFireSemi ? "ACT_WW2_COVER_LOW_SEMI" : "ACT_WW2_COVER_LOW_AUTO" );
+		m_actCoverMidFire = ResolveNamedActivity( m_bCoverFireSemi ? "ACT_WW2_COVER_MID_SEMI" : "ACT_WW2_COVER_MID_AUTO" );
+	}
 
 	if ( npc_german_debug.GetBool() )
 	{
@@ -671,8 +688,12 @@ CNPC_GermanSoldier::CoverFamily_t CNPC_GermanSoldier::PoseFamily( Activity act )
 {
 	if ( act == ACT_INVALID )
 		return POSE_OTHER;
-	if ( act == m_actHide )
+	if ( act == m_actHide || act == m_actCoverReload )
 		return POSE_HIDE;
+	if ( act == m_actCoverLowFire )
+		return POSE_CROUCH;
+	if ( act == m_actCoverMidFire )
+		return POSE_STAND;
 	const char *psz = ActivityList_NameForIndex( act );
 	if ( !psz )
 		return POSE_OTHER;
@@ -703,9 +724,9 @@ bool CNPC_GermanSoldier::IsHidingInCover( void )
 // sandbag, with or without hint nodes: the enemy can't see where his hidden helmet would be,
 // the thing in the way is right in front of him, and he can see the enemy from a crouched
 // (1) or standing (2) firing position.
-#define COVER_HIDE_TOP		38.0f	// top of the helmet in the hide pose (+1)
-#define COVER_CROUCH_EYE	40.0f	// the AI's crouched eye / line-of-fire height
-#define COVER_STAND_EYE		64.0f
+#define COVER_HIDE_TOP		32.0f	// top of the helmet in the CoD2 hide pose (+2)
+#define COVER_CROUCH_EYE	44.0f	// muzzle height firing over a low wall crouched
+#define COVER_STAND_EYE		62.0f	// ...and standing
 #define COVER_MAX_GAP		72.0f	// the cover must be this close to him
 int CNPC_GermanSoldier::LowCoverAgainst( CBaseEntity *pEnemy )
 {
@@ -793,6 +814,17 @@ Activity CNPC_GermanSoldier::NPC_TranslateActivity( Activity eNewActivity )
 	if ( IsHidingInCover() && ( eNewActivity == ACT_IDLE || eNewActivity == ACT_COVER_LOW || eNewActivity == ACT_COVER ||
 								eNewActivity == ACT_COVER_MED || eNewActivity == ACT_RANGE_AIM_LOW || eNewActivity == ACT_CROUCHIDLE ) )
 		eNewActivity = m_actHide;
+
+	// Firing from low cover: CoD2's over-the-wall firing poses instead of DoD's open-ground aim.
+	if ( m_actCoverLowFire != ACT_INVALID && GetEnemy() && !IsMoving() && GetState() == NPC_STATE_COMBAT &&
+		 LowCoverAgainst( GetEnemy() ) > COVER_FULL )
+	{
+		if ( IsCrouching() && ( eNewActivity == ACT_RANGE_ATTACK1_LOW || eNewActivity == ACT_RANGE_AIM_LOW ) )
+			eNewActivity = m_actCoverLowFire;
+		else if ( !IsCrouching() && m_actCoverMidFire != ACT_INVALID &&
+				  ( eNewActivity == ACT_RANGE_ATTACK1 || eNewActivity == ACT_IDLE_ANGRY || eNewActivity == ACT_IDLE_AIM_AGITATED ) )
+			eNewActivity = m_actCoverMidFire;
+	}
 
 	Activity eResult = TranslateToDoD( eNewActivity );
 
@@ -899,7 +931,17 @@ bool CNPC_GermanSoldier::FireOneShot( bool bPlayGesture )
 		pWeapon->Operator_ForceNPCFire( this, false );
 	}
 
-	if ( bPlayGesture && m_actFireGesture != ACT_INVALID )
+	Activity actNow = GetTranslatedActivity();
+	if ( actNow != ACT_INVALID && ( actNow == m_actCoverLowFire || actNow == m_actCoverMidFire ) )
+	{
+		// The CoD2 firing pose has its own recoil: replay it for this shot.
+		if ( m_bCoverFireSemi )
+		{
+			SetCycle( 0.0f );
+			m_flCoverRecoilUntil = gpGlobals->curtime + SequenceDuration( GetSequence() );
+		}
+	}
+	else if ( bPlayGesture && m_actFireGesture != ACT_INVALID )
 		RestartGesture( m_actFireGesture );
 
 	return true;
@@ -974,6 +1016,9 @@ void CNPC_GermanSoldier::PrescheduleThink( void )
 	UpdatePainRecovery();
 	UpdateCoverTransition();
 	UpdateCoverAwareness();
+	if ( m_bCoverFireSemi && GetTranslatedActivity() != ACT_INVALID &&
+		 ( GetTranslatedActivity() == m_actCoverLowFire || GetTranslatedActivity() == m_actCoverMidFire ) )
+		SetPlaybackRate( gpGlobals->curtime < m_flCoverRecoilUntil ? 1.0f : 0.0f );	// aim steady between shots
 	UpdateTestPainAll();
 	if ( m_bTestCrouch && !IsCrouching() )
 	{
@@ -1720,6 +1765,13 @@ int CNPC_GermanSoldier::SelectSchedule( void )
 	m_flLastBurstEnd = 0.0f;
 	m_flWantHideTime = 0.0f;
 	ClearCondition( COND_GERMAN_FLANKED );
+	if ( npc_german_debug.GetBool() && ( bJustFired || bWantHide ) && GetEnemy() )
+	{
+		static const char *s_Cover[] = { "exposed (the enemy could see him hiding here, or no cover within 72 units)",
+										 "full cover (can't fire from here)", "low wall, fires crouched", "chest-high wall, fires standing" };
+		Msg( "npc_german_soldier %d: %s - cover check: %s\n", entindex(), bJustFired ? "burst done" : "wants to duck",
+			 s_Cover[ LowCoverAgainst( GetEnemy() ) + 1 ] );
+	}
 	if ( IsAlive() && GetState() == NPC_STATE_COMBAT && GetEnemy() && !HasCondition( COND_HEAR_DANGER ) )
 	{
 		if ( bFlanked )
