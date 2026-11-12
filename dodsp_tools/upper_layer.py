@@ -59,6 +59,13 @@ def upper_sequence(seqname, smd, activity, nframes):
 
 
 MP40_MUZZLE = np.array([0.8, 4.5, 26.5])     # w_mp40 muzzle, in its weapon_bone frame
+HIP_SPIN_KEEP = 0.0                           # share of CoD's hip spin kept as torso twist
+TWIST_LIMIT = math.radians(45)                # torso twist over DoD's hips is eased toward at most this
+
+def _ztwist(R):
+    """Rotation of R about the world vertical (swing-twist decomposition), radians."""
+    w = math.sqrt(max(1e-12, 1 + np.trace(R))) / 2
+    return 2 * math.atan2((R[1, 0] - R[0, 1]) / (4 * w), w)
 
 def _yaw(v):
     return math.atan2(v[1], v[0])
@@ -76,9 +83,33 @@ def rebase_upper(src_path, dst_path, stance_path):
     stance_local = {n.lower(): st.frames[0][1][i] for i, (n, _) in enumerate(st.nodes) if i in st.frames[0][1]}
     R_spine = Ws[st.index('ValveBiped.Bip01_Spine')][0]
     lower = [i for i, (n, _) in enumerate(s.nodes) if upper_weight(n) == 0]
-    for _, f in s.frames:
+    # CoD's hips also spin during a hit (CoD2's shoulder and gut pains turn the hips 80-110deg).
+    # DoD's legs don't, so that spin must not land in the spine (it twisted him like an owl):
+    # take it out, keeping a little (HIP_SPIN_KEEP) as torso twist for liveliness.
+    pelvis = s.index('ValveBiped.Bip01_Pelvis'); spine4 = s.index('ValveBiped.Bip01_Spine4')
+    chest0 = Y @ W0[spine4][0]
+    P0 = W0[pelvis][0]
+    ax = int(np.argmin(np.abs(P0[2, :])))            # the hip axis that lies most flat
+    h0 = math.atan2(P0[1, ax], P0[0, ax])
+    def hip_spin(f):
+        P = worlds(s, f)[pelvis][0]
+        return (math.atan2(P[1, ax], P[0, ax]) - h0 + math.pi) % (2 * math.pi) - math.pi
+    # CoD often ends with the hips settled a little turned and the torso aimed forward again;
+    # that settled offset ramps in over the animation instead of being removed, so the gun
+    # ends where it started (where DoD aims) and the fade back to DoD doesn't swing.
+    spin_end = hip_spin(s.frames[-1][1])
+    n = max(1, len(s.frames) - 1)
+    for k, (_, f) in enumerate(s.frames):
         W = worlds(s, f)
-        R1 = R_spine.T @ (Y @ W[spine1][0])
+        spin = hip_spin(f) - spin_end * k / n
+        H = rotm(0, 0, -spin * (1.0 - HIP_SPIN_KEEP))
+        # CoD torsos also twist far over their own hips (their feet pivot); on planted DoD legs
+        # that reads as a corkscrew, so the chest's twist about the vertical is eased (tanh)
+        # toward TWIST_LIMIT. Applied at Spine1: the whole upper body turns together.
+        chest = Y @ H @ W[spine4][0]
+        tau = _ztwist(chest @ chest0.T)
+        tau2 = TWIST_LIMIT * math.tanh(tau / TWIST_LIMIT)
+        R1 = R_spine.T @ (rotm(0, 0, tau2 - tau) @ Y @ H @ W[spine1][0])
         for i in lower:
             v = stance_local.get(s.nodes[i][0].lower())
             if v is not None: f[i] = tuple(v)
