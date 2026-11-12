@@ -24,6 +24,8 @@ $Project "Server (HL2)"
 	$Folder	"DOD-SP"
 	{
 		$File	"dodsp\npc_german_soldier.cpp"
+		$File	"dodsp\german_chatter.cpp"
+		$File	"dodsp\german_chatter.h"
 		$File	"dodsp\weapon_dodsp_guns.cpp"
 	}
 

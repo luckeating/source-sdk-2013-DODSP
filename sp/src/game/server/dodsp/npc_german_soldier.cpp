@@ -59,6 +59,7 @@
 #include "filesystem.h"
 #include "KeyValues.h"
 #include "player.h"
+#include "german_chatter.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -158,6 +159,7 @@ public:
 
 	void		Precache( void );
 	void		Spawn( void );
+	void		OnRestore( void );
 
 	Activity	NPC_TranslateActivity( Activity eNewActivity );
 	Activity	TranslateToDoD( Activity eNewActivity );
@@ -300,6 +302,17 @@ private:
 	bool		ClaimFiringSlot( void );
 	bool		ClaimBoundSlot( void );
 	float		RouteExposure( const Vector &vecStart, AI_Waypoint_t *pRoute, CBaseEntity *pEnemy );
+
+	//-------------------------------------------------------------------------
+	// Battle chatter (A3a): the component owns who talks when; these are the moments.
+	//-------------------------------------------------------------------------
+public:
+	CGermanChatter		m_Chatter;
+private:
+	CNPC_GermanSoldier *NearestSquadmate( float flMaxDist, bool bMustSeeMe = false );
+	void		ChatterOrderCoverMove( void );		// a squadmate calls out his run to cover
+	void		ChatterReloading( void );
+	void		ChatterThreat( void );
 	void		SetCoverState( CoverState_t eState, const char *pszWhy );
 	void		CoverPose( Activity act ) { if ( GetIdealActivity() != act ) SetIdealActivity( act ); }	// never restarts the pose he's in
 	void		RunCoverLoop( void );
@@ -386,6 +399,9 @@ private:
 	float				m_flOpenLastSaw;
 	int					m_nSquadShooters;		// script: squad members firing at once
 	float				m_flBoundMax;			// script: longest bound forward (route length)
+	char				m_szCoverLandmark[32];	// what his chosen cover spot is behind (for the callout)
+	bool				m_bMoveIsBound;			// the current run to cover is a bound forward
+	float				m_flChatterSawEnemy;	// last think he saw the enemy (threat callouts)
 	// Watchdog
 	float				m_flInvariantNext[NUM_INVARIANTS];
 	float				m_flSchedStarted;
@@ -546,6 +562,9 @@ CNPC_GermanSoldier::CNPC_GermanSoldier() : m_AnimMap( DefLessFunc( int ) )
 	m_flOpenStateUntil = m_flOpenNextCoverCheck = m_flOpenLastSaw = 0.0f;
 	m_nSquadShooters = 2;
 	m_flBoundMax = 700.0f;
+	m_szCoverLandmark[0] = 0;
+	m_bMoveIsBound = false;
+	m_flChatterSawEnemy = -100.0f;
 	for ( int i = 0; i < NUM_INVARIANTS; i++ )
 		m_flInvariantNext[i] = 0.0f;
 	m_flSchedStarted = 0.0f;
@@ -651,8 +670,19 @@ void CNPC_GermanSoldier::Precache( void )
 	{
 		GermanSoldier_LoadScript();
 	}
+	if ( g_pGermanScript )
+		CGermanChatter::SetTuning( g_pGermanScript->GetBool( "chatter", true ), g_pGermanScript->GetString( "chatter_enemy_nation", "us" ),
+								   g_pGermanScript->GetFloat( "chatter_frequency", 1.0f ) );
+	CGermanChatter::LevelPrecache();
 
 	BaseClass::Precache();
+}
+
+// After a save is loaded Spawn doesn't run: the chatter needs its owner and voice again.
+void CNPC_GermanSoldier::OnRestore( void )
+{
+	BaseClass::OnRestore();
+	m_Chatter.Init( this, m_SquadName != NULL_STRING ? STRING( m_SquadName ) : NULL );
 }
 
 void CNPC_GermanSoldier::Spawn( void )
@@ -683,6 +713,7 @@ void CNPC_GermanSoldier::Spawn( void )
 	NPCInit();
 
 	SetViewOffset( Vector( 0, 0, 64 ) );	// DoD German's eyes standing (crouched: GetCrouchEyeOffset)
+	m_Chatter.Init( this, m_SquadName != NULL_STRING ? STRING( m_SquadName ) : NULL );	// voice: round-robin in his squad
 	// How far he sees. The engine default (2048) made him lose you across a modest field, go
 	// "alert" and wander off his cover. Rifles reach further than that.
 	GetSenses()->SetDistLook( g_pGermanScript ? clamp( g_pGermanScript->GetFloat( "sight_distance", 16000.0f ), 512.0f, 32768.0f ) : 16000.0f );
@@ -1421,6 +1452,76 @@ bool CNPC_GermanSoldier::TryFireShot( void )
 }
 
 //=============================================================================
+// A3a - battle chatter moments
+//=============================================================================
+CNPC_GermanSoldier *CNPC_GermanSoldier::NearestSquadmate( float flMaxDist, bool bMustSeeMe )
+{
+	if ( !m_pSquad )
+		return NULL;
+	CNPC_GermanSoldier *pBest = NULL;
+	float flBest = flMaxDist;
+	AISquadIter_t iter;
+	for ( CAI_BaseNPC *pMember = m_pSquad->GetFirstMember( &iter ); pMember; pMember = m_pSquad->GetNextMember( &iter ) )
+	{
+		if ( pMember == this || !pMember->IsAlive() || !FClassnameIs( pMember, "npc_german_soldier" ) )
+			continue;
+		float flDist = ( pMember->GetAbsOrigin() - GetAbsOrigin() ).Length();
+		if ( flDist < flBest && ( !bMustSeeMe || pMember->FVisible( this ) ) )
+		{
+			flBest = flDist;
+			pBest = static_cast<CNPC_GermanSoldier *>( pMember );
+		}
+	}
+	return pBest;
+}
+
+// He's off to cover 250+ units away: the nearest squadmate (within 800) tells him where -
+// "Hinter die Fässer!" - and he answers. A bound forward gets "Vorwärts!" instead. (CoD rule.)
+void CNPC_GermanSoldier::ChatterOrderCoverMove( void )
+{
+	if ( ( m_vecCoverSpot - GetAbsOrigin() ).Length2D() < 250.0f )
+		return;
+	CNPC_GermanSoldier *pMate = NearestSquadmate( 800.0f );
+	if ( !pMate )
+		return;
+	if ( m_bMoveIsBound )
+		pMate->m_Chatter.Request( CHAT_ORDER_FORWARD, NULL, this );
+	else
+		pMate->m_Chatter.Request( CHAT_ORDER_COVER, m_szCoverLandmark, this );
+}
+
+// Reloading: "cover me" to the nearest squadmate (who answers), or just "reloading".
+void CNPC_GermanSoldier::ChatterReloading( void )
+{
+	CNPC_GermanSoldier *pMate = NearestSquadmate( 600.0f );
+	m_Chatter.Request( pMate ? CHAT_RELOADING_COVERME : CHAT_RELOADING, NULL, pMate );
+}
+
+// Seeing the enemy after not seeing him for 15 s: call it out - out in the open, or just
+// there, sometimes "attack!" (the squad's minimum waits keep it to one voice at a time).
+void CNPC_GermanSoldier::ChatterThreat( void )
+{
+	CBaseEntity *pEnemy = GetEnemy();
+	if ( !pEnemy || !HasCondition( COND_SEE_ENEMY ) )
+		return;
+	float now = gpGlobals->curtime;
+	bool bFresh = now - m_flChatterSawEnemy > 15.0f;
+	m_flChatterSawEnemy = now;
+	if ( !bFresh )
+		return;
+	if ( random->RandomFloat( 0.0f, 1.0f ) < 0.3f )
+	{
+		m_Chatter.Request( CHAT_ATTACK );
+		return;
+	}
+	// in the open: his feet are visible too (nothing in front of him)
+	CTraceFilterSkipTwoEntities filter( this, pEnemy, COLLISION_GROUP_NONE );
+	trace_t tr;
+	UTIL_TraceLine( EyePosition(), pEnemy->GetAbsOrigin() + Vector( 0, 0, 8 ), COVER_MASK, &filter, &tr );
+	m_Chatter.Request( tr.fraction >= 1.0f ? CHAT_THREAT_EXPOSED : CHAT_THREAT );
+}
+
+//=============================================================================
 // R4 - the open-ground loop
 //=============================================================================
 static const char *s_pszOpenState[] = { "aim", "fire", "reload" };
@@ -1466,6 +1567,7 @@ void CNPC_GermanSoldier::SetOpenState( OpenState_t eState, const char *pszWhy )
 	case OS_RELOAD:
 		{
 			VacateStrategySlot();
+			ChatterReloading();
 			Activity gesture = ( IsCrouching() && m_actReloadCrouchGesture != ACT_INVALID ) ? m_actReloadCrouchGesture : m_actReloadGesture;
 			float flDuration = 1.5f;
 			if ( gesture != ACT_INVALID )
@@ -1710,6 +1812,7 @@ void CNPC_GermanSoldier::SetCoverState( CoverState_t eState, const char *pszWhy 
 		break;
 	case CS_RELOAD:
 		{
+			ChatterReloading();
 			ResetIdealActivity( ACT_RELOAD_LOW );	// hidden stance -> the CoD2 hidden reload (a fresh one each time)
 			Activity act = m_actCoverReload != ACT_INVALID ? m_actCoverReload : ACT_RELOAD_LOW;
 			int iSeq = SelectWeightedSequence( act );
@@ -2048,6 +2151,8 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, bool bAdvance )
 		return false;
 	m_vecCoverSpot = vecBest;
 	m_bHasCoverSpot = true;
+	const char *pszLandmark = GermanChatter_LandmarkAt( vecBest, pEnemy->EyePosition(), this, pEnemy );
+	Q_strncpy( m_szCoverLandmark, pszLandmark ? pszLandmark : "", sizeof( m_szCoverLandmark ) );
 	return true;
 }
 
@@ -2348,6 +2453,9 @@ void CNPC_GermanSoldier::PrescheduleThink( void )
 	UpdatePainRecovery();
 	SyncStance();
 	WatchdogPose();
+	if ( IsAlive() && GetState() == NPC_STATE_COMBAT )
+		ChatterThreat();
+	m_Chatter.Update();
 	UpdateCoverTransition();
 	UpdateCoverAwareness();
 	if ( npc_german_debug.GetInt() >= 2 )
@@ -2448,6 +2556,7 @@ void CNPC_GermanSoldier::StartTask( const Task_t *pTask )
 				break;
 			}
 			SetStance( STANCE_STAND, "running to cover", true );
+			ChatterOrderCoverMove();
 			m_flProgressCheck = gpGlobals->curtime + 1.5f;
 			m_flProgressDist = ( m_vecCoverSpot - GetAbsOrigin() ).Length2D();
 			TaskComplete();
@@ -2756,6 +2865,10 @@ Activity CNPC_GermanSoldier::PickDeathActivity( void )
 
 void CNPC_GermanSoldier::Event_Killed( const CTakeDamageInfo &info )
 {
+	m_Chatter.OnDeath();
+	CNPC_GermanSoldier *pWitness = NearestSquadmate( 800.0f, true );
+	if ( pWitness )
+		pWitness->m_Chatter.Request( CHAT_CASUALTY, NULL, NULL, random->RandomFloat( 0.4f, 1.0f ) );
 	m_bDeathAnim = false;
 	m_actDeath = ACT_INVALID;
 	if ( m_iForceDeathSeq >= 0 )
@@ -3214,6 +3327,7 @@ int CNPC_GermanSoldier::SelectCombatSchedule( void )
 {
 	float now = gpGlobals->curtime;
 	VacateStrategySlot();		// every decision re-claims its squad slot
+	m_bMoveIsBound = false;
 
 	int nCover = LowCoverAgainst( GetEnemy() );
 	bool bInCover = nCover > COVER_FULL && m_actHide != ACT_INVALID;
@@ -3223,7 +3337,10 @@ int CNPC_GermanSoldier::SelectCombatSchedule( void )
 
 	// 1. A grenade or anything dangerous: get away from it.
 	if ( HasCondition( COND_HEAR_DANGER ) )
+	{
+		m_Chatter.Request( CHAT_INCOMING_GRENADE );
 		return Decide( SCHED_TAKE_COVER_FROM_BEST_SOUND, "danger heard" );
+	}
 
 	// 2. In low cover (and not just flanked out of it): the cover loop. If he left it bored,
 	//    try bounding forward first (two at a time - the squad's bound slots).
@@ -3233,7 +3350,10 @@ int CNPC_GermanSoldier::SelectCombatSchedule( void )
 		{
 			m_flNextAdvance = now + 4.0f;
 			if ( FindCoverSpot( GetEnemy(), true ) )
+			{
+				m_bMoveIsBound = true;
 				return Decide( SCHED_GERMAN_MOVE_TO_COVER, "bored at his cover - bounding forward" );
+			}
 			VacateStrategySlot();
 		}
 		return Decide( SCHED_GERMAN_COVER, eExit == CEXIT_BORED ? "bored, nowhere better - back to his cover" : "in low cover - cover loop" );
@@ -3256,7 +3376,10 @@ int CNPC_GermanSoldier::SelectCombatSchedule( void )
 	{
 		m_flNextAdvance = now + 4.0f;
 		if ( FindCoverSpot( GetEnemy(), true ) )
+		{
+			m_bMoveIsBound = true;
 			return Decide( SCHED_GERMAN_MOVE_TO_COVER, "lost sight a while - bounding forward" );
+		}
 		VacateStrategySlot();
 	}
 
