@@ -32,7 +32,8 @@ enum ChatEvent_t
 	CHAT_ORDER_FLANK,			// A3b
 	CHAT_ORDER_FLANK_LEFT,
 	CHAT_ORDER_FLANK_RIGHT,
-	CHAT_ORDER_SUPPRESS,		// A3b
+	CHAT_ORDER_SUPPRESS,		// "keep his head down!" (to the man giving covering fire)
+	CHAT_ORDER_BACK,			// to a squadmate falling back
 	CHAT_RELOADING,
 	CHAT_RELOADING_COVERME,		// reloading, with a squadmate close by to cover him (target = that squadmate)
 	CHAT_INCOMING_GRENADE,

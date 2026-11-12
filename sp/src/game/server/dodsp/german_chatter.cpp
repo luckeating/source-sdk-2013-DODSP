@@ -49,6 +49,7 @@ static const ChatDef_t s_ChatDefs[NUM_CHAT_EVENTS] =
 	{ "order_move_flankleft",		GROUP_ORDER,	0.9f },	// CHAT_ORDER_FLANK_LEFT
 	{ "order_move_flankright",		GROUP_ORDER,	0.9f },	// CHAT_ORDER_FLANK_RIGHT
 	{ "order_action_suppress",		GROUP_ORDER,	0.5f },	// CHAT_ORDER_SUPPRESS
+	{ "order_move_backward",		GROUP_ORDER,	0.9f },	// CHAT_ORDER_BACK
 	{ "inform_reloading_generic",	GROUP_INFORM,	0.2f },	// CHAT_RELOADING
 	{ "inform_reloading_coverme",	GROUP_INFORM,	0.3f },	// CHAT_RELOADING_COVERME
 	{ "inform_incoming_grenade",	GROUP_INFORM,	0.95f },// CHAT_INCOMING_GRENADE
@@ -324,7 +325,8 @@ void CGermanChatter::Update( void )
 	if ( pAnswer && pAnswer != this )
 	{
 		if ( p.eEvent == CHAT_ORDER_COVER || p.eEvent == CHAT_ORDER_FORWARD || p.eEvent == CHAT_ORDER_FLANK ||
-			 p.eEvent == CHAT_ORDER_FLANK_LEFT || p.eEvent == CHAT_ORDER_FLANK_RIGHT || p.eEvent == CHAT_ORDER_SUPPRESS )
+			 p.eEvent == CHAT_ORDER_FLANK_LEFT || p.eEvent == CHAT_ORDER_FLANK_RIGHT || p.eEvent == CHAT_ORDER_SUPPRESS ||
+			 p.eEvent == CHAT_ORDER_BACK )
 			pAnswer->Request( CHAT_ACK_YES, NULL, pOwner, flDuration + 0.3f );
 		else if ( p.eEvent == CHAT_RELOADING_COVERME )
 			pAnswer->Request( CHAT_ACK_COVERING, NULL, pOwner, flDuration + 0.3f );

@@ -289,7 +289,7 @@ private:
 	// Every state takes time; he leaves only when flanked, bored, or interrupted.
 	//-------------------------------------------------------------------------
 	enum CoverState_t { CS_HIDE, CS_RISE, CS_SHOOT, CS_LOOK, CS_DUCK, CS_RELOAD };
-	enum CoverExit_t { CEXIT_NONE, CEXIT_FLANKED, CEXIT_BORED, CEXIT_FOUND_COVER };
+	enum CoverExit_t { CEXIT_NONE, CEXIT_FLANKED, CEXIT_BORED, CEXIT_FOUND_COVER, CEXIT_ORDER };
 
 	//-------------------------------------------------------------------------
 	// The open-ground loop (R4): no cover he can reach. Stance chosen once (crouched far off or
@@ -312,6 +312,34 @@ public:
 	CGermanChatter		m_Chatter;
 private:
 	CNPC_GermanSoldier *NearestSquadmate( float flMaxDist, bool bMustSeeMe = false );
+
+	//-------------------------------------------------------------------------
+	// Squad coordinator (A3b). One owner per squad for who does what: the suppressor, the
+	// bounder, the flanker, falling back. It picks WHO; the man picks WHERE (his own cover
+	// search) and reports back if he can't.
+	//-------------------------------------------------------------------------
+public:
+	enum SquadOrder_t { ORDER_NONE, ORDER_BOUND, ORDER_FLANK_LEFT, ORDER_FLANK_RIGHT, ORDER_FALLBACK };
+	enum MoveKind_t { MOVE_COVER, MOVE_BOUND, MOVE_FLANK_LEFT, MOVE_FLANK_RIGHT, MOVE_FALLBACK };
+	void		SquadTick( void );
+	void		GiveSquadOrder( SquadOrder_t eOrder, float flDelay, const Vector &vecEnemyToSquad );
+	bool		CanTakeSquadOrder( void ) const;
+	bool		CanSuppressEnemy( const Vector &vecTarget );
+	bool		IsInCoverLoop( void ) { return IsCurSchedule( SCHED_GERMAN_COVER, false ); }
+	bool		IsInOpenLoop( void ) { return IsCurSchedule( SCHED_GERMAN_OPEN, false ); }
+	bool		IsSquadSuppressor( void );
+	MoveKind_t	m_eMoveKind;			// what the current run to cover is
+	SquadOrder_t m_eSquadOrder;		// pending order from the coordinator
+	float		m_flSquadOrderAt;		// not before
+	float		m_flSquadOrderIssued;
+	float		m_flOrderRefusedUntil;	// refusal memory: he couldn't carry one out; ask someone else
+	Vector		m_vecFlankFrom;			// unit 2D: from the enemy toward the squad (the squad's front line)
+	float		m_flLastSearchRun;		// route length of the last spot found
+	bool		m_bSuppressing;			// cover loop: up firing at the enemy's position for the squad
+	float		m_flSquadTempo;			// script: how often the squad bounds / flanks
+	float		m_flFlankRadius;		// script
+private:
+	void		SquadOrderFailed( SquadOrder_t eOrder );
 	void		ChatterOrderCoverMove( void );		// a squadmate calls out his run to cover
 	void		ChatterReloading( void );
 	void		ChatterThreat( void );
@@ -323,7 +351,7 @@ private:
 	//-------------------------------------------------------------------------
 	// Watchdog (R1): passive. Prints INVARIANT lines when a rule is broken; changes nothing.
 	//-------------------------------------------------------------------------
-	enum Invariant_t { INV_STANCE_FLIPS, INV_STANCE_OWNER, INV_SCHED_CHURN, INV_DECISION_CHURN, INV_COVER_CHURN, INV_POSE_FLIPS, INV_ANIM_STUCK, INV_COVER_STANCE, NUM_INVARIANTS };
+	enum Invariant_t { INV_STANCE_FLIPS, INV_STANCE_OWNER, INV_SCHED_CHURN, INV_DECISION_CHURN, INV_COVER_CHURN, INV_POSE_FLIPS, INV_ANIM_STUCK, INV_COVER_STANCE, INV_ORDER_STUCK, INV_FLANK_TIMEOUT, NUM_INVARIANTS };
 	void		WatchdogPose( void );		// what the body actually plays: down / crouched / standing flips
 	bool		IsClipEmpty( void );		// one owner for "he has no rounds in the gun"
 	void		Invariant( Invariant_t eWhich, const char *pszFormat, ... );
@@ -331,7 +359,8 @@ private:
 	enum { COVER_EXPOSED = -1, COVER_FULL = 0, COVER_CROUCH = 1, COVER_STAND = 2 };
 	int			LowCoverAgainst( CBaseEntity *pEnemy );	// COVER_*: > 0 means low cover he can fire from
 	int			CoverAt( const Vector &vecPos, CBaseEntity *pEnemy, trace_t *pHideTrace = NULL );	// same test at any spot
-	bool		FindCoverSpot( CBaseEntity *pEnemy, bool bAdvance = false );	// best-scoring low cover nearby (bAdvance: only spots closer to him)
+	enum SearchMode_t { SEARCH_COVER, SEARCH_ADVANCE, SEARCH_FLANK_LEFT, SEARCH_FLANK_RIGHT, SEARCH_RETREAT };
+	bool		FindCoverSpot( CBaseEntity *pEnemy, int nMode = SEARCH_COVER );	// best-scoring low cover for this kind of move
 	bool		IsAtCoverSpot( void ) const { return m_bHasCoverSpot && ( m_vecCoverSpot - GetAbsOrigin() ).Length2D() < 48.0f; }
 	bool		IsCoverSpotTaken( const Vector &vecPos );
 	bool		IsWounded( void ) const { return GetMaxHealth() > 0 && GetHealth() < GetMaxHealth() * m_flWoundedHealth; }
@@ -402,7 +431,6 @@ private:
 	int					m_nSquadShooters;		// script: squad members firing at once
 	float				m_flBoundMax;			// script: longest bound forward (route length)
 	char				m_szCoverLandmark[32];	// what his chosen cover spot is behind (for the callout)
-	bool				m_bMoveIsBound;			// the current run to cover is a bound forward
 	float				m_flChatterSawEnemy;	// last think he saw the enemy (threat callouts)
 	// Watchdog
 	float				m_flInvariantNext[NUM_INVARIANTS];
@@ -565,7 +593,15 @@ CNPC_GermanSoldier::CNPC_GermanSoldier() : m_AnimMap( DefLessFunc( int ) )
 	m_nSquadShooters = 2;
 	m_flBoundMax = 700.0f;
 	m_szCoverLandmark[0] = 0;
-	m_bMoveIsBound = false;
+	m_eMoveKind = MOVE_COVER;
+	m_eSquadOrder = ORDER_NONE;
+	m_flSquadOrderAt = m_flSquadOrderIssued = 0.0f;
+	m_flOrderRefusedUntil = 0.0f;
+	m_vecFlankFrom = Vector( 1, 0, 0 );
+	m_flLastSearchRun = 0.0f;
+	m_bSuppressing = false;
+	m_flSquadTempo = 1.0f;
+	m_flFlankRadius = 1200.0f;
 	m_flChatterSawEnemy = -100.0f;
 	for ( int i = 0; i < NUM_INVARIANTS; i++ )
 		m_flInvariantNext[i] = 0.0f;
@@ -998,6 +1034,8 @@ void CNPC_GermanSoldier::BuildAnimMap( void )
 	m_flCoverLookMax = MAX( m_flCoverLookMin, clamp( pScript->GetFloat( "cover_look_max", 15.0f ), 0.5f, 60.0f ) );
 	m_nSquadShooters = clamp( pScript->GetInt( "squad_shooters", 2 ), 1, 5 );
 	m_flBoundMax = clamp( pScript->GetFloat( "bound_max", 700.0f ), 128.0f, 4096.0f );
+	m_flSquadTempo = clamp( pScript->GetFloat( "squad_tempo", 1.0f ), 0.1f, 10.0f );
+	m_flFlankRadius = clamp( pScript->GetFloat( "flank_radius", 1200.0f ), 256.0f, 4096.0f );
 	m_flUnderFireHide = MAX( 0.0f, pScript->GetFloat( "under_fire_hide", 2.5f ) );
 	m_flWoundedHealth = clamp( pScript->GetFloat( "wounded_health", 0.5f ), 0.0f, 1.0f );
 	m_flWoundedHideScale = MAX( 1.0f, pScript->GetFloat( "wounded_hide_scale", 1.75f ) );
@@ -1288,7 +1326,7 @@ void CNPC_GermanSoldier::Invariant( Invariant_t eWhich, const char *pszFormat, .
 	if ( gpGlobals->curtime < m_flInvariantNext[eWhich] )
 		return;
 	m_flInvariantNext[eWhich] = gpGlobals->curtime + 2.0f;
-	static const char *s_pszNames[] = { "STANCE_FLIPS", "STANCE_OWNER", "SCHED_CHURN", "DECISION_CHURN", "COVER_CHURN", "POSE_FLIPS", "ANIM_STUCK", "COVER_STANCE" };
+	static const char *s_pszNames[] = { "STANCE_FLIPS", "STANCE_OWNER", "SCHED_CHURN", "DECISION_CHURN", "COVER_CHURN", "POSE_FLIPS", "ANIM_STUCK", "COVER_STANCE", "ORDER_STUCK", "FLANK_TIMEOUT" };
 	char sz[512];
 	va_list ap;
 	va_start( ap, pszFormat );
@@ -1454,6 +1492,305 @@ bool CNPC_GermanSoldier::TryFireShot( void )
 }
 
 //=============================================================================
+// A3b - squad coordinator
+//
+// One owner per squad for who does what. Ticks twice a second (whichever member thinks first).
+//   shared knowledge  where the enemy was last seen by anyone, and how long he's stayed put
+//   fall back         lost half the squad and he's close: up to two men give ground ("Zurueck!")
+//   flank             he's sat in one spot 8 s and there are 3+ of us: the man already furthest
+//                     out to one side works round that side, out of his sight ("Links flankieren!"),
+//                     while another keeps his head down ("Niederhalten!")
+//   bound             every 8-14 s the rear-most man in cover moves up while another fires on
+//                     the enemy's position ("Feuerschutz!" - "Vorwaerts!")
+// Roles live only here; a man asks "am I the suppressor?" instead of keeping his own copy.
+// He picks his own spot; if he can't find one he says so and is left alone for 15 s.
+//=============================================================================
+struct GermanSquadState_t
+{
+	float	flNextTick;
+	EHANDLE	hEnemy;
+	Vector	vecLKP;
+	float	flLastSeen;
+	Vector	vecStillPos;
+	float	flStillSince;
+	int		nMaxAlive;
+	EHANDLE	hSuppressor;
+	float	flSuppressUntil;
+	EHANDLE	hBounder;
+	EHANDLE	hFlanker;
+	float	flFlankDeadline;
+	float	flNextBound;
+	float	flNextFlank;
+	float	flNextFallback;
+};
+static CUtlDict<GermanSquadState_t, int>	s_GermanSquads;
+static float								s_flGermanSquadsTime = 0.0f;
+
+static GermanSquadState_t *GetGermanSquad( string_t iszSquad )
+{
+	if ( iszSquad == NULL_STRING )
+		return NULL;
+	float now = gpGlobals->curtime;
+	if ( now < s_flGermanSquadsTime - 1.0f )
+		s_GermanSquads.RemoveAll();		// new map
+	s_flGermanSquadsTime = now;
+	int i = s_GermanSquads.Find( STRING( iszSquad ) );
+	if ( i == s_GermanSquads.InvalidIndex() )
+	{
+		GermanSquadState_t sq;
+		memset( &sq, 0, sizeof( sq ) );
+		sq.hEnemy = NULL;
+		sq.hSuppressor = sq.hBounder = sq.hFlanker = NULL;
+		sq.flNextBound = now + 6.0f;
+		sq.flNextFlank = now + 10.0f;
+		i = s_GermanSquads.Insert( STRING( iszSquad ), sq );
+	}
+	return &s_GermanSquads[i];
+}
+
+static const char *s_pszSquadOrder[] = { "none", "bound forward", "flank left", "flank right", "fall back" };
+
+bool CNPC_GermanSoldier::IsSquadSuppressor( void )
+{
+	GermanSquadState_t *pSq = m_pSquad ? GetGermanSquad( m_SquadName ) : NULL;
+	return pSq && pSq->hSuppressor.Get() == this && gpGlobals->curtime < pSq->flSuppressUntil;
+}
+
+bool CNPC_GermanSoldier::CanTakeSquadOrder( void ) const
+{
+	return IsAlive() && m_eSquadOrder == ORDER_NONE && gpGlobals->curtime >= m_flOrderRefusedUntil &&
+		   ( const_cast<CNPC_GermanSoldier *>( this )->IsInCoverLoop() || const_cast<CNPC_GermanSoldier *>( this )->IsInOpenLoop() );
+}
+
+void CNPC_GermanSoldier::GiveSquadOrder( SquadOrder_t eOrder, float flDelay, const Vector &vecEnemyToSquad )
+{
+	m_eSquadOrder = eOrder;
+	m_flSquadOrderIssued = gpGlobals->curtime;
+	m_flSquadOrderAt = gpGlobals->curtime + flDelay;
+	m_vecFlankFrom = vecEnemyToSquad;
+	if ( npc_german_debug.GetBool() )
+		Msg( "[%.2f] npc_german_soldier %d: squad orders him to %s\n", gpGlobals->curtime, entindex(), s_pszSquadOrder[eOrder] );
+}
+
+void CNPC_GermanSoldier::SquadOrderFailed( SquadOrder_t eOrder )
+{
+	m_flOrderRefusedUntil = gpGlobals->curtime + 15.0f;
+	GermanSquadState_t *pSq = m_pSquad ? GetGermanSquad( m_SquadName ) : NULL;
+	if ( pSq )
+	{
+		if ( pSq->hBounder.Get() == this )
+			pSq->hBounder = NULL;
+		if ( pSq->hFlanker.Get() == this )
+			pSq->hFlanker = NULL;
+	}
+	if ( npc_german_debug.GetBool() )
+		Msg( "[%.2f] npc_german_soldier %d: can't %s - no spot for it; the squad will ask someone else\n", gpGlobals->curtime, entindex(), s_pszSquadOrder[eOrder] );
+}
+
+// Can he put rounds near the enemy's position from where he'd fire (his cover's firing point,
+// else his eyes)? The line must reach the enemy's spot or what's right in front of it - not
+// his own wall.
+bool CNPC_GermanSoldier::CanSuppressEnemy( const Vector &vecTarget )
+{
+	Vector vecFrom = ( IsInCoverLoop() && m_Cover.bValid ) ? m_Cover.vecExposedEye : EyePosition();
+	Vector vecAim = vecTarget + Vector( 0, 0, 40 );
+	CTraceFilterSkipTwoEntities filter( this, GetEnemy(), COLLISION_GROUP_NONE );
+	trace_t tr;
+	UTIL_TraceLine( vecFrom, vecAim, COVER_MASK, &filter, &tr );
+	if ( tr.fraction >= 1.0f )
+		return true;
+	return ( tr.endpos - vecAim ).Length() < 128.0f && ( tr.endpos - vecFrom ).Length2D() > m_flCoverMaxGap + 16.0f;
+}
+
+void CNPC_GermanSoldier::SquadTick( void )
+{
+	GermanSquadState_t *pSq = m_pSquad ? GetGermanSquad( m_SquadName ) : NULL;
+	float now = gpGlobals->curtime;
+	if ( !pSq || now < pSq->flNextTick )
+		return;
+	pSq->flNextTick = now + 0.5f;
+	GermanSquadState_t &sq = *pSq;
+
+	// The living members, and whoever sees the enemy.
+	CNPC_GermanSoldier *apMembers[16];
+	int nAlive = 0;
+	Vector vecCentroid = vec3_origin;
+	AISquadIter_t iter;
+	for ( CAI_BaseNPC *pMember = m_pSquad->GetFirstMember( &iter ); pMember && nAlive < 16; pMember = m_pSquad->GetNextMember( &iter ) )
+	{
+		if ( !pMember->IsAlive() || !FClassnameIs( pMember, "npc_german_soldier" ) )
+			continue;
+		CNPC_GermanSoldier *pG = static_cast<CNPC_GermanSoldier *>( pMember );
+		apMembers[nAlive++] = pG;
+		vecCentroid += pG->GetAbsOrigin();
+		if ( pG->GetEnemy() && pG->HasCondition( COND_SEE_ENEMY ) )
+		{
+			sq.hEnemy = pG->GetEnemy();
+			sq.vecLKP = pG->GetEnemy()->GetAbsOrigin();
+			sq.flLastSeen = now;
+		}
+	}
+	if ( nAlive == 0 )
+		return;
+	vecCentroid /= nAlive;
+	sq.nMaxAlive = MAX( sq.nMaxAlive, nAlive );
+	if ( ( sq.vecLKP - sq.vecStillPos ).Length2D() > 128.0f )
+	{
+		sq.vecStillPos = sq.vecLKP;
+		sq.flStillSince = now;
+	}
+
+	// Watchdog + upkeep: orders nobody took, and roles whose holder is gone or done.
+	for ( int i = 0; i < nAlive; i++ )
+	{
+		CNPC_GermanSoldier *pG = apMembers[i];
+		if ( pG->m_eSquadOrder != ORDER_NONE && now - pG->m_flSquadOrderIssued > 5.0f )
+		{
+			pG->Invariant( INV_ORDER_STUCK, "order '%s' not taken after 5 s (schedule %s) - cancelled",
+						   s_pszSquadOrder[pG->m_eSquadOrder], pG->GetCurSchedule() ? pG->GetCurSchedule()->GetName() : "-" );
+			pG->m_eSquadOrder = ORDER_NONE;
+		}
+	}
+	CNPC_GermanSoldier *pSup = static_cast<CNPC_GermanSoldier *>( sq.hSuppressor.Get() );
+	if ( pSup && ( !pSup->IsAlive() || now >= sq.flSuppressUntil ) )
+		sq.hSuppressor = NULL;
+	CNPC_GermanSoldier *pBound = static_cast<CNPC_GermanSoldier *>( sq.hBounder.Get() );
+	if ( pBound && ( !pBound->IsAlive() ||
+		 ( pBound->m_eSquadOrder != ORDER_BOUND && !( pBound->IsCurSchedule( SCHED_GERMAN_MOVE_TO_COVER, false ) && pBound->m_eMoveKind == MOVE_BOUND ) ) ) )
+		sq.hBounder = NULL;		// arrived, or gave up
+	CNPC_GermanSoldier *pFlank = static_cast<CNPC_GermanSoldier *>( sq.hFlanker.Get() );
+	if ( pFlank )
+	{
+		bool bMoving = pFlank->IsCurSchedule( SCHED_GERMAN_MOVE_TO_COVER, false ) &&
+					   ( pFlank->m_eMoveKind == MOVE_FLANK_LEFT || pFlank->m_eMoveKind == MOVE_FLANK_RIGHT );
+		bool bPending = pFlank->m_eSquadOrder == ORDER_FLANK_LEFT || pFlank->m_eSquadOrder == ORDER_FLANK_RIGHT;
+		if ( !pFlank->IsAlive() || ( !bMoving && !bPending ) )
+			sq.hFlanker = NULL;	// arrived (now fighting from the side), or gave up
+		else if ( now > sq.flFlankDeadline )
+		{
+			pFlank->Invariant( INV_FLANK_TIMEOUT, "flanker still not at his spot after the deadline - giving up on it" );
+			pFlank->MarkSpotBad( pFlank->m_vecCoverSpot );
+			pFlank->m_eSquadOrder = ORDER_NONE;
+			if ( bMoving )
+				pFlank->ClearSchedule( "flank took too long" );
+			sq.hFlanker = NULL;
+		}
+	}
+
+	CBaseEntity *pEnemy = sq.hEnemy.Get();
+	if ( !pEnemy || !pEnemy->IsAlive() || now - sq.flLastSeen > 10.0f )
+		return;		// nothing fresh to coordinate against
+	Vector vecFromEnemy = vecCentroid - sq.vecLKP;
+	vecFromEnemy.z = 0.0f;
+	if ( VectorNormalize( vecFromEnemy ) < 1.0f )
+		return;
+	Vector vecFacing = -vecFromEnemy;
+	Vector vecLeft( -vecFacing.y, vecFacing.x, 0.0f );
+	float flTempo = m_flSquadTempo;
+
+	// Who can keep his head down (in cover, not already given a job, line to his position).
+	auto PickSuppressor = [&]( CNPC_GermanSoldier *pExclude ) -> CNPC_GermanSoldier *
+	{
+		for ( int i = 0; i < nAlive; i++ )
+		{
+			CNPC_GermanSoldier *pG = apMembers[i];
+			if ( pG != pExclude && pG != sq.hFlanker.Get() && pG != sq.hBounder.Get() && pG->IsInCoverLoop() &&
+				 pG->m_eSquadOrder == ORDER_NONE && pG->CanSuppressEnemy( sq.vecLKP ) )
+				return pG;
+		}
+		return NULL;
+	};
+	auto AssignSuppressor = [&]( CNPC_GermanSoldier *pAsker, float flTime )
+	{
+		if ( sq.hSuppressor.Get() )
+			return;
+		CNPC_GermanSoldier *pS = PickSuppressor( pAsker );
+		if ( !pS )
+			return;
+		sq.hSuppressor = pS;
+		sq.flSuppressUntil = now + flTime;
+		pAsker->m_Chatter.Request( CHAT_ORDER_SUPPRESS, NULL, pS );		// "Niederhalten!" - "Jawohl!"
+		if ( npc_german_debug.GetBool() )
+			Msg( "[%.2f] npc_german_soldier %d: squad - covering fire on your position for %.0f s\n", now, pS->entindex(), flTime );
+	};
+
+	// 1. Fall back: lost half the squad and he's close.
+	if ( sq.nMaxAlive >= 2 && nAlive * 2 <= sq.nMaxAlive && ( vecCentroid - sq.vecLKP ).Length2D() < 500.0f && now >= sq.flNextFallback )
+	{
+		sq.flNextFallback = now + 25.0f;
+		int nOrdered = 0;
+		for ( int i = 0; i < nAlive && nOrdered < 2; i++ )
+		{
+			CNPC_GermanSoldier *pG = apMembers[i];
+			if ( pG->CanTakeSquadOrder() && ( pG->GetAbsOrigin() - sq.vecLKP ).Length2D() < 700.0f )
+			{
+				pG->GiveSquadOrder( ORDER_FALLBACK, 0.3f * nOrdered, vecFromEnemy );
+				nOrdered++;
+			}
+		}
+		if ( nOrdered )
+			return;
+	}
+
+	// 2. Flank: he's stayed put 8 s and there are three or more of us.
+	if ( nAlive >= 3 && !sq.hFlanker.Get() && now >= sq.flNextFlank && now - sq.flStillSince > 8.0f / flTempo )
+	{
+		CNPC_GermanSoldier *pBest = NULL;
+		float flBestSide = -1.0f, flSide = 0.0f;
+		for ( int i = 0; i < nAlive; i++ )
+		{
+			CNPC_GermanSoldier *pG = apMembers[i];
+			if ( !pG->CanTakeSquadOrder() || pG == sq.hSuppressor.Get() || pG == sq.hBounder.Get() )
+				continue;
+			Vector vecRel = pG->GetAbsOrigin() - vecCentroid;
+			float flLat = vecRel.x * vecLeft.x + vecRel.y * vecLeft.y;	// how far out to one side he already is
+			if ( fabsf( flLat ) > flBestSide )
+			{
+				flBestSide = fabsf( flLat );
+				flSide = flLat;
+				pBest = pG;
+			}
+		}
+		if ( pBest )
+		{
+			bool bLeft = flSide > 0.0f || ( flSide == 0.0f && random->RandomInt( 0, 1 ) );
+			pBest->GiveSquadOrder( bLeft ? ORDER_FLANK_LEFT : ORDER_FLANK_RIGHT, 0.8f, vecFromEnemy );
+			sq.hFlanker = pBest;
+			sq.flFlankDeadline = now + 30.0f;
+			sq.flNextFlank = now + 25.0f / flTempo;
+			AssignSuppressor( pBest, 7.0f );
+			return;
+		}
+	}
+
+	// 3. Bound: the rear-most man in cover moves up while another keeps his head down.
+	if ( nAlive >= 2 && !sq.hBounder.Get() && !sq.hFlanker.Get() && now >= sq.flNextBound )
+	{
+		sq.flNextBound = now + random->RandomFloat( 8.0f, 14.0f ) / flTempo;
+		CNPC_GermanSoldier *pBest = NULL;
+		float flBest = 450.0f;		// no need to move up on a man who's already close
+		for ( int i = 0; i < nAlive; i++ )
+		{
+			CNPC_GermanSoldier *pG = apMembers[i];
+			if ( !pG->CanTakeSquadOrder() || !pG->IsInCoverLoop() || pG == sq.hSuppressor.Get() )
+				continue;
+			float flDist = ( pG->GetAbsOrigin() - sq.vecLKP ).Length2D();
+			if ( flDist > flBest )
+			{
+				flBest = flDist;
+				pBest = pG;
+			}
+		}
+		if ( pBest )
+		{
+			AssignSuppressor( pBest, 5.0f );
+			pBest->GiveSquadOrder( ORDER_BOUND, sq.hSuppressor.Get() ? 1.2f : 0.3f, vecFromEnemy );
+			sq.hBounder = pBest;
+		}
+	}
+}
+
+//=============================================================================
 // A3a - battle chatter moments
 //=============================================================================
 CNPC_GermanSoldier *CNPC_GermanSoldier::NearestSquadmate( float flMaxDist, bool bMustSeeMe )
@@ -1481,15 +1818,19 @@ CNPC_GermanSoldier *CNPC_GermanSoldier::NearestSquadmate( float flMaxDist, bool 
 // "Hinter die Fässer!" - and he answers. A bound forward gets "Vorwärts!" instead. (CoD rule.)
 void CNPC_GermanSoldier::ChatterOrderCoverMove( void )
 {
-	if ( ( m_vecCoverSpot - GetAbsOrigin() ).Length2D() < 250.0f )
+	if ( m_eMoveKind == MOVE_COVER && ( m_vecCoverSpot - GetAbsOrigin() ).Length2D() < 250.0f )
 		return;
 	CNPC_GermanSoldier *pMate = NearestSquadmate( 800.0f );
 	if ( !pMate )
 		return;
-	if ( m_bMoveIsBound )
-		pMate->m_Chatter.Request( CHAT_ORDER_FORWARD, NULL, this );
-	else
-		pMate->m_Chatter.Request( CHAT_ORDER_COVER, m_szCoverLandmark, this );
+	switch ( m_eMoveKind )
+	{
+	case MOVE_BOUND:		pMate->m_Chatter.Request( CHAT_ORDER_FORWARD, NULL, this ); break;
+	case MOVE_FLANK_LEFT:	pMate->m_Chatter.Request( CHAT_ORDER_FLANK_LEFT, NULL, this ); break;
+	case MOVE_FLANK_RIGHT:	pMate->m_Chatter.Request( CHAT_ORDER_FLANK_RIGHT, NULL, this ); break;
+	case MOVE_FALLBACK:		pMate->m_Chatter.Request( CHAT_ORDER_BACK, NULL, this ); break;
+	default:				pMate->m_Chatter.Request( CHAT_ORDER_COVER, m_szCoverLandmark, this ); break;
+	}
 }
 
 // Reloading: "cover me" to the nearest squadmate (who answers), or just "reloading".
@@ -1599,6 +1940,14 @@ void CNPC_GermanSoldier::RunOpenLoop( void )
 
 	if ( HasCondition( COND_SEE_ENEMY ) )
 		m_flOpenLastSaw = now;
+
+	if ( m_eSquadOrder != ORDER_NONE && now >= m_flSquadOrderAt && m_eOpenState != OS_RELOAD )
+	{
+		VacateStrategySlot();
+		m_eCoverExit = CEXIT_ORDER;
+		TaskComplete();
+		return;
+	}
 
 	// Leaving: cover turned up (looks every 3 s, not mid-reload), or nothing to shoot for a while.
 	if ( m_eOpenState != OS_RELOAD && now >= m_flOpenNextCoverCheck )
@@ -1808,6 +2157,7 @@ void CNPC_GermanSoldier::SetCoverState( CoverState_t eState, const char *pszWhy 
 		m_flCoverNextLook = now + random->RandomFloat( m_flCoverLookMin, m_flCoverLookMax );
 		break;
 	case CS_DUCK:
+		m_bSuppressing = false;
 		VacateStrategySlot();
 		CoverPose( ACT_IDLE );
 		m_flCoverHiddenSince = now;
@@ -1847,6 +2197,14 @@ void CNPC_GermanSoldier::CoverDecideWhileHidden( void )
 	if ( nClip <= 0 )
 	{
 		SetCoverState( CS_RELOAD, "clip empty" );
+		return;
+	}
+	// The squad wants covering fire: up, and rounds onto his position even if he can't see him.
+	if ( IsSquadSuppressor() && !CanSeeEnemyFromExposed() && GetEnemy() && CanSuppressEnemy( GetEnemyLKP() ) )
+	{
+		m_bRiseToShoot = true;
+		m_bSuppressing = true;
+		SetCoverState( CS_RISE, "covering fire on your position for the squad" );
 		return;
 	}
 	if ( CanSeeEnemyFromExposed() )
@@ -1895,6 +2253,16 @@ void CNPC_GermanSoldier::RunCoverLoop( void )
 	float now = gpGlobals->curtime;
 	GetMotor()->SetIdealYawToTargetAndUpdate( GetEnemyLKP(), AI_KEEP_YAW_SPEED );	// face his last known spot
 
+	// A squad order (not mid-reload or mid-transition): hand him back to the brain to carry it out.
+	if ( m_eSquadOrder != ORDER_NONE && now >= m_flSquadOrderAt && m_eCoverState != CS_RELOAD && !IsInStanceTransition() )
+	{
+		m_bSuppressing = false;
+		m_eCoverExit = CEXIT_ORDER;
+		VacateStrategySlot();
+		TaskComplete();
+		return;
+	}
+
 	if ( IsFlankedAtCover() )
 	{
 		if ( npc_german_debug.GetBool() )
@@ -1937,6 +2305,9 @@ void CNPC_GermanSoldier::RunCoverLoop( void )
 	case CS_SHOOT:
 		{
 			bool bSee = CanSeeEnemyFromExposed();
+			bool bCoverDone = m_bSuppressing && !IsSquadSuppressor();	// the squad's done with his covering fire
+			if ( bCoverDone )
+				m_bSuppressing = false;
 			if ( bSee )
 			{
 				m_flCoverLastSaw = now;
@@ -1952,7 +2323,9 @@ void CNPC_GermanSoldier::RunCoverLoop( void )
 				pszDuck = "clip empty - down to reload";
 			else if ( m_flLastSuppressed > m_flCoverStateStart + 0.3f )
 				pszDuck = "rounds cracking past - ducks";
-			else if ( m_flCoverLostSight > 0.0f && now - m_flCoverLostSight > 0.6f )
+			else if ( bCoverDone && !bSee )
+				pszDuck = "covering fire done";
+			else if ( !m_bSuppressing && m_flCoverLostSight > 0.0f && now - m_flCoverLostSight > 0.6f )
 				pszDuck = "lost sight of you";
 			else if ( m_nShotsLeft <= 0 || now >= m_flCoverStateUntil )
 				pszDuck = "done firing";
@@ -1965,7 +2338,7 @@ void CNPC_GermanSoldier::RunCoverLoop( void )
 				SetCoverState( CS_DUCK, pszDuck );
 				break;
 			}
-			if ( bSee )
+			if ( bSee || m_bSuppressing )
 				TryFireShot();
 		}
 		break;
@@ -2045,12 +2418,20 @@ bool CNPC_GermanSoldier::IsSpotBad( const Vector &vecPos ) const
 // Squadmates' spots and spots he recently failed to reach are skipped. The best few are then
 // checked with a real route (the node graph), and the run is scored by the route's length -
 // a spot on the far side of a wall is a long run, not a short one, or no run at all.
-bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, bool bAdvance )
+bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, int nMode )
 {
 	if ( !pEnemy || !g_pBigAINet )
 		return false;
+	bool bAdvance = nMode == SEARCH_ADVANCE;
+	bool bFlank = nMode == SEARCH_FLANK_LEFT || nMode == SEARCH_FLANK_RIGHT;
+	bool bRetreat = nMode == SEARCH_RETREAT;
+	bool bOrdinary = nMode == SEARCH_COVER;
+	float flRadius = bFlank ? m_flFlankRadius : m_flCoverSearchRadius;
 	Vector vecMe = GetAbsOrigin(), vecFoe = pEnemy->GetAbsOrigin();
 	float flMyFoe = ( vecMe - vecFoe ).Length2D();
+	// flank geometry: the squad faces the enemy along -m_vecFlankFrom; its left is that turned 90 degrees
+	Vector vecFacing = -m_vecFlankFrom;
+	Vector vecLeft( -vecFacing.y, vecFacing.x, 0.0f );
 
 	struct Cand_t { Vector pos; float cover; float foe; float score; };
 	const int MAX_CANDS = 6;
@@ -2063,16 +2444,36 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, bool bAdvance )
 			continue;
 		Vector vecPos = pNode->GetPosition( GetHullType() );
 		float flDist = ( vecPos - vecMe ).Length();
-		if ( flDist > m_flCoverSearchRadius || fabsf( vecPos.z - vecMe.z ) > 160.0f || flDist < 24.0f )
+		if ( flDist > flRadius || fabsf( vecPos.z - vecMe.z ) > 160.0f || flDist < 24.0f )
 			continue;
 		float flFoe = ( vecPos - vecFoe ).Length2D();
 		if ( flFoe < 192.0f || IsSpotBad( vecPos ) || IsCoverSpotTaken( vecPos ) )
 			continue;
 		if ( bAdvance && flFoe > flMyFoe - 128.0f )
 			continue;	// bounding forward: only cover that actually gains ground
+		if ( bRetreat && flFoe < flMyFoe + 192.0f )
+			continue;	// falling back: only cover that gives ground
+		float flFlankDeg = 0.0f;
+		if ( bFlank )
+		{
+			// out to the side of the squad's line on him: 50+ degrees off it, on the ordered side,
+			// not too close to him and not so far it's out of the fight
+			Vector vecOff = vecPos - vecFoe;
+			vecOff.z = 0.0f;
+			if ( flFoe < 256.0f || flFoe > 1000.0f )
+				continue;
+			vecOff /= flFoe;
+			float flCos = vecOff.x * m_vecFlankFrom.x + vecOff.y * m_vecFlankFrom.y;
+			if ( flCos > 0.64f )
+				continue;
+			bool bLeft = vecOff.x * vecLeft.x + vecOff.y * vecLeft.y > 0.0f;
+			if ( bLeft != ( nMode == SEARCH_FLANK_LEFT ) )
+				continue;
+			flFlankDeg = RAD2DEG( acosf( clamp( flCos, -1.0f, 1.0f ) ) );
+		}
 		float flCloser = flMyFoe - flFoe;	// how much ground toward the enemy this spot takes
-		if ( !bAdvance && flCloser > 256.0f )
-			continue;	// taking cover is not attacking: ground is only taken by bounding (rule 7)
+		if ( bOrdinary && flCloser > 256.0f )
+			continue;	// taking cover is not attacking: ground is only taken by bounding / flanking
 		nTested++;
 		int nCover = CoverAt( vecPos, pEnemy );
 		if ( nCover <= COVER_FULL )
@@ -2082,8 +2483,12 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, bool bAdvance )
 		c.cover = ( nCover == COVER_CROUCH ? 100.0f : 80.0f )
 				- ( flFoe < 400.0f ? ( 400.0f - flFoe ) * 0.1f : 0.0f );	// not right in his face
 		c.foe = flFoe;
-		if ( !bAdvance && flCloser > 0.0f )
+		if ( bOrdinary && flCloser > 0.0f )
 			c.cover -= flCloser * 0.15f;		// prefer cover that doesn't close on him
+		if ( bFlank )
+			c.cover += flFlankDeg * 0.5f;		// the further round his side, the better
+		if ( bRetreat )
+			c.cover += ( flFoe - flMyFoe ) * 0.05f;
 		c.score = c.cover - flDist * 0.08f;		// straight-line estimate (a route is never shorter)
 		// keep the best MAX_CANDS by estimate
 		int iSlot = nCands < MAX_CANDS ? nCands++ : -1;
@@ -2128,7 +2533,7 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, bool bAdvance )
 			flLen += ( pWp->GetPos() - vecPrev ).Length();
 			vecPrev = pWp->GetPos();
 		}
-		if ( flLen > m_flCoverSearchRadius * 1.5f || ( bAdvance && flLen > m_flBoundMax ) )
+		if ( flLen > flRadius * 1.5f || ( bAdvance && flLen > m_flBoundMax ) )
 		{
 			DeleteAll( pRoute );
 			continue;	// reachable, but only the long way round (a bound is a short dash)
@@ -2136,7 +2541,7 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, bool bAdvance )
 		// Killzone / TLOU: the run itself matters - every unit of it in your line of fire costs.
 		float flExposed = RouteExposure( vecMe, pRoute, pEnemy );
 		DeleteAll( pRoute );
-		float flScore = c.cover - flLen * 0.08f - flExposed * 0.1f;
+		float flScore = c.cover - flLen * 0.08f - flExposed * ( bFlank ? 0.25f : 0.1f );	// a flank must stay out of his sight
 		if ( flScore > flBest )
 		{
 			flBest = flScore;
@@ -2147,12 +2552,14 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, bool bAdvance )
 	}
 	if ( npc_german_debug.GetBool() )
 		Msg( "[%.2f] npc_german_soldier %d: %s - %d spots tested, %d gave cover, %d had no route: %s (run %.0f, %.0f of it in your line of fire)\n",
-			 gpGlobals->curtime, entindex(), bAdvance ? "advance search (closer cover)" : "cover search", nTested, nCands, nNoRoute,
+			 gpGlobals->curtime, entindex(), bAdvance ? "advance search (closer cover)" : bFlank ? ( nMode == SEARCH_FLANK_LEFT ? "flank search (left)" : "flank search (right)" ) :
+			 bRetreat ? "fall-back search" : "cover search", nTested, nCands, nNoRoute,
 			 flBest > -FLT_MAX ? "going" : "nothing usable", flBestLen, flBestExposed );
 	if ( flBest == -FLT_MAX )
 		return false;
 	m_vecCoverSpot = vecBest;
 	m_bHasCoverSpot = true;
+	m_flLastSearchRun = flBestLen;
 	const char *pszLandmark = GermanChatter_LandmarkAt( vecBest, pEnemy->EyePosition(), this, pEnemy );
 	Q_strncpy( m_szCoverLandmark, pszLandmark ? pszLandmark : "", sizeof( m_szCoverLandmark ) );
 	return true;
@@ -2456,7 +2863,10 @@ void CNPC_GermanSoldier::PrescheduleThink( void )
 	SyncStance();
 	WatchdogPose();
 	if ( IsAlive() && GetState() == NPC_STATE_COMBAT )
+	{
 		ChatterThreat();
+		SquadTick();
+	}
 	m_Chatter.Update();
 	UpdateCoverTransition();
 	UpdateCoverAwareness();
@@ -3329,7 +3739,7 @@ int CNPC_GermanSoldier::SelectCombatSchedule( void )
 {
 	float now = gpGlobals->curtime;
 	VacateStrategySlot();		// every decision re-claims its squad slot
-	m_bMoveIsBound = false;
+	m_eMoveKind = MOVE_COVER;
 
 	int nCover = LowCoverAgainst( GetEnemy() );
 	bool bInCover = nCover > COVER_FULL && m_actHide != ACT_INVALID;
@@ -3344,16 +3754,38 @@ int CNPC_GermanSoldier::SelectCombatSchedule( void )
 		return Decide( SCHED_TAKE_COVER_FROM_BEST_SOUND, "danger heard" );
 	}
 
-	// 2. In low cover (and not just flanked out of it): the cover loop. If he left it bored,
-	//    try bounding forward first (two at a time - the squad's bound slots).
+	// 2. A squad order: find his own spot for it; if there's none, say so (the squad asks someone else).
+	if ( m_eSquadOrder != ORDER_NONE && now >= m_flSquadOrderAt )
+	{
+		SquadOrder_t eOrder = m_eSquadOrder;
+		m_eSquadOrder = ORDER_NONE;
+		static const int s_nMode[] = { SEARCH_COVER, SEARCH_ADVANCE, SEARCH_FLANK_LEFT, SEARCH_FLANK_RIGHT, SEARCH_RETREAT };
+		static const MoveKind_t s_eKind[] = { MOVE_COVER, MOVE_BOUND, MOVE_FLANK_LEFT, MOVE_FLANK_RIGHT, MOVE_FALLBACK };
+		if ( FindCoverSpot( GetEnemy(), s_nMode[eOrder] ) )
+		{
+			m_eMoveKind = s_eKind[eOrder];
+			if ( eOrder == ORDER_FLANK_LEFT || eOrder == ORDER_FLANK_RIGHT )
+			{
+				GermanSquadState_t *pSq = GetGermanSquad( m_SquadName );
+				if ( pSq && pSq->hFlanker.Get() == this )	// deadline from the actual run: twice a jog, plus 6 s
+					pSq->flFlankDeadline = now + clamp( m_flLastSearchRun / 150.0f * 2.0f + 6.0f, 10.0f, 40.0f );
+			}
+			static const char *s_pszWhy[] = { "", "squad: bound forward", "squad: flank left", "squad: flank right", "squad: fall back" };
+			return Decide( SCHED_GERMAN_MOVE_TO_COVER, s_pszWhy[eOrder] );
+		}
+		SquadOrderFailed( eOrder );
+	}
+
+	// 3. In low cover (and not just flanked out of it): the cover loop. A man on his own who left it
+	//    bored bounds forward by himself (in a squad, the coordinator decides who bounds).
 	if ( bInCover && !bFlanked )
 	{
-		if ( eExit == CEXIT_BORED && now >= m_flNextAdvance && ClaimBoundSlot() )
+		if ( eExit == CEXIT_BORED && !m_pSquad && now >= m_flNextAdvance && ClaimBoundSlot() )
 		{
 			m_flNextAdvance = now + 4.0f;
-			if ( FindCoverSpot( GetEnemy(), true ) )
+			if ( FindCoverSpot( GetEnemy(), SEARCH_ADVANCE ) )
 			{
-				m_bMoveIsBound = true;
+				m_eMoveKind = MOVE_BOUND;
 				return Decide( SCHED_GERMAN_MOVE_TO_COVER, "bored at his cover - bounding forward" );
 			}
 			VacateStrategySlot();
@@ -3374,12 +3806,12 @@ int CNPC_GermanSoldier::SelectCombatSchedule( void )
 	}
 
 	// 5. Out in the open and nothing to shoot for a while: bound forward if there's closer cover.
-	if ( eExit == CEXIT_BORED && now >= m_flNextAdvance && ClaimBoundSlot() )
+	if ( eExit == CEXIT_BORED && !m_pSquad && now >= m_flNextAdvance && ClaimBoundSlot() )
 	{
 		m_flNextAdvance = now + 4.0f;
-		if ( FindCoverSpot( GetEnemy(), true ) )
+		if ( FindCoverSpot( GetEnemy(), SEARCH_ADVANCE ) )
 		{
-			m_bMoveIsBound = true;
+			m_eMoveKind = MOVE_BOUND;
 			return Decide( SCHED_GERMAN_MOVE_TO_COVER, "lost sight a while - bounding forward" );
 		}
 		VacateStrategySlot();
