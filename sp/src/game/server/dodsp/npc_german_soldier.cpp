@@ -271,7 +271,9 @@ private:
 	//-------------------------------------------------------------------------
 	// Watchdog (R1): passive. Prints INVARIANT lines when a rule is broken; changes nothing.
 	//-------------------------------------------------------------------------
-	enum Invariant_t { INV_STANCE_FLIPS, INV_STANCE_OWNER, INV_SCHED_CHURN, INV_DECISION_CHURN, INV_COVER_CHURN, NUM_INVARIANTS };
+	enum Invariant_t { INV_STANCE_FLIPS, INV_STANCE_OWNER, INV_SCHED_CHURN, INV_DECISION_CHURN, INV_COVER_CHURN, INV_POSE_FLIPS, NUM_INVARIANTS };
+	void		WatchdogPose( void );		// what the body actually plays: down / crouched / standing flips
+	bool		IsClipEmpty( void );		// one owner for "he has no rounds in the gun"
 	void		Invariant( Invariant_t eWhich, const char *pszFormat, ... );
 	void		WatchdogNoteSchedule( void );
 	enum { COVER_EXPOSED = -1, COVER_FULL = 0, COVER_CROUCH = 1, COVER_STAND = 2 };
@@ -344,6 +346,11 @@ private:
 	int					m_nShortScheds;
 	int					m_iLastShortSched;
 	float				m_flDecisionTimes[5];
+	struct PoseSample_t { float t; int nClass; int iSeq; Activity actIdeal; int iSched; int iTask; int nStance; int nCover; };
+	PoseSample_t		m_PoseLog[6];			// last body-height changes (watchdog)
+	int					m_iPoseLog;
+	int					m_nPoseClass;
+	int					m_iPoseSeq;
 	int					m_iDecision;
 	enum { NUM_BAD_SPOTS = 8 };
 	Vector				m_vecBadSpot[NUM_BAD_SPOTS];	// refusal memory: spots he couldn't reach
@@ -494,6 +501,12 @@ CNPC_GermanSoldier::CNPC_GermanSoldier() : m_AnimMap( DefLessFunc( int ) )
 	for ( int i = 0; i < 5; i++ )
 		m_flDecisionTimes[i] = -100.0f;
 	m_iDecision = 0;
+	memset( m_PoseLog, 0, sizeof( m_PoseLog ) );
+	for ( int i = 0; i < 6; i++ )
+		m_PoseLog[i].t = -100.0f;
+	m_iPoseLog = 0;
+	m_nPoseClass = -1;
+	m_iPoseSeq = -1;
 	for ( int i = 0; i < NUM_BAD_SPOTS; i++ )
 	{
 		m_vecBadSpot[i] = vec3_origin;
@@ -1060,6 +1073,7 @@ int CNPC_GermanSoldier::CoverAt( const Vector &vecPos, CBaseEntity *pEnemy, trac
 #define STANCE_MIN_HOLD		0.5f	// a stance holds at least this long (commitment), unless forced
 
 static const char *s_pszStance[] = { "stand", "crouch", "hide", "up over low wall", "up over chest-high" };
+static const char *s_pszCoverState[] = { "hide", "rise", "shoot", "look", "duck", "reload" };
 
 bool CNPC_GermanSoldier::SetStance( Stance_t s, const char *pszWhy, bool bForce )
 {
@@ -1069,7 +1083,7 @@ bool CNPC_GermanSoldier::SetStance( Stance_t s, const char *pszWhy, bool bForce 
 		return false;	// asked too soon: the caller tries again next think
 
 	if ( npc_german_debug.GetBool() )
-		Msg( "npc_german_soldier %d: stance %s -> %s (%s)\n", entindex(), s_pszStance[m_eStance], s_pszStance[s], pszWhy );
+		Msg( "[%.2f] npc_german_soldier %d: stance %s -> %s (%s)\n", gpGlobals->curtime, entindex(), s_pszStance[m_eStance], s_pszStance[s], pszWhy );
 
 	// Watchdog: 4 changes inside 2 s is bobbing, whoever asked.
 	m_flStanceFlipTimes[m_iStanceFlip] = gpGlobals->curtime;
@@ -1114,13 +1128,13 @@ void CNPC_GermanSoldier::Invariant( Invariant_t eWhich, const char *pszFormat, .
 	if ( gpGlobals->curtime < m_flInvariantNext[eWhich] )
 		return;
 	m_flInvariantNext[eWhich] = gpGlobals->curtime + 2.0f;
-	static const char *s_pszNames[] = { "STANCE_FLIPS", "STANCE_OWNER", "SCHED_CHURN", "DECISION_CHURN", "COVER_CHURN" };
+	static const char *s_pszNames[] = { "STANCE_FLIPS", "STANCE_OWNER", "SCHED_CHURN", "DECISION_CHURN", "COVER_CHURN", "POSE_FLIPS" };
 	char sz[512];
 	va_list ap;
 	va_start( ap, pszFormat );
 	Q_vsnprintf( sz, sizeof( sz ), pszFormat, ap );
 	va_end( ap );
-	Warning( "INVARIANT %s - npc_german_soldier %d: %s\n", s_pszNames[eWhich], entindex(), sz );
+	Warning( "[%.2f] INVARIANT %s - npc_german_soldier %d: %s\n", gpGlobals->curtime, s_pszNames[eWhich], entindex(), sz );
 }
 
 // Called each time the AI picks a new schedule: one that ended within 0.1 s five times in a
@@ -1140,6 +1154,80 @@ void CNPC_GermanSoldier::WatchdogNoteSchedule( void )
 	else
 		m_nShortScheds = 0;
 	m_flSchedStarted = gpGlobals->curtime;
+}
+
+// What the body is actually doing, whatever any code thinks it asked for: classify the playing
+// sequence as down (hidden / hidden reload), crouched, or standing. Transitions are skipped
+// (they're the moves between). 4 class changes in 2 s is bobbing: print the last changes with
+// everything that could have caused them (ideal activity, schedule, task, stance, cover state).
+// npc_german_debug 3 prints every sequence change as it happens.
+void CNPC_GermanSoldier::WatchdogPose( void )
+{
+	if ( !GetModelPtr() || GetSequence() < 0 || !IsAlive() )
+		return;
+	int iSeq = GetSequence();
+	if ( iSeq == m_iPoseSeq )
+		return;
+	Activity actSeq = GetSequenceActivity( iSeq );
+	const char *pszSeq = GetSequenceName( iSeq );
+	if ( npc_german_debug.GetInt() >= 3 )
+		Msg( "[%.2f] npc_german_soldier %d: sequence %s -> %s (ideal %s, sched %s, task %s, stance %s)\n", gpGlobals->curtime, entindex(),
+			 m_iPoseSeq >= 0 ? GetSequenceName( m_iPoseSeq ) : "-", pszSeq, ActivityList_NameForIndex( GetIdealActivity() ) ? ActivityList_NameForIndex( GetIdealActivity() ) : "?",
+			 GetCurSchedule() ? GetCurSchedule()->GetName() : "-", GetTask() ? TaskName( GetTask()->iTask ) : "-", s_pszStance[m_eStance] );
+	m_iPoseSeq = iSeq;
+	if ( IsCoverTransition( actSeq ) )
+		return;
+
+	const char *pszAct = ActivityList_NameForIndex( actSeq );
+	int nClass;
+	if ( actSeq == m_actHide || actSeq == m_actCoverReload || ( pszAct && Q_stristr( pszAct, "HIDE" ) ) )
+		nClass = 0;
+	else if ( ( pszAct && ( Q_stristr( pszAct, "CROUCH" ) || Q_stristr( pszAct, "_LOW" ) || Q_stristr( pszAct, "PRONE" ) ) ) ||
+			  ( pszSeq && Q_stristr( pszSeq, "crouch" ) ) )
+		nClass = 1;
+	else
+		nClass = 2;
+	if ( nClass == m_nPoseClass )
+		return;
+	m_nPoseClass = nClass;
+
+	PoseSample_t &e = m_PoseLog[m_iPoseLog];
+	e.t = gpGlobals->curtime;
+	e.nClass = nClass;
+	e.iSeq = iSeq;
+	e.actIdeal = GetIdealActivity();
+	e.iSched = GetCurSchedule() ? GetCurSchedule()->GetId() : -1;
+	e.iTask = GetTask() ? GetTask()->iTask : -1;
+	e.nStance = m_eStance;
+	e.nCover = m_eCoverState;
+	m_iPoseLog = ( m_iPoseLog + 1 ) % 6;
+
+	// the 5th-newest entry: 4 changes since then
+	const PoseSample_t &old = m_PoseLog[( m_iPoseLog + 1 ) % 6];
+	if ( gpGlobals->curtime - old.t < 2.0f )
+	{
+		static const char *s_pszClass[] = { "DOWN", "CROUCHED", "STANDING" };
+		char sz[1024] = "";
+		for ( int k = 1; k <= 5; k++ )
+		{
+			const PoseSample_t &p = m_PoseLog[( m_iPoseLog + k ) % 6];
+			char line[200];
+			Q_snprintf( line, sizeof( line ), "\n      %.2f %-8s %s  [ideal %s | %s | %s | stance %s | cover %s]", p.t, s_pszClass[p.nClass],
+						GetSequenceName( p.iSeq ), ActivityList_NameForIndex( p.actIdeal ) ? ActivityList_NameForIndex( p.actIdeal ) : "?",
+						p.iSched >= 0 ? GetSchedulingSymbols()->ScheduleIdToSymbol( p.iSched ) : "-", p.iTask >= 0 ? TaskName( p.iTask ) : "-",
+						s_pszStance[p.nStance], s_pszCoverState[p.nCover] );
+			Q_strncat( sz, line, sizeof( sz ), COPY_ALL_CHARACTERS );
+		}
+		Invariant( INV_POSE_FLIPS, "body went down/up 4 times in %.2f s:%s", gpGlobals->curtime - old.t, sz );
+	}
+}
+
+bool CNPC_GermanSoldier::IsClipEmpty( void )
+{
+	CBaseCombatWeapon *pWeapon = GetActiveWeapon();
+	if ( pWeapon && pWeapon->UsesClipsForAmmo1() )
+		return pWeapon->Clip1() <= 0;		// the gun itself (the condition can be a think old)
+	return HasCondition( COND_NO_PRIMARY_AMMO );
 }
 
 //=============================================================================
@@ -1228,8 +1316,6 @@ bool CNPC_GermanSoldier::IsFlankedAtCover( void )
 //
 // Every state takes time. He leaves the loop only when flanked (hide spot seen 0.5 s) or bored.
 //=============================================================================
-static const char *s_pszCoverState[] = { "hide", "rise", "shoot", "look", "duck", "reload" };
-
 void CNPC_GermanSoldier::SetCoverState( CoverState_t eState, const char *pszWhy )
 {
 	// Watchdog: 6 state changes inside 1.5 s means states that don't take time.
@@ -1240,7 +1326,7 @@ void CNPC_GermanSoldier::SetCoverState( CoverState_t eState, const char *pszWhy 
 		Invariant( INV_COVER_CHURN, "6 cover-loop states in %.2f s (now %s -> %s: %s)", flSpan,
 				   s_pszCoverState[m_eCoverState], s_pszCoverState[eState], pszWhy );
 	if ( npc_german_debug.GetBool() )
-		Msg( "npc_german_soldier %d: cover %s -> %s (%s)\n", entindex(), s_pszCoverState[m_eCoverState], s_pszCoverState[eState], pszWhy );
+		Msg( "[%.2f] npc_german_soldier %d: cover %s -> %s (%s)\n", gpGlobals->curtime, entindex(), s_pszCoverState[m_eCoverState], s_pszCoverState[eState], pszWhy );
 
 	float now = gpGlobals->curtime;
 	m_eCoverState = eState;
@@ -1910,6 +1996,7 @@ void CNPC_GermanSoldier::PrescheduleThink( void )
 	UpdateMovingReload();
 	UpdatePainRecovery();
 	SyncStance();
+	WatchdogPose();
 	UpdateCoverTransition();
 	UpdateCoverAwareness();
 	if ( npc_german_debug.GetInt() >= 2 )
@@ -2715,7 +2802,7 @@ int CNPC_GermanSoldier::SelectScheduleInner( void )
 int CNPC_GermanSoldier::Decide( int iSched, const char *pszWhy )
 {
 	if ( npc_german_debug.GetBool() && ( iSched != m_iLastDecision || pszWhy != m_pszLastWhy ) )
-		Msg( "npc_german_soldier %d: decide %s - %s\n", entindex(), GetSchedulingSymbols()->ScheduleIdToSymbol( GetGlobalScheduleId( iSched ) ), pszWhy );
+		Msg( "[%.2f] npc_german_soldier %d: decide %s - %s\n", gpGlobals->curtime, entindex(), GetSchedulingSymbols()->ScheduleIdToSymbol( GetGlobalScheduleId( iSched ) ), pszWhy );
 	m_flDecisionTimes[m_iDecision] = gpGlobals->curtime;
 	m_iDecision = ( m_iDecision + 1 ) % 5;
 	float flSpan = gpGlobals->curtime - m_flDecisionTimes[m_iDecision];
@@ -2789,7 +2876,7 @@ int CNPC_GermanSoldier::SelectCombatSchedule( void )
 	}
 
 	// 4. No cover he can reach: fight in the open.
-	if ( HasCondition( COND_NO_PRIMARY_AMMO ) )
+	if ( IsClipEmpty() )
 	{
 		SetStance( STANCE_CROUCH, "reloading in the open" );
 		return Decide( SCHED_RELOAD, "empty, no cover - crouch and reload" );
