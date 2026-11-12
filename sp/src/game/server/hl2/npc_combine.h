@@ -43,17 +43,13 @@
 class CNPC_Combine : public CAI_GrenadeUser<CAI_BaseActor>
 {
 	DECLARE_DATADESC();
-protected:	// DOD-SP: derived soldiers (npc_german_soldier) chain their own schedules onto these
 	DEFINE_CUSTOM_AI;
-private:
 	DECLARE_CLASS( CNPC_Combine, CAI_GrenadeUser<CAI_BaseActor> );
 #else
 class CNPC_Combine : public CAI_BaseActor
 {
 	DECLARE_DATADESC();
-protected:	// DOD-SP: derived soldiers (npc_german_soldier) chain their own schedules onto these
 	DEFINE_CUSTOM_AI;
-private:
 	DECLARE_CLASS( CNPC_Combine, CAI_BaseActor );
 #endif
 
@@ -226,7 +222,7 @@ protected:
 	CAI_Sentence< CNPC_Combine > *GetSentences() { return &m_Sentences; }
 #endif
 
-protected:	// DOD-SP: was private - derived soldiers (npc_german_soldier) add their own schedules after these
+private:
 	//=========================================================
 	// Combine S schedules
 	//=========================================================
