@@ -228,6 +228,7 @@ private:
 	Activity			m_actHide2Stand;
 	float				m_flCoverHideMin;		// script: seconds hidden between bursts
 	float				m_flCoverHideMax;
+	float				m_flCoverMaxGap;		// script: the cover must be this close to him (units)
 	float				m_flCoverHideUntil;
 	float				m_flLastBurstEnd;		// a standing/crouched burst just finished (cover rhythm)
 	float				m_flCoverCheckTime;		// LowCoverAgainst cache
@@ -333,6 +334,7 @@ CNPC_GermanSoldier::CNPC_GermanSoldier() : m_AnimMap( DefLessFunc( int ) )
 	m_actHide = m_actHide2Aim = m_actAim2Hide = m_actStand2Hide = m_actHide2Stand = ACT_INVALID;
 	m_flCoverHideMin = 1.5f;
 	m_flCoverHideMax = 4.0f;
+	m_flCoverMaxGap = 128.0f;
 	m_flCoverHideUntil = 0.0f;
 	m_flLastBurstEnd = 0.0f;
 	m_flCoverCheckTime = 0.0f;
@@ -667,6 +669,7 @@ void CNPC_GermanSoldier::BuildAnimMap( void )
 	m_flFullFlinchCooldown = pScript->GetFloat( "full_flinch_cooldown", 3.0f );
 	m_flCoverHideMin = MAX( 0.2f, pScript->GetFloat( "cover_hide_min", 1.5f ) );
 	m_flCoverHideMax = MAX( m_flCoverHideMin, pScript->GetFloat( "cover_hide_max", 4.0f ) );
+	m_flCoverMaxGap = clamp( pScript->GetFloat( "cover_max_gap", 128.0f ), 16.0f, 512.0f );
 	m_flUnderFireHide = MAX( 0.0f, pScript->GetFloat( "under_fire_hide", 2.5f ) );
 	m_flWoundedHealth = clamp( pScript->GetFloat( "wounded_health", 0.5f ), 0.0f, 1.0f );
 	m_flWoundedHideScale = MAX( 1.0f, pScript->GetFloat( "wounded_hide_scale", 1.75f ) );
@@ -782,7 +785,7 @@ bool CNPC_GermanSoldier::IsHidingInCover( void )
 #define COVER_HIDE_TOP		32.0f	// top of the helmet in the CoD2 hide pose (+2)
 #define COVER_CROUCH_EYE	44.0f	// muzzle height firing over a low wall crouched
 #define COVER_STAND_EYE		62.0f	// ...and standing
-#define COVER_MAX_GAP		72.0f	// the cover must be this close to him
+#define COVER_MASK			( CONTENTS_SOLID | CONTENTS_MOVEABLE | CONTENTS_WINDOW | CONTENTS_BLOCKLOS )	// what stops bullets / sight
 int CNPC_GermanSoldier::LowCoverAgainst( CBaseEntity *pEnemy )
 {
 	if ( !pEnemy )
@@ -798,42 +801,50 @@ int CNPC_GermanSoldier::LowCoverAgainst( CBaseEntity *pEnemy )
 	Vector vecOrg = GetAbsOrigin();
 	trace_t tr;
 	Vector vecHide = vecOrg + Vector( 0, 0, COVER_HIDE_TOP );
-	UTIL_TraceLine( vecEye, vecHide, MASK_BLOCKLOS, &filter, &tr );
+	UTIL_TraceLine( vecEye, vecHide, COVER_MASK, &filter, &tr );
+	bool bHidden = tr.fraction < 1.0f && ( vecHide - tr.endpos ).Length2D() <= m_flCoverMaxGap;
 	bool bDraw = npc_german_debug.GetInt() >= 2;
 	if ( bDraw )
 	{
-		// red: the enemy can see where his helmet would be; green: hidden. The box marks what blocks it.
-		bool bHidden = tr.fraction < 1.0f && ( vecHide - tr.endpos ).Length2D() <= COVER_MAX_GAP;
-		NDebugOverlay::Line( vecEye, tr.endpos, bHidden ? 0 : 255, bHidden ? 255 : 0, 0, true, 0.15f );
+		// Drawn from HIS side so you can see them from where you stand: a post where his helmet
+		// would be (green hidden / red seen) with a line from it toward you up to whatever blocks.
+		NDebugOverlay::Line( vecOrg, vecHide, bHidden ? 0 : 255, bHidden ? 255 : 0, 0, true, 0.15f );
+		NDebugOverlay::Line( vecHide, tr.fraction < 1.0f ? tr.endpos : vecHide + ( vecEye - vecHide ).Normalized() * 160.0f,
+							 bHidden ? 0 : 255, bHidden ? 255 : 0, 0, true, 0.15f );
 		if ( tr.fraction < 1.0f )
-			NDebugOverlay::Box( tr.endpos, Vector( -2, -2, -2 ), Vector( 2, 2, 2 ), 255, 255, 0, 64, 0.15f );
-		NDebugOverlay::Box( vecHide, Vector( -1, -1, -1 ), Vector( 1, 1, 1 ), 255, 255, 255, 128, 0.15f );
-		// measure the cover: highest blocked height in front of him, toward the enemy
+			NDebugOverlay::Box( tr.endpos, Vector( -3, -3, -3 ), Vector( 3, 3, 3 ), 255, 255, 0, 96, 0.15f );
+
+		// What's actually in front of him toward you: scan out to 512 at heights 4..90.
 		Vector vecDir = vecEye - vecOrg; vecDir.z = 0; VectorNormalize( vecDir );
 		float flTop = 0.0f, flGap = 0.0f;
+		const char *pszWhat = "";
 		for ( float z = 4.0f; z <= 90.0f; z += 2.0f )
 		{
 			trace_t tw;
-			UTIL_TraceLine( vecOrg + Vector( 0, 0, z ), vecOrg + Vector( 0, 0, z ) + vecDir * COVER_MAX_GAP, MASK_BLOCKLOS, &filter, &tw );
-			if ( tw.fraction < 1.0f ) { flTop = z; flGap = tw.fraction * COVER_MAX_GAP; }
+			UTIL_TraceLine( vecOrg + Vector( 0, 0, z ), vecOrg + Vector( 0, 0, z ) + vecDir * 512.0f, COVER_MASK, &filter, &tw );
+			if ( tw.fraction < 1.0f && ( flTop == 0.0f || tw.fraction * 512.0f < flGap + 24.0f ) )
+			{
+				flTop = z; flGap = tw.fraction * 512.0f;
+				pszWhat = tw.m_pEnt ? ( tw.m_pEnt->IsWorld() ? "world/static prop" : tw.m_pEnt->GetClassname() ) : "?";
+			}
 		}
-		char sz[128];
-		Q_snprintf( sz, sizeof( sz ), "cover in front: %s", flTop > 0.0f ? "" : "none within 72" );
+		char sz[200];
 		if ( flTop > 0.0f )
-			Q_snprintf( sz, sizeof( sz ), "cover in front: ~%.0f tall, %.0f away (hides below 32, fires over up to ~42 / ~58)", flTop, flGap );
+			Q_snprintf( sz, sizeof( sz ), "in front of him: %s ~%.0f tall, %.0f away%s", pszWhat, flTop, flGap,
+						flGap > m_flCoverMaxGap ? "  (TOO FAR - cover_max_gap)" : flTop < COVER_HIDE_TOP ? "  (TOO LOW to hide behind)" : "" );
+		else
+			Q_snprintf( sz, sizeof( sz ), "in front of him: nothing solid within 512 toward you" );
 		NDebugOverlay::EntityText( entindex(), 5, sz, 0.15f );
+		NDebugOverlay::EntityText( entindex(), 6, bHidden ? "hide spot: hidden from you" :
+								   tr.fraction < 1.0f ? "hide spot: blocked, but by something too far from him" : "hide spot: YOU CAN SEE IT", 0.15f );
 	}
-	if ( tr.fraction >= 1.0f || ( vecHide - tr.endpos ).Length2D() > COVER_MAX_GAP )
+	if ( !bHidden )
 		return COVER_EXPOSED;	// he'd be seen hiding here, or what's in the way is far off (not his cover)
 
-	UTIL_TraceLine( vecEye, vecOrg + Vector( 0, 0, COVER_CROUCH_EYE ), MASK_BLOCKLOS, &filter, &tr );
-	if ( bDraw )
-		NDebugOverlay::Line( vecEye, tr.endpos, 0, tr.fraction >= 1.0f ? 255 : 0, 255, true, 0.15f );	// blue/cyan: crouched shot
+	UTIL_TraceLine( vecEye, vecOrg + Vector( 0, 0, COVER_CROUCH_EYE ), COVER_MASK, &filter, &tr );
 	if ( tr.fraction >= 1.0f )
 		return m_nCoverCheckResult = COVER_CROUCH;
-	UTIL_TraceLine( vecEye, vecOrg + Vector( 0, 0, COVER_STAND_EYE ), MASK_BLOCKLOS, &filter, &tr );
-	if ( bDraw )
-		NDebugOverlay::Line( vecEye, tr.endpos, 255, tr.fraction >= 1.0f ? 255 : 128, 0, true, 0.15f );	// yellow/orange: standing shot
+	UTIL_TraceLine( vecEye, vecOrg + Vector( 0, 0, COVER_STAND_EYE ), COVER_MASK, &filter, &tr );
 	if ( tr.fraction >= 1.0f )
 		return m_nCoverCheckResult = COVER_STAND;
 	return m_nCoverCheckResult = COVER_FULL;	// full cover: can't shoot from here at all
@@ -1896,7 +1907,7 @@ int CNPC_GermanSoldier::SelectCombatSchedule( void )
 	int nCover = LowCoverAgainst( GetEnemy() );
 	if ( npc_german_debug.GetBool() && ( bJustFired || bWantHide ) )
 	{
-		static const char *s_Cover[] = { "exposed (the enemy could see him hiding here, or no cover within 72 units)",
+		static const char *s_Cover[] = { "exposed (the enemy could see him hiding here, or no cover close enough)",
 										 "full cover (can't fire from here)", "low wall, fires crouched", "chest-high wall, fires standing" };
 		Msg( "npc_german_soldier %d: %s - cover check: %s\n", entindex(), bJustFired ? "burst done" : "wants to duck", s_Cover[ nCover + 1 ] );
 	}
