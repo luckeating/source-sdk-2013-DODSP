@@ -140,7 +140,10 @@ class Retargeter:
         tag = name_to_ci.get('tag_weapon')
         src = None
         if tag is not None and tag in Wc:
-            src = tuple(m4(*Wc[name_to_ci[n]]) for n in ('bip01 r hand', 'bip01 l hand')) + (m4(*Wc[tag]),)
+            # source hands in the DoD hands' frame (hand corrections applied), so the gun keeps
+            # its place whatever correction the hands get
+            src = tuple(m4(Wc[name_to_ci[n]][0] @ self.C[k], Wc[name_to_ci[n]][1])
+                        for n, k in (('bip01 r hand', 'valvebiped.bip01_r_hand'), ('bip01 l hand', 'valvebiped.bip01_l_hand'))) + (m4(*Wc[tag]),)
         return frame_out, src, (m4(*Wfull[rh]), m4(*Wfull[lh]))
 
     def set_gun_reference(self, src_R, src_L, src_G):

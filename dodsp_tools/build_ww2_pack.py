@@ -19,7 +19,7 @@ import os, re, sys, shutil, math
 import numpy as np
 sys.path.insert(0, os.path.dirname(__file__))
 from smd import SMD
-from upper_layer import weightlist_lines, upper_sequence, ikchain_lines, hand_release_lines
+from upper_layer import weightlist_lines, upper_sequence, ikchain_lines, hand_release_lines, rebase_upper
 from gun_follow import GunReference, place_guns, inv
 
 # Upper-body pain overlays (see upper_layer.py): source animation -> activity
@@ -273,7 +273,10 @@ for name, anims, act, extra in chosen:
 for a, act in UPPER_PAINS.items():
     if a in animations and a in frames:
         sn = 'ww2_upper_' + act[len('ACT_WW2_UPPER_'):].lower()
-        L += upper_sequence(sn, f'ww2_{a}.smd', act, frames[a])
+        stance = os.path.join(os.path.dirname(DOD_MP40), 'dod_player_shared_anim_@' + ('CrouchAim_MP40.smd' if 'CROUCH' in act else 'StandAim_MP40.smd'))
+        turn = rebase_upper(os.path.join(OUT, f'ww2_{a}.smd'), os.path.join(OUT, f'u_{a}.smd'), stance)
+        print(f'  overlay {sn}: turned {turn:.0f} deg onto DoD\'s {os.path.basename(stance)[24:-4]}')
+        L += upper_sequence(sn, f'u_{a}.smd', act, frames[a])
         seq_rows.append((sn, act, a, frames[a]))
 
 open(os.path.join(OUT, 'npc_ww2_anims.qc'), 'w', newline='\r\n').write('\n'.join(L) + '\n')

@@ -55,6 +55,8 @@ static const matrix3x4_t s_GripRightHung(	-0.18726f, 0.97583f, 0.11260f, 2.64628
 											0.94701f, 0.20980f, -0.24324f, 12.66309f );
 #define LHAND_FULL_DIST		8.0f	// CoD hand this close to DoD's grip: put it right on
 #define LHAND_FREE_DIST		15.0f	// this far: the CoD hand has let go, leave it
+#define LHAND_GRIP_DIST		6.0f	// the hand only takes DoD's grip orientation this close...
+#define LHAND_TURN_DIST		10.0f	// ...and keeps its own from here out (no wrist twisting in the air)
 
 #define HITKICK_RISE		0.06f	// seconds to full deflection
 #define HITKICK_DURATION	0.75f	// total length of the reaction
@@ -331,8 +333,13 @@ void C_NPC_GermanSoldier::SupportHandIK( CStudioHdr *pStudioHdr )
 	MatrixGetColumn( GetBone( iHand ), 3, H );
 	MatrixGetColumn( matTarget, 3, T );
 
-	// Only while the animation has the hand on (or near) the gun.
-	float flNear = clamp( ( LHAND_FREE_DIST - ( T - H ).Length() ) / ( LHAND_FREE_DIST - LHAND_FULL_DIST ), 0.0f, 1.0f );
+	// Only while the animation has the hand on (or near) the gun. Position follows over a
+	// wide band; orientation only once the hand is really on the gun, so a hand coming off
+	// the gun is never twisted toward a grip it isn't holding.
+	float flDist = ( T - H ).Length();
+	float flNear = clamp( ( LHAND_FREE_DIST - flDist ) / ( LHAND_FREE_DIST - LHAND_FULL_DIST ), 0.0f, 1.0f );
+	float flGrip = clamp( ( LHAND_TURN_DIST - flDist ) / ( LHAND_TURN_DIST - LHAND_GRIP_DIST ), 0.0f, 1.0f );
+	float flRotW = flW * flGrip * flGrip * ( 3.0f - 2.0f * flGrip );
 	flW *= flNear * flNear * ( 3.0f - 2.0f * flNear );
 	if ( flW <= 0.001f )
 		return;
@@ -361,7 +368,9 @@ void C_NPC_GermanSoldier::SupportHandIK( CStudioHdr *pStudioHdr )
 	Quaternion qCur, qWant, qNew, qInv, qDelta;
 	MatrixQuaternion( GetBone( iHand ), qCur );
 	MatrixQuaternion( matTarget, qWant );
-	QuaternionSlerp( qCur, qWant, flW, qNew );
+	if ( flRotW <= 0.001f )
+		return;
+	QuaternionSlerp( qCur, qWant, flRotW, qNew );
 	QuaternionConjugate( qCur, qInv );
 	QuaternionMult( qNew, qInv, qDelta );
 	Vector vecAxis;

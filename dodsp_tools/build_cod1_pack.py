@@ -9,7 +9,7 @@ usage: build_cod1_pack.py <assault_dir> <dod_player_shared_dir> <german_rifleman
 import os, re, sys, shutil
 sys.path.insert(0, os.path.dirname(__file__))
 from cod1_setup import make_retargeter
-from upper_layer import weightlist_lines, upper_sequence, ikchain_lines, hand_release_lines
+from upper_layer import weightlist_lines, upper_sequence, ikchain_lines, hand_release_lines, rebase_upper
 from smd import SMD
 
 UPPER_PAINS = {'pain_lshoulder': 'ACT_WW2_UPPER_PAIN_LSHOULDER', 'pain_rshoulder': 'ACT_WW2_UPPER_PAIN_RSHOULDER',
@@ -106,7 +106,12 @@ for name, b in seqs:
     if name in UPPER_PAINS:
         smd = [l.strip().strip('"') for l in b.split('\n') if l.strip().startswith('"')][0]
         sn = 'c1_upper_' + name
-        body += upper_sequence(sn, converted[smd][0], UPPER_PAINS[name], converted[smd][1])
+        act = UPPER_PAINS[name]
+        stance = os.path.join(DOD_DIR, 'dod_player_shared_anim_@' + ('CrouchAim_MP40.smd' if 'CROUCH' in act else 'StandAim_MP40.smd'))
+        usmd = 'u_' + converted[smd][0]
+        turn = rebase_upper(os.path.join(OUT, converted[smd][0]), os.path.join(OUT, usmd), stance)
+        print(f'  overlay {sn}: turned {turn:.0f} deg onto DoD\'s {os.path.basename(stance)[24:-4]}')
+        body += upper_sequence(sn, usmd, act, converted[smd][1])
         rows.append((sn, UPPER_PAINS[name], smd, converted[smd][1]))
 L.append('')
 L += body
