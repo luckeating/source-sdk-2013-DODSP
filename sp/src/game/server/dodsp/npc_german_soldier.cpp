@@ -290,7 +290,7 @@ private:
 		Vector		vecHideEye;		// his eyes in the hide pose, in his own frame
 		Vector		vecAimEye;		// ...stepped out aiming (corner_yaw 0)
 		float		flAimYaw;		// where that aim points, relative to his facing (degrees)
-		float		flYawLo, flYawHi;	// aim at corner_yaw -1 / +1
+		float		flOffLo, flOffHi;	// the aim at corner_yaw -1 / +1, relative to flAimYaw (never wraps)
 	};
 	struct CornerFit_t
 	{
@@ -301,7 +301,9 @@ private:
 		Vector		vecAimEye;		// world
 	};
 	void		CornerCalibrate( void );
-	bool		MeasurePose( Activity act, float flCornerYaw, Vector &vecEyeLocal, float &flAimYaw );
+	bool		MeasurePose( Activity act, float flCornerYaw, bool bNeutralAim, Vector &vecEyeLocal, matrix3x4_t &matRHand, float &flHandsYaw );
+	float		GunYaw( const matrix3x4_t &matRHand ) const;	// where the gun in this right hand points, relative to his facing
+	float		CornerAimOffset( const CornerSet_t &set, float flFacing, const Vector &vecFrom, const Vector &vecTarget ) const;
 	bool		CornerFitAt( const Vector &vecPos, CBaseEntity *pEnemy, CornerFit_t &fit, const Vector *pvecEye = NULL );
 	const CornerSet_t *CornerSet( void ) const;		// the set of the corner he occupies
 	Activity	CornerAct( CornerAct_t e ) const { const CornerSet_t *p = CornerSet(); return p ? p->act[e] : ACT_INVALID; }
@@ -534,6 +536,7 @@ private:
 	CornerSet_t			m_CornerSets[2][2][2];	// [bolt/auto][stand/crouch][right/left], measured
 	bool				m_bCornerCalDone;
 	CornerFit_t			m_PendingCorner;		// the corner fit of the spot he's running to
+	Vector				m_vecGunAxis;			// the gun's direction in his right hand's own frame (measured)
 	float				m_flCornerYawBad;		// watchdog: facing off the corner since
 
 	// Shooting / reloading timers
@@ -690,6 +693,7 @@ CNPC_GermanSoldier::CNPC_GermanSoldier() : m_AnimMap( DefLessFunc( int ) )
 	memset( m_CornerSets, 0, sizeof( m_CornerSets ) );
 	memset( &m_PendingCorner, 0, sizeof( m_PendingCorner ) );
 	m_flCornerYawBad = 0.0f;
+	m_vecGunAxis = Vector( 1, 0, 0 );
 	m_flUnderFireUntil = 0.0f;
 	m_flUnderFireHide = 2.5f;
 	m_flWoundedHealth = 0.5f;
@@ -2131,7 +2135,7 @@ void CNPC_GermanSoldier::RunOpenLoop( void )
 //=============================================================================
 static const char *s_pszCornerAct[] = { "ALERT", "OUT", "IN", "ENTER", "SEMI", "AUTO", "RELOAD" };
 
-bool CNPC_GermanSoldier::MeasurePose( Activity act, float flCornerYaw, Vector &vecEyeLocal, float &flAimYaw )
+bool CNPC_GermanSoldier::MeasurePose( Activity act, float flCornerYaw, bool bNeutralAim, Vector &vecEyeLocal, matrix3x4_t &matRHand, float &flHandsYaw )
 {
 	if ( act == ACT_INVALID || !GetModelPtr() )
 		return false;
@@ -2146,27 +2150,61 @@ bool CNPC_GermanSoldier::MeasurePose( Activity act, float flCornerYaw, Vector &v
 	int iOldSeq = GetSequence();
 	float flOldCycle = GetCycle();
 	float flOldPose = m_poseCornerYaw >= 0 ? GetPoseParameter( m_poseCornerYaw ) : 0.0f;
+	float flOldAimYaw = m_poseAim_Yaw >= 0 ? GetPoseParameter( m_poseAim_Yaw ) : 0.0f;
+	float flOldAimPitch = m_poseAim_Pitch >= 0 ? GetPoseParameter( m_poseAim_Pitch ) : 0.0f;
 	SetSequence( iSeq );
 	SetCycle( 0.0f );
 	if ( m_poseCornerYaw >= 0 )
 		SetPoseParameter( m_poseCornerYaw, flCornerYaw );
+	if ( bNeutralAim )
+	{
+		// DoD's aim blend at "straight ahead" (what the script's offsets say a 0-degree aim is)
+		if ( m_poseAim_Yaw >= 0 )
+			SetPoseParameter( m_poseAim_Yaw, m_flYawOffset );
+		if ( m_poseAim_Pitch >= 0 )
+			SetPoseParameter( m_poseAim_Pitch, m_flPitchOffset );
+	}
 	InvalidateBoneCache();
-	Vector vecHead, vecR, vecL;
+	Vector vecHead, vecL;
 	QAngle ang;
 	GetBonePosition( iHead, vecHead, ang );
-	GetBonePosition( iRHand, vecR, ang );
 	GetBonePosition( iLHand, vecL, ang );
+	GetBoneTransform( iRHand, matRHand );
 	SetSequence( iOldSeq );
 	SetCycle( flOldCycle );
 	if ( m_poseCornerYaw >= 0 )
 		SetPoseParameter( m_poseCornerYaw, flOldPose );
+	if ( m_poseAim_Yaw >= 0 )
+		SetPoseParameter( m_poseAim_Yaw, flOldAimYaw );
+	if ( m_poseAim_Pitch >= 0 )
+		SetPoseParameter( m_poseAim_Pitch, flOldAimPitch );
 	InvalidateBoneCache();
 
 	WorldToEntitySpace( vecHead, &vecEyeLocal );
 	vecEyeLocal.z += 3.0f;		// eyes sit a little above the head bone
-	Vector vecBarrel = vecL - vecR;
-	flAimYaw = AngleNormalize( RAD2DEG( atan2f( vecBarrel.y, vecBarrel.x ) ) - GetAbsAngles().y );
+	Vector vecR;
+	MatrixPosition( matRHand, vecR );
+	Vector vecHands = vecL - vecR;		// the old reading, printed alongside for comparison
+	flHandsYaw = AngleNormalize( RAD2DEG( atan2f( vecHands.y, vecHands.x ) ) - GetAbsAngles().y );
 	return true;
+}
+
+// The gun is fixed to his right hand (it's drawn from the hand's attachment), so the direction
+// it points is one fixed axis of the hand - found once from DoD's plain straight-ahead aim.
+float CNPC_GermanSoldier::GunYaw( const matrix3x4_t &matRHand ) const
+{
+	Vector vecGun;
+	VectorRotate( m_vecGunAxis, matRHand, vecGun );
+	return AngleNormalize( RAD2DEG( atan2f( vecGun.y, vecGun.x ) ) - GetAbsAngles().y );
+}
+
+// How far (degrees) a target is from a corner set's centre aim, for a man facing flFacing.
+// Everything about corner aim angles goes through here: relative to the centre, so an aim
+// that happens to point near +-180 degrees can never wrap.
+float CNPC_GermanSoldier::CornerAimOffset( const CornerSet_t &set, float flFacing, const Vector &vecFrom, const Vector &vecTarget ) const
+{
+	Vector vecTo = vecTarget - vecFrom;
+	return AngleDiff( RAD2DEG( atan2f( vecTo.y, vecTo.x ) ), flFacing + set.flAimYaw );
 }
 
 void CNPC_GermanSoldier::CornerCalibrate( void )
@@ -2179,12 +2217,16 @@ void CNPC_GermanSoldier::CornerCalibrate( void )
 	m_bCornerCalDone = true;
 	memset( m_CornerSets, 0, sizeof( m_CornerSets ) );
 
-	// The reading for DoD's plain standing aim is "straight ahead": the hands-to-rifle angle of a
-	// body aiming forward. Corner aims are measured against it.
+	// DoD's plain standing aim, aim blend centred, points straight ahead: that tells us which way
+	// the gun lies in his right hand. Every corner pose's aim is then read off the same hand axis.
 	Vector vecRef;
-	float flRefYaw = 0.0f;
-	if ( !MeasurePose( TranslateToDoD( ACT_IDLE_ANGRY ), 0.0f, vecRef, flRefYaw ) )
-		flRefYaw = 0.0f;
+	matrix3x4_t matRef;
+	float flRefHands = 0.0f;
+	if ( !MeasurePose( TranslateToDoD( ACT_IDLE_ANGRY ), 0.0f, true, vecRef, matRef, flRefHands ) )
+		return;
+	Vector vecForward;
+	AngleVectors( QAngle( 0, GetAbsAngles().y, 0 ), &vecForward );
+	VectorIRotate( vecForward, matRef, m_vecGunAxis );
 
 	static const char s_cWeapon[] = { 'B', 'A' };
 	static const char s_cStance[] = { 'S', 'C' };
@@ -2206,20 +2248,21 @@ void CNPC_GermanSoldier::CornerCalibrate( void )
 		if ( set.act[CN_ALERT] == ACT_INVALID || set.act[CN_OUT] == ACT_INVALID || set.act[CN_IN] == ACT_INVALID || actFire == ACT_INVALID )
 			continue;
 		Vector vecDummy;
-		float flLo, flHi;
-		if ( !MeasurePose( set.act[CN_ALERT], 0.0f, set.vecHideEye, flLo ) ||
-			 !MeasurePose( actFire, 0.0f, set.vecAimEye, set.flAimYaw ) ||
-			 !MeasurePose( actFire, -1.0f, vecDummy, flLo ) || !MeasurePose( actFire, 1.0f, vecDummy, flHi ) )
+		matrix3x4_t matHide, matAim, matLo, matHi;
+		float flHands, flDummy;
+		if ( !MeasurePose( set.act[CN_ALERT], 0.0f, false, set.vecHideEye, matHide, flDummy ) ||
+			 !MeasurePose( actFire, 0.0f, false, set.vecAimEye, matAim, flHands ) ||
+			 !MeasurePose( actFire, -1.0f, false, vecDummy, matLo, flDummy ) || !MeasurePose( actFire, 1.0f, false, vecDummy, matHi, flDummy ) )
 			continue;
-		set.flAimYaw = AngleNormalize( set.flAimYaw - flRefYaw );
-		set.flYawLo = AngleNormalize( flLo - flRefYaw );
-		set.flYawHi = AngleNormalize( flHi - flRefYaw );
+		set.flAimYaw = GunYaw( matAim );
+		set.flOffLo = AngleDiff( GunYaw( matLo ), set.flAimYaw );
+		set.flOffHi = AngleDiff( GunYaw( matHi ), set.flAimYaw );
 		set.bValid = true;
 		if ( npc_german_debug.GetBool() )
-			Msg( "npc_german_soldier %d: corner set %c%c %s - hide eyes (%.0f %.0f %.0f), out eyes (%.0f %.0f %.0f), aims %.0f deg (%.0f..%.0f)\n",
+			Msg( "npc_german_soldier %d: corner set %c%c %s - hide eyes (%.0f %.0f %.0f), out eyes (%.0f %.0f %.0f), gun aims %.0f deg (blend %+.0f..%+.0f) [hands said %.0f]\n",
 				 entindex(), s_cWeapon[w], s_cStance[st], sd == 0 ? "right" : "left",
 				 set.vecHideEye.x, set.vecHideEye.y, set.vecHideEye.z, set.vecAimEye.x, set.vecAimEye.y, set.vecAimEye.z,
-				 set.flAimYaw, set.flYawLo, set.flYawHi );
+				 set.flAimYaw, set.flOffLo, set.flOffHi, AngleNormalize( flHands - flRefHands ) );
 	}
 }
 
@@ -2269,7 +2312,7 @@ bool CNPC_GermanSoldier::CornerFitAt( const Vector &vecPos, CBaseEntity *pEnemy,
 		const CornerSet_t &set = m_CornerSets[iWeapon][st][sd];
 		if ( !set.bValid )
 			continue;
-		float flYaw = AngleNormalize( flFoeYaw - set.flAimYaw );
+		float flYaw = AngleNormalize( flFoeYaw - set.flAimYaw );		// so the set's centre aim points at him
 		Vector vecHide = vecPos + RotateLocal( set.vecHideEye, flYaw );
 		Vector vecAim = vecPos + RotateLocal( set.vecAimEye, flYaw );
 		trace_t tr;
@@ -2306,12 +2349,10 @@ void CNPC_GermanSoldier::UpdateCornerAim( void )
 	const CornerSet_t *p = CornerSet();
 	if ( !p || m_poseCornerYaw < 0 || !GetEnemy() )
 		return;
-	Vector vecTo = GetEnemyLKP() - GetAbsOrigin();
-	float flRel = AngleNormalize( RAD2DEG( atan2f( vecTo.y, vecTo.x ) ) - GetAbsAngles().y );
-	float flLo = p->flYawLo, flHi = p->flYawHi;
+	float flOff = CornerAimOffset( *p, GetAbsAngles().y, GetAbsOrigin(), GetEnemyLKP() );
 	float flPose = 0.0f;
-	if ( fabsf( flHi - flLo ) > 1.0f )
-		flPose = clamp( RemapVal( flRel, flLo, flHi, -1.0f, 1.0f ), -1.0f, 1.0f );
+	if ( fabsf( p->flOffHi - p->flOffLo ) > 1.0f )
+		flPose = clamp( RemapVal( flOff, p->flOffLo, p->flOffHi, -1.0f, 1.0f ), -1.0f, 1.0f );
 	SetPoseParameter( m_poseCornerYaw, flPose );
 }
 
@@ -2373,10 +2414,8 @@ bool CNPC_GermanSoldier::CanSeeEnemyFromExposed( void )
 	if ( bSee && pSet )
 	{
 		// a corner aims only across what its three blended aims span (+10 degrees)
-		Vector vecTo = vecTarget - m_Cover.vecPos;
-		float flRel = AngleNormalize( RAD2DEG( atan2f( vecTo.y, vecTo.x ) ) - m_Cover.corner.flYaw );
-		float flLo = MIN( pSet->flYawLo, pSet->flYawHi ) - 10.0f, flHi = MAX( pSet->flYawLo, pSet->flYawHi ) + 10.0f;
-		bSee = flRel >= flLo && flRel <= flHi;
+		float flOff = CornerAimOffset( *pSet, m_Cover.corner.flYaw, m_Cover.vecPos, vecTarget );
+		bSee = flOff >= MIN( pSet->flOffLo, pSet->flOffHi ) - 10.0f && flOff <= MAX( pSet->flOffLo, pSet->flOffHi ) + 10.0f;
 	}
 	if ( bSee )
 	{
@@ -3031,12 +3070,14 @@ void CNPC_GermanSoldier::UpdateCoverTransition( void )
 		if ( !IsMoving() )
 			ResetActivity();	// the transition is over: the stance's own pose
 	}
-	// Guard: a cover transition still playing long after it should have ended.
+	// Guard: a cover transition still playing well after the stance owner ended it (0.5 s grace -
+	// the switch to the next pose takes a think or two). Measured from when it SHOULD have ended,
+	// so a long move (a 1.3 s chest-high rise, a corner step-out) is never mistaken for a stuck one.
 	if ( GetModelPtr() && GetSequence() >= 0 && IsCoverTransition( GetSequenceActivity( GetSequence() ) ) &&
-		 !IsInStanceTransition() && gpGlobals->curtime - m_flSeqStarted > 1.0f )
+		 !IsInStanceTransition() && gpGlobals->curtime - MAX( m_flStanceTransitionEnd, m_flSeqStarted ) > 0.5f )
 	{
-		Invariant( INV_ANIM_STUCK, "transition %s still playing %.1f s after it started (stance %s) - resetting",
-				   GetSequenceName( GetSequence() ), gpGlobals->curtime - m_flSeqStarted, s_pszStance[m_eStance] );
+		Invariant( INV_ANIM_STUCK, "transition %s still playing %.1f s after it should have ended (stance %s) - resetting",
+				   GetSequenceName( GetSequence() ), gpGlobals->curtime - MAX( m_flStanceTransitionEnd, m_flSeqStarted ), s_pszStance[m_eStance] );
 		ResetActivity();
 		m_flSeqStarted = gpGlobals->curtime;
 	}
