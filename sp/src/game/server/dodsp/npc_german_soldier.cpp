@@ -323,7 +323,7 @@ public:
 	enum MoveKind_t { MOVE_COVER, MOVE_BOUND, MOVE_FLANK_LEFT, MOVE_FLANK_RIGHT, MOVE_FALLBACK };
 	void		SquadTick( void );
 	void		GiveSquadOrder( SquadOrder_t eOrder, float flDelay, const Vector &vecEnemyToSquad );
-	bool		CanTakeSquadOrder( void ) const;
+	bool		CanTakeSquadOrder( void );
 	bool		CanSuppressEnemy( const Vector &vecTarget );
 	bool		IsInCoverLoop( void ) { return IsCurSchedule( SCHED_GERMAN_COVER, false ); }
 	bool		IsInOpenLoop( void ) { return IsCurSchedule( SCHED_GERMAN_OPEN, false ); }
@@ -1556,10 +1556,10 @@ bool CNPC_GermanSoldier::IsSquadSuppressor( void )
 	return pSq && pSq->hSuppressor.Get() == this && gpGlobals->curtime < pSq->flSuppressUntil;
 }
 
-bool CNPC_GermanSoldier::CanTakeSquadOrder( void ) const
+bool CNPC_GermanSoldier::CanTakeSquadOrder( void )
 {
 	return IsAlive() && m_eSquadOrder == ORDER_NONE && gpGlobals->curtime >= m_flOrderRefusedUntil &&
-		   ( const_cast<CNPC_GermanSoldier *>( this )->IsInCoverLoop() || const_cast<CNPC_GermanSoldier *>( this )->IsInOpenLoop() );
+		   ( IsInCoverLoop() || IsInOpenLoop() );
 }
 
 void CNPC_GermanSoldier::GiveSquadOrder( SquadOrder_t eOrder, float flDelay, const Vector &vecEnemyToSquad )
