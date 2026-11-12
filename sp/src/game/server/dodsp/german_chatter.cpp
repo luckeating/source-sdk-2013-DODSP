@@ -72,11 +72,20 @@ static const char *s_pszLandmarks[] =
 // Tuning (from scripts/npc_german_soldier.txt, set by the soldier)
 //-----------------------------------------------------------------------------
 static bool		s_bEnabled = true;
+static char		s_cCrySpeaker[3] = { 'n', 'm', 'o' };	// pain/death speaker for chatter voices 0, 2, 3 (matched by pitch rank)
 static char		s_szNation[8] = "us";
 static float	s_flFrequency = 1.0f;
 
-void CGermanChatter::SetTuning( bool bEnabled, const char *pszNation, float flFrequency )
+void CGermanChatter::SetTuning( bool bEnabled, const char *pszNation, float flFrequency, const char *pszCrySpeakers )
 {
+	// "n m o": the pain/death speaker (m/n/o) for chatter voices 0, 2 and 3
+	if ( pszCrySpeakers )
+	{
+		int k = 0;
+		for ( const char *c = pszCrySpeakers; *c && k < 3; c++ )
+			if ( *c == 'm' || *c == 'n' || *c == 'o' )
+				s_cCrySpeaker[k++] = *c;
+	}
 	s_bEnabled = bEnabled;
 	Q_strncpy( s_szNation, ( pszNation && pszNation[0] ) ? pszNation : "us", sizeof( s_szNation ) );
 	s_flFrequency = clamp( flFrequency, 0.1f, 10.0f );
@@ -135,6 +144,7 @@ CGermanChatter::CGermanChatter()
 	for ( int i = 0; i < 8; i++ )
 		m_flNextGroup[i] = 0.0f;
 	m_flSpeakingUntil = 0.0f;
+	m_flNextPain = 0.0f;
 	memset( &m_Pending, 0, sizeof( m_Pending ) );
 	s_AllChatter.AddToTail( this );
 }
@@ -171,6 +181,45 @@ void CGermanChatter::OnDeath( void )
 	if ( sq.flSpeakingUntil > gpGlobals->curtime && m_flSpeakingUntil >= sq.flSpeakingUntil )
 		sq.flSpeakingUntil = gpGlobals->curtime;
 	m_flSpeakingUntil = 0.0f;
+}
+
+static int VoiceSlot( int iVoice )
+{
+	for ( int i = 0; i < 3; i++ )
+		if ( s_iVoices[i] == iVoice )
+			return i;
+	return 0;
+}
+
+void CGermanChatter::PlayPain( void )
+{
+	CBaseEntity *pOwner = m_hOwner.Get();
+	float now = gpGlobals->curtime;
+	if ( !s_bEnabled || !pOwner || !pOwner->IsAlive() || now < m_flNextPain )
+		return;
+	m_flNextPain = now + random->RandomFloat( 0.8f, 1.6f );
+	if ( random->RandomFloat( 0.0f, 1.0f ) < 0.15f )
+		return;		// sometimes he just takes it
+	if ( IsSpeaking() )
+		pOwner->StopSound( pOwner->entindex(), CHAN_VOICE, "" );
+	m_Pending.bActive = false;		// a man who's just been hit doesn't finish his sentence
+	char szSound[64];
+	Q_snprintf( szSound, sizeof( szSound ), "GermanVoice.%c.pain", s_cCrySpeaker[ VoiceSlot( m_iVoice ) ] );
+	float flDuration = 0.0f;
+	pOwner->EmitSound( szSound, 0.0f, &flDuration );
+	m_flSpeakingUntil = now + MAX( flDuration, 0.5f );
+}
+
+void CGermanChatter::PlayDeath( bool bHeadshot )
+{
+	CBaseEntity *pOwner = m_hOwner.Get();
+	if ( !s_bEnabled || !pOwner )
+		return;
+	if ( bHeadshot && random->RandomFloat( 0.0f, 1.0f ) < 0.7f )
+		return;		// dead before he could make a sound
+	char szSound[64];
+	Q_snprintf( szSound, sizeof( szSound ), "GermanVoice.%c.death", s_cCrySpeaker[ VoiceSlot( m_iVoice ) ] );
+	pOwner->EmitSound( szSound );
 }
 
 void CGermanChatter::Request( ChatEvent_t eEvent, const char *pszModifier, CBaseEntity *pTarget, float flDelay )
@@ -330,6 +379,18 @@ void CGermanChatter::LevelPrecache( void )
 					CBaseEntity::PrecacheScriptSound( szName );
 					nPrecached++;
 				}
+			}
+		}
+	}
+	for ( int i = 0; i < 3; i++ )
+	{
+		for ( int kind = 0; kind < 2; kind++ )
+		{
+			Q_snprintf( szName, sizeof( szName ), "GermanVoice.%c.%s", "mno"[i], kind ? "death" : "pain" );
+			if ( soundemitterbase->IsValidIndex( soundemitterbase->GetSoundIndex( szName ) ) )
+			{
+				CBaseEntity::PrecacheScriptSound( szName );
+				nPrecached++;
 			}
 		}
 	}

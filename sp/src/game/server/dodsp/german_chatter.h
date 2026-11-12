@@ -55,10 +55,13 @@ public:
 	void		Request( ChatEvent_t eEvent, const char *pszModifier = NULL, CBaseEntity *pTarget = NULL, float flDelay = 0.0f );
 	void		Update( void );			// every think: say the pending line when it's his turn
 	void		OnDeath( void );
+	// His own voice when hit / killed (same man as his callouts): cuts off whatever he was saying.
+	void		PlayPain( void );					// not every hit, never back to back
+	void		PlayDeath( bool bHeadshot );		// a head shot is usually silent
 	int			GetVoice( void ) const { return m_iVoice; }
 	bool		IsSpeaking( void ) const;
 
-	static void	SetTuning( bool bEnabled, const char *pszNation, float flFrequency );
+	static void	SetTuning( bool bEnabled, const char *pszNation, float flFrequency, const char *pszCrySpeakers = NULL );
 	static void	LevelPrecache( void );	// loads the sound script and precaches every line a soldier can say
 	static CGermanChatter *ForEntity( CBaseEntity *pEntity );
 
@@ -81,6 +84,7 @@ private:
 	int			m_iVoice;
 	float		m_flNextGroup[8];		// his own minimum waits per kind of line
 	float		m_flSpeakingUntil;
+	float		m_flNextPain;
 	Pending_t	m_Pending;
 };
 

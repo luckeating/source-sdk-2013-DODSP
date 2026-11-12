@@ -160,6 +160,8 @@ public:
 	void		Precache( void );
 	void		Spawn( void );
 	void		OnRestore( void );
+	void		PainSound( const CTakeDamageInfo &info ) { m_Chatter.PlayPain(); }
+	void		DeathSound( const CTakeDamageInfo &info ) { m_Chatter.PlayDeath( LastHitGroup() == HITGROUP_HEAD ); }
 
 	Activity	NPC_TranslateActivity( Activity eNewActivity );
 	Activity	TranslateToDoD( Activity eNewActivity );
@@ -672,7 +674,7 @@ void CNPC_GermanSoldier::Precache( void )
 	}
 	if ( g_pGermanScript )
 		CGermanChatter::SetTuning( g_pGermanScript->GetBool( "chatter", true ), g_pGermanScript->GetString( "chatter_enemy_nation", "us" ),
-								   g_pGermanScript->GetFloat( "chatter_frequency", 1.0f ) );
+								   g_pGermanScript->GetFloat( "chatter_frequency", 1.0f ), g_pGermanScript->GetString( "cry_speakers", "n m o" ) );
 	CGermanChatter::LevelPrecache();
 
 	BaseClass::Precache();
