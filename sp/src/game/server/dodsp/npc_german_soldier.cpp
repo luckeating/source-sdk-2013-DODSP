@@ -253,15 +253,21 @@ private:
 	// Everything else asks it. The animation translation and the eye/gun heights are
 	// pure functions of the stance - never of what he senses this think.
 	//-------------------------------------------------------------------------
-	enum Stance_t { STANCE_STAND, STANCE_CROUCH, STANCE_HIDE, STANCE_LOW_UP, STANCE_MID_UP, NUM_STANCES };
-	static bool	StanceIsCrouched( Stance_t s ) { return s == STANCE_CROUCH || s == STANCE_HIDE || s == STANCE_LOW_UP; }
+	enum Stance_t { STANCE_STAND, STANCE_CROUCH, STANCE_HIDE, STANCE_LOW_UP, STANCE_MID_UP, STANCE_CORNER_HIDE, STANCE_CORNER_AIM, NUM_STANCES };
+	bool		StanceIsCrouched( Stance_t s ) const
+	{
+		if ( s == STANCE_CORNER_HIDE || s == STANCE_CORNER_AIM )
+			return m_Cover.bCorner && m_Cover.corner.iStance == 1;	// a crouched corner set
+		return s == STANCE_CROUCH || s == STANCE_HIDE || s == STANCE_LOW_UP;
+	}
+	static bool	IsCornerStance( Stance_t s ) { return s == STANCE_CORNER_HIDE || s == STANCE_CORNER_AIM; }
 	bool		SetStance( Stance_t s, const char *pszWhy, bool bForce = false );
 	// The move between stances (duck down / rise up) is owned by the stance owner too: a
 	// timed state, not something the animation code works out from what happens to be playing.
 	bool		IsInStanceTransition( void ) const { return m_actStanceTransition != ACT_INVALID; }
 	void		UpdatePlaybackRate( void );		// the one owner of the animation's playback rate
 	void		SyncStance( void );
-	static bool	IsCoverStance( Stance_t s ) { return s == STANCE_HIDE || s == STANCE_LOW_UP || s == STANCE_MID_UP; }
+	static bool	IsCoverStance( Stance_t s ) { return s == STANCE_HIDE || s == STANCE_LOW_UP || s == STANCE_MID_UP || IsCornerStance( s ); }
 	bool		CoverStanceAllowed( int iSchedule );	// the cover stances belong to the cover loop
 	void		OnStartSchedule( int scheduleType );
 
@@ -270,11 +276,45 @@ private:
 	// point he fires from. "Can I see / shoot him" at cover is asked from that point,
 	// with memory (CoD4): if he couldn't see you from there and you haven't moved, no.
 	//-------------------------------------------------------------------------
+	//-------------------------------------------------------------------------
+	// Corner cover (R6). The CoD1 corner sets: hide beside a corner, step out to fire, step
+	// back. Where his head goes and which way he aims in each set is MEASURED from his own
+	// skeleton (CornerCalibrate), never assumed - the search and the loop both use those
+	// numbers (one owner for corner geometry).
+	//-------------------------------------------------------------------------
+	enum CornerAct_t { CN_ALERT, CN_OUT, CN_IN, CN_ENTER, CN_SEMI, CN_AUTO, CN_RELOAD, CN_DEATH, CN_NUM };
+	struct CornerSet_t
+	{
+		bool		bValid;
+		Activity	act[CN_NUM];
+		Vector		vecHideEye;		// his eyes in the hide pose, in his own frame
+		Vector		vecAimEye;		// ...stepped out aiming (corner_yaw 0)
+		float		flAimYaw;		// where that aim points, relative to his facing (degrees)
+		float		flYawLo, flYawHi;	// aim at corner_yaw -1 / +1
+	};
+	struct CornerFit_t
+	{
+		bool		bValid;
+		int			iWeapon, iStance, iSide;	// set: [bolt/auto][stand/crouch][right/left]
+		float		flYaw;			// his facing at the corner
+		Vector		vecHideEye;		// world
+		Vector		vecAimEye;		// world
+	};
+	void		CornerCalibrate( void );
+	bool		MeasurePose( Activity act, float flCornerYaw, Vector &vecEyeLocal, float &flAimYaw );
+	bool		CornerFitAt( const Vector &vecPos, CBaseEntity *pEnemy, CornerFit_t &fit, const Vector *pvecEye = NULL );
+	const CornerSet_t *CornerSet( void ) const;		// the set of the corner he occupies
+	Activity	CornerAct( CornerAct_t e ) const { const CornerSet_t *p = CornerSet(); return p ? p->act[e] : ACT_INVALID; }
+	Activity	CornerFireAct( void ) const;
+	void		UpdateCornerAim( void );
+
 	struct CoverSpot_t
 	{
 		bool	bValid;
 		Vector	vecPos;
-		int		nType;				// COVER_CROUCH or COVER_STAND
+		bool	bCorner;			// corner cover (R6): corner holds the set and facing
+		CornerFit_t corner;
+		int		nType;				// COVER_CROUCH, COVER_STAND or COVER_CORNER
 		Vector	vecExposedEye;		// where his eyes/gun are when up firing over it
 		bool	bCouldntSee;		// last look from the exposed point failed...
 		Vector	vecCouldntSeeAt;	// ...while the enemy's eyes were here
@@ -351,12 +391,12 @@ private:
 	//-------------------------------------------------------------------------
 	// Watchdog (R1): passive. Prints INVARIANT lines when a rule is broken; changes nothing.
 	//-------------------------------------------------------------------------
-	enum Invariant_t { INV_STANCE_FLIPS, INV_STANCE_OWNER, INV_SCHED_CHURN, INV_DECISION_CHURN, INV_COVER_CHURN, INV_POSE_FLIPS, INV_ANIM_STUCK, INV_COVER_STANCE, INV_ORDER_STUCK, INV_FLANK_TIMEOUT, NUM_INVARIANTS };
+	enum Invariant_t { INV_STANCE_FLIPS, INV_STANCE_OWNER, INV_SCHED_CHURN, INV_DECISION_CHURN, INV_COVER_CHURN, INV_POSE_FLIPS, INV_ANIM_STUCK, INV_COVER_STANCE, INV_ORDER_STUCK, INV_FLANK_TIMEOUT, INV_CORNER_YAW, NUM_INVARIANTS };
 	void		WatchdogPose( void );		// what the body actually plays: down / crouched / standing flips
 	bool		IsClipEmpty( void );		// one owner for "he has no rounds in the gun"
 	void		Invariant( Invariant_t eWhich, const char *pszFormat, ... );
 	void		WatchdogNoteSchedule( void );
-	enum { COVER_EXPOSED = -1, COVER_FULL = 0, COVER_CROUCH = 1, COVER_STAND = 2 };
+	enum { COVER_EXPOSED = -1, COVER_FULL = 0, COVER_CROUCH = 1, COVER_STAND = 2, COVER_CORNER = 3 };
 	int			LowCoverAgainst( CBaseEntity *pEnemy );	// COVER_*: > 0 means low cover he can fire from
 	int			CoverAt( const Vector &vecPos, CBaseEntity *pEnemy, trace_t *pHideTrace = NULL, const Vector *pvecEye = NULL );	// same test at any spot (pvecEye: against where his eyes were)
 	enum SearchMode_t { SEARCH_COVER, SEARCH_ADVANCE, SEARCH_FLANK_LEFT, SEARCH_FLANK_RIGHT, SEARCH_RETREAT };
@@ -488,6 +528,13 @@ private:
 	// DoD pose parameters
 	int					m_poseMoveX;
 	int					m_poseMoveY;
+	int					m_poseCornerYaw;		// CoD1 corner sets blend their aim on this
+
+	// Corner cover (R6)
+	CornerSet_t			m_CornerSets[2][2][2];	// [bolt/auto][stand/crouch][right/left], measured
+	bool				m_bCornerCalDone;
+	CornerFit_t			m_PendingCorner;		// the corner fit of the spot he's running to
+	float				m_flCornerYawBad;		// watchdog: facing off the corner since
 
 	// Shooting / reloading timers
 	int					m_nShotsLeft;
@@ -638,6 +685,11 @@ CNPC_GermanSoldier::CNPC_GermanSoldier() : m_AnimMap( DefLessFunc( int ) )
 	m_actCoverLowFire = m_actCoverMidFire = ACT_INVALID;
 	m_bCoverFireSemi = true;
 	m_flCoverRecoilUntil = 0.0f;
+	m_poseCornerYaw = -1;
+	m_bCornerCalDone = false;
+	memset( m_CornerSets, 0, sizeof( m_CornerSets ) );
+	memset( &m_PendingCorner, 0, sizeof( m_PendingCorner ) );
+	m_flCornerYawBad = 0.0f;
 	m_flUnderFireUntil = 0.0f;
 	m_flUnderFireHide = 2.5f;
 	m_flWoundedHealth = 0.5f;
@@ -806,7 +858,7 @@ Vector CNPC_GermanSoldier::GetCrouchGunOffset( void )
 Vector CNPC_GermanSoldier::GetShootEnemyDir( const Vector &shootOrigin, bool bNoisy )
 {
 	CBaseEntity *pEnemy = GetEnemy();
-	if ( pEnemy && ( m_eStance == STANCE_LOW_UP || m_eStance == STANCE_MID_UP ) )
+	if ( pEnemy && ( m_eStance == STANCE_LOW_UP || m_eStance == STANCE_MID_UP || m_eStance == STANCE_CORNER_AIM ) )
 	{
 		Vector vecFeet = GetEnemyLKP();
 		float flEye = pEnemy->EyePosition().z - pEnemy->GetAbsOrigin().z;
@@ -830,6 +882,8 @@ Vector CNPC_GermanSoldier::GetShootEnemyDir( const Vector &shootOrigin, bool bNo
 
 Vector CNPC_GermanSoldier::Weapon_ShootPosition( void )
 {
+	if ( m_eStance == STANCE_CORNER_AIM && m_Cover.bCorner && !IsInStanceTransition() )
+		return m_Cover.vecExposedEye - Vector( 0, 0, 3 );	// stepped out: where the corner set (measured) puts his rifle
 	if ( IsCrouching() || IsCrouchedActivity( GetActivity() ) )
 		return GetAbsOrigin() + GetCrouchGunOffset();
 	return GetAbsOrigin() + Vector( 0, 0, COVER_STAND_EYE );
@@ -850,6 +904,7 @@ void CNPC_GermanSoldier::PopulatePoseParameters( void )
 
 	m_poseMoveX = LookupPoseParameter( "move_x" );
 	m_poseMoveY = LookupPoseParameter( "move_y" );
+	m_poseCornerYaw = LookupPoseParameter( "corner_yaw" );
 }
 
 //-----------------------------------------------------------------------------
@@ -1004,6 +1059,7 @@ void CNPC_GermanSoldier::EnsureAnimMap( void )
 void CNPC_GermanSoldier::BuildAnimMap( void )
 {
 	m_AnimMap.RemoveAll();
+	m_bCornerCalDone = false;		// corner sets are measured again for the new animations
 	m_actFireGesture = ACT_INVALID;
 	m_actReloadGesture = ACT_INVALID;
 	m_actReloadCrouchGesture = ACT_INVALID;
@@ -1138,7 +1194,12 @@ CNPC_GermanSoldier::CoverFamily_t CNPC_GermanSoldier::PoseFamily( Activity act )
 
 bool CNPC_GermanSoldier::IsCoverTransition( Activity act ) const
 {
-	return act != ACT_INVALID && ( act == m_actHide2Aim || act == m_actAim2Hide || act == m_actStand2Hide || act == m_actHide2Stand );
+	if ( act == ACT_INVALID )
+		return false;
+	if ( act == m_actHide2Aim || act == m_actAim2Hide || act == m_actStand2Hide || act == m_actHide2Stand )
+		return true;
+	const char *psz = ActivityList_NameForIndex( act );	// any corner step out / back / settle
+	return psz && !Q_strnicmp( psz, "ACT_WW2_CN_", 11 ) && ( Q_stristr( psz, "_OUT" ) || Q_stristr( psz, "_IN" ) || Q_stristr( psz, "_ENTER" ) );
 }
 
 
@@ -1159,6 +1220,14 @@ int CNPC_GermanSoldier::LowCoverAgainst( CBaseEntity *pEnemy )
 	m_nCoverCheckResult = COVER_EXPOSED;
 
 	trace_t tr;
+	if ( m_Cover.bValid && m_Cover.bCorner && ( GetAbsOrigin() - m_Cover.vecPos ).Length2D() < 24.0f )
+	{
+		// At his corner: hidden = his head in the hide pose is out of the enemy's sight.
+		CTraceFilterSkipTwoEntities filterCorner( this, pEnemy, COLLISION_GROUP_NONE );
+		UTIL_TraceLine( pEnemy->EyePosition(), m_Cover.corner.vecHideEye, COVER_MASK, &filterCorner, &tr );
+		m_nCoverCheckResult = tr.fraction < 1.0f ? COVER_CORNER : COVER_EXPOSED;
+		return m_nCoverCheckResult;
+	}
 	m_nCoverCheckResult = CoverAt( GetAbsOrigin(), pEnemy, &tr );
 	CTraceFilterSkipTwoEntities filter( this, pEnemy, COLLISION_GROUP_NONE );
 	Vector vecEye = pEnemy->EyePosition();
@@ -1239,7 +1308,7 @@ int CNPC_GermanSoldier::CoverAt( const Vector &vecPos, CBaseEntity *pEnemy, trac
 //=============================================================================
 #define STANCE_MIN_HOLD		0.5f	// a stance holds at least this long (commitment), unless forced
 
-static const char *s_pszStance[] = { "stand", "crouch", "hide", "up over low wall", "up over chest-high" };
+static const char *s_pszStance[] = { "stand", "crouch", "hide", "up over low wall", "up over chest-high", "behind the corner", "out at the corner" };
 static const char *s_pszCoverState[] = { "hide", "rise", "shoot", "look", "duck", "reload" };
 
 bool CNPC_GermanSoldier::SetStance( Stance_t s, const char *pszWhy, bool bForce )
@@ -1263,11 +1332,24 @@ bool CNPC_GermanSoldier::SetStance( Stance_t s, const char *pszWhy, bool bForce 
 	// The move between the poses (CoD1/2 transitions): into hiding from crouched or standing,
 	// and up out of it. Decided here, once, from the old and new stance.
 	Activity actTrans = ACT_INVALID;
-	bool bFromHide = m_eStance == STANCE_HIDE, bToHide = s == STANCE_HIDE;
-	if ( bToHide && !bFromHide )
-		actTrans = StanceIsCrouched( m_eStance ) ? m_actAim2Hide : m_actStand2Hide;
-	else if ( bFromHide && !bToHide )
-		actTrans = StanceIsCrouched( s ) ? m_actHide2Aim : m_actHide2Stand;
+	if ( IsCornerStance( s ) || IsCornerStance( m_eStance ) )
+	{
+		// corner: step out / step back / settle in beside it (CoD1 corner set)
+		if ( s == STANCE_CORNER_AIM && m_eStance == STANCE_CORNER_HIDE )
+			actTrans = CornerAct( CN_OUT );
+		else if ( s == STANCE_CORNER_HIDE && m_eStance == STANCE_CORNER_AIM )
+			actTrans = CornerAct( CN_IN );
+		else if ( s == STANCE_CORNER_HIDE && !IsCornerStance( m_eStance ) )
+			actTrans = CornerAct( CN_ENTER );
+	}
+	else
+	{
+		bool bFromHide = m_eStance == STANCE_HIDE, bToHide = s == STANCE_HIDE;
+		if ( bToHide && !bFromHide )
+			actTrans = StanceIsCrouched( m_eStance ) ? m_actAim2Hide : m_actStand2Hide;
+		else if ( bFromHide && !bToHide )
+			actTrans = StanceIsCrouched( s ) ? m_actHide2Aim : m_actHide2Stand;
+	}
 	m_actStanceTransition = ACT_INVALID;
 	if ( actTrans != ACT_INVALID && !IsMoving() )
 	{
@@ -1327,7 +1409,7 @@ void CNPC_GermanSoldier::OnStartSchedule( int scheduleType )
 {
 	BaseClass::OnStartSchedule( scheduleType );
 	if ( IsCoverStance( m_eStance ) && !CoverStanceAllowed( scheduleType ) )
-		SetStance( m_eStance == STANCE_MID_UP ? STANCE_STAND : STANCE_CROUCH, "left the cover loop", true );
+		SetStance( m_eStance == STANCE_MID_UP || ( IsCornerStance( m_eStance ) && !StanceIsCrouched( m_eStance ) ) ? STANCE_STAND : STANCE_CROUCH, "left the cover loop", true );
 }
 
 //=============================================================================
@@ -1338,7 +1420,7 @@ void CNPC_GermanSoldier::Invariant( Invariant_t eWhich, const char *pszFormat, .
 	if ( gpGlobals->curtime < m_flInvariantNext[eWhich] )
 		return;
 	m_flInvariantNext[eWhich] = gpGlobals->curtime + 2.0f;
-	static const char *s_pszNames[] = { "STANCE_FLIPS", "STANCE_OWNER", "SCHED_CHURN", "DECISION_CHURN", "COVER_CHURN", "POSE_FLIPS", "ANIM_STUCK", "COVER_STANCE", "ORDER_STUCK", "FLANK_TIMEOUT" };
+	static const char *s_pszNames[] = { "STANCE_FLIPS", "STANCE_OWNER", "SCHED_CHURN", "DECISION_CHURN", "COVER_CHURN", "POSE_FLIPS", "ANIM_STUCK", "COVER_STANCE", "ORDER_STUCK", "FLANK_TIMEOUT", "CORNER_YAW" };
 	char sz[512];
 	va_list ap;
 	va_start( ap, pszFormat );
@@ -2036,6 +2118,204 @@ void CNPC_GermanSoldier::RunOpenLoop( void )
 }
 
 //=============================================================================
+// R6 - corner cover
+//
+// The CoD1 corner sets (c1_cn_<weapon><stance>_<side>_*): bolt-action or automatic, standing or
+// crouched, corner on his right or left. Each has a hide pose (alert), the step out, an aim/fire
+// pose blended across three directions by corner_yaw, the step back, a reload and a death.
+//
+// Nothing about where those poses put him is assumed. CornerCalibrate puts his own skeleton
+// into each pose for an instant and reads where his head is and which way his rifle points
+// (from the right hand toward the left, minus the same reading for DoD's plain standing aim).
+// The cover search and the cover loop both use those numbers.
+//=============================================================================
+static const char *s_pszCornerAct[] = { "ALERT", "OUT", "IN", "ENTER", "SEMI", "AUTO", "RELOAD" };
+
+bool CNPC_GermanSoldier::MeasurePose( Activity act, float flCornerYaw, Vector &vecEyeLocal, float &flAimYaw )
+{
+	if ( act == ACT_INVALID || !GetModelPtr() )
+		return false;
+	int iSeq = SelectWeightedSequence( act );
+	int iHead = LookupBone( "ValveBiped.Bip01_Head1" );
+	int iRHand = LookupBone( "ValveBiped.Bip01_R_Hand" );
+	int iLHand = LookupBone( "ValveBiped.Bip01_L_Hand" );
+	if ( iSeq == ACTIVITY_NOT_AVAILABLE || iHead < 0 || iRHand < 0 || iLHand < 0 )
+		return false;
+
+	// Pose him for an instant (same think - nothing is sent to the client), read, put him back.
+	int iOldSeq = GetSequence();
+	float flOldCycle = GetCycle();
+	float flOldPose = m_poseCornerYaw >= 0 ? GetPoseParameter( m_poseCornerYaw ) : 0.0f;
+	SetSequence( iSeq );
+	SetCycle( 0.0f );
+	if ( m_poseCornerYaw >= 0 )
+		SetPoseParameter( m_poseCornerYaw, flCornerYaw );
+	InvalidateBoneCache();
+	Vector vecHead, vecR, vecL;
+	QAngle ang;
+	GetBonePosition( iHead, vecHead, ang );
+	GetBonePosition( iRHand, vecR, ang );
+	GetBonePosition( iLHand, vecL, ang );
+	SetSequence( iOldSeq );
+	SetCycle( flOldCycle );
+	if ( m_poseCornerYaw >= 0 )
+		SetPoseParameter( m_poseCornerYaw, flOldPose );
+	InvalidateBoneCache();
+
+	WorldToEntitySpace( vecHead, &vecEyeLocal );
+	vecEyeLocal.z += 3.0f;		// eyes sit a little above the head bone
+	Vector vecBarrel = vecL - vecR;
+	flAimYaw = AngleNormalize( RAD2DEG( atan2f( vecBarrel.y, vecBarrel.x ) ) - GetAbsAngles().y );
+	return true;
+}
+
+void CNPC_GermanSoldier::CornerCalibrate( void )
+{
+	if ( !GetModelPtr() )
+		return;
+	EnsureAnimMap();		// (a rebuild resets the measurements - do it before, not in the middle)
+	if ( m_bCornerCalDone )
+		return;
+	m_bCornerCalDone = true;
+	memset( m_CornerSets, 0, sizeof( m_CornerSets ) );
+
+	// The reading for DoD's plain standing aim is "straight ahead": the hands-to-rifle angle of a
+	// body aiming forward. Corner aims are measured against it.
+	Vector vecRef;
+	float flRefYaw = 0.0f;
+	if ( !MeasurePose( TranslateToDoD( ACT_IDLE_ANGRY ), 0.0f, vecRef, flRefYaw ) )
+		flRefYaw = 0.0f;
+
+	static const char s_cWeapon[] = { 'B', 'A' };
+	static const char s_cStance[] = { 'S', 'C' };
+	static const char s_cSide[] = { 'R', 'L' };
+	for ( int w = 0; w < 2; w++ )
+	for ( int st = 0; st < 2; st++ )
+	for ( int sd = 0; sd < 2; sd++ )
+	{
+		CornerSet_t &set = m_CornerSets[w][st][sd];
+		char sz[64];
+		for ( int e = 0; e < CN_DEATH; e++ )
+		{
+			Q_snprintf( sz, sizeof( sz ), "ACT_WW2_CN_%c%c_%c_%s", s_cWeapon[w], s_cStance[st], s_cSide[sd], s_pszCornerAct[e] );
+			set.act[e] = ResolveNamedActivity( sz );
+		}
+		Q_snprintf( sz, sizeof( sz ), "ACT_WW2_CN_DEATH_%c_%c", s_cStance[st], s_cSide[sd] );
+		set.act[CN_DEATH] = ResolveNamedActivity( sz );
+		Activity actFire = set.act[CN_SEMI] != ACT_INVALID ? set.act[CN_SEMI] : set.act[CN_AUTO];
+		if ( set.act[CN_ALERT] == ACT_INVALID || set.act[CN_OUT] == ACT_INVALID || set.act[CN_IN] == ACT_INVALID || actFire == ACT_INVALID )
+			continue;
+		Vector vecDummy;
+		float flLo, flHi;
+		if ( !MeasurePose( set.act[CN_ALERT], 0.0f, set.vecHideEye, flLo ) ||
+			 !MeasurePose( actFire, 0.0f, set.vecAimEye, set.flAimYaw ) ||
+			 !MeasurePose( actFire, -1.0f, vecDummy, flLo ) || !MeasurePose( actFire, 1.0f, vecDummy, flHi ) )
+			continue;
+		set.flAimYaw = AngleNormalize( set.flAimYaw - flRefYaw );
+		set.flYawLo = AngleNormalize( flLo - flRefYaw );
+		set.flYawHi = AngleNormalize( flHi - flRefYaw );
+		set.bValid = true;
+		if ( npc_german_debug.GetBool() )
+			Msg( "npc_german_soldier %d: corner set %c%c %s - hide eyes (%.0f %.0f %.0f), out eyes (%.0f %.0f %.0f), aims %.0f deg (%.0f..%.0f)\n",
+				 entindex(), s_cWeapon[w], s_cStance[st], sd == 0 ? "right" : "left",
+				 set.vecHideEye.x, set.vecHideEye.y, set.vecHideEye.z, set.vecAimEye.x, set.vecAimEye.y, set.vecAimEye.z,
+				 set.flAimYaw, set.flYawLo, set.flYawHi );
+	}
+}
+
+const CNPC_GermanSoldier::CornerSet_t *CNPC_GermanSoldier::CornerSet( void ) const
+{
+	if ( !m_Cover.bCorner )
+		return NULL;
+	const CornerSet_t &set = m_CornerSets[m_Cover.corner.iWeapon][m_Cover.corner.iStance][m_Cover.corner.iSide];
+	return set.bValid ? &set : NULL;
+}
+
+Activity CNPC_GermanSoldier::CornerFireAct( void ) const
+{
+	const CornerSet_t *p = CornerSet();
+	if ( !p )
+		return ACT_INVALID;
+	Activity actWant = m_bCoverFireSemi ? p->act[CN_SEMI] : p->act[CN_AUTO];
+	return actWant != ACT_INVALID ? actWant : ( p->act[CN_SEMI] != ACT_INVALID ? p->act[CN_SEMI] : p->act[CN_AUTO] );
+}
+
+static Vector RotateLocal( const Vector &vecLocal, float flYaw )
+{
+	float s, c;
+	SinCos( DEG2RAD( flYaw ), &s, &c );
+	return Vector( vecLocal.x * c - vecLocal.y * s, vecLocal.x * s + vecLocal.y * c, vecLocal.z );
+}
+
+// Can he use this spot as a corner against that enemy? For each corner set he has (standing
+// first, then crouched; corner on his right, then his left): face so the set's aim points at
+// the enemy, then (1) in the hide pose his head is out of sight, behind something right next to
+// it, (2) the way from there to the stepped-out head is clear (he can lean there), and (3) from
+// the stepped-out head he sees the enemy's eyes and chest.
+bool CNPC_GermanSoldier::CornerFitAt( const Vector &vecPos, CBaseEntity *pEnemy, CornerFit_t &fit, const Vector *pvecEye )
+{
+	fit.bValid = false;
+	if ( !pEnemy )
+		return false;
+	CornerCalibrate();
+	Vector vecEye = pvecEye ? *pvecEye : pEnemy->EyePosition();
+	Vector vecToFoe = vecEye - vecPos;
+	float flFoeYaw = RAD2DEG( atan2f( vecToFoe.y, vecToFoe.x ) );
+	CTraceFilterSkipTwoEntities filter( this, pEnemy, COLLISION_GROUP_NONE );
+	int iWeapon = m_bCoverFireSemi ? 0 : 1;
+	for ( int st = 0; st < 2; st++ )
+	for ( int sd = 0; sd < 2; sd++ )
+	{
+		const CornerSet_t &set = m_CornerSets[iWeapon][st][sd];
+		if ( !set.bValid )
+			continue;
+		float flYaw = AngleNormalize( flFoeYaw - set.flAimYaw );
+		Vector vecHide = vecPos + RotateLocal( set.vecHideEye, flYaw );
+		Vector vecAim = vecPos + RotateLocal( set.vecAimEye, flYaw );
+		trace_t tr;
+		UTIL_TraceLine( vecEye, vecHide, COVER_MASK, &filter, &tr );
+		if ( tr.fraction >= 1.0f || ( vecHide - tr.endpos ).Length2D() > m_flCoverMaxGap )
+			continue;		// seen hiding, or hidden only by something far off
+		UTIL_TraceLine( vecEye, vecHide - Vector( 0, 0, 20 ), COVER_MASK, &filter, &tr );
+		if ( tr.fraction >= 1.0f )
+			continue;		// his chest shows
+		UTIL_TraceLine( vecHide, vecAim, COVER_MASK, &filter, &tr );
+		if ( tr.fraction < 1.0f )
+			continue;		// no room to lean out there
+		UTIL_TraceLine( vecAim, vecEye, COVER_MASK, &filter, &tr );
+		if ( tr.fraction < 1.0f )
+			continue;
+		UTIL_TraceLine( vecAim, vecEye - Vector( 0, 0, 20 ), COVER_MASK, &filter, &tr );
+		if ( tr.fraction < 1.0f )
+			continue;
+		fit.bValid = true;
+		fit.iWeapon = iWeapon;
+		fit.iStance = st;
+		fit.iSide = sd;
+		fit.flYaw = flYaw;
+		fit.vecHideEye = vecHide;
+		fit.vecAimEye = vecAim;
+		return true;
+	}
+	return false;
+}
+
+// At his corner: aim the blend at the enemy (corner_yaw), within what the three aims span.
+void CNPC_GermanSoldier::UpdateCornerAim( void )
+{
+	const CornerSet_t *p = CornerSet();
+	if ( !p || m_poseCornerYaw < 0 || !GetEnemy() )
+		return;
+	Vector vecTo = GetEnemyLKP() - GetAbsOrigin();
+	float flRel = AngleNormalize( RAD2DEG( atan2f( vecTo.y, vecTo.x ) ) - GetAbsAngles().y );
+	float flLo = p->flYawLo, flHi = p->flYawHi;
+	float flPose = 0.0f;
+	if ( fabsf( flHi - flLo ) > 1.0f )
+		flPose = clamp( RemapVal( flRel, flLo, flHi, -1.0f, 1.0f ), -1.0f, 1.0f );
+	SetPoseParameter( m_poseCornerYaw, flPose );
+}
+
+//=============================================================================
 // R2 - the cover he occupies
 //=============================================================================
 bool CNPC_GermanSoldier::OccupyCover( void )
@@ -2044,14 +2324,31 @@ bool CNPC_GermanSoldier::OccupyCover( void )
 	if ( !pEnemy || m_actHide == ACT_INVALID )
 		return false;
 	int nType = LowCoverAgainst( pEnemy );		// the same answer the brain got
-	if ( nType <= COVER_FULL )
-		return false;
 	bool bSameSpot = m_Cover.bValid && ( m_Cover.vecPos - GetAbsOrigin() ).Length2D() < 24.0f;
+	if ( nType == COVER_CORNER )
+		return true;		// already at his corner (same set, same facing)
+	CornerFit_t fit;
+	fit.bValid = false;
+	if ( nType <= COVER_FULL )
+	{
+		// Not low cover: a corner, if that's what he ran here for and it still works from where he stopped.
+		if ( !m_PendingCorner.bValid || ( m_vecCoverSpot - GetAbsOrigin() ).Length2D() > 32.0f ||
+			 !CornerFitAt( GetAbsOrigin(), pEnemy, fit ) )
+			return false;
+		nType = COVER_CORNER;
+	}
 	m_Cover.bValid = true;
 	m_Cover.vecPos = GetAbsOrigin();
 	m_Cover.nType = nType;
+	m_Cover.bCorner = nType == COVER_CORNER;
+	m_Cover.corner = fit;
+	m_PendingCorner.bValid = false;
+	m_flCoverCheckTime = 0.0f;		// the cache was for "not at a corner"
 	// The exact point the cover test fired from (one owner for the heights).
-	m_Cover.vecExposedEye = m_Cover.vecPos + Vector( 0, 0, nType == COVER_CROUCH ? COVER_CROUCH_EYE : COVER_STAND_EYE );
+	if ( m_Cover.bCorner )
+		m_Cover.vecExposedEye = fit.vecAimEye;
+	else
+		m_Cover.vecExposedEye = m_Cover.vecPos + Vector( 0, 0, nType == COVER_CROUCH ? COVER_CROUCH_EYE : COVER_STAND_EYE );
 	if ( !bSameSpot )
 		m_Cover.bCouldntSee = false;
 	m_Cover.flExposedSince = 0.0f;
@@ -2072,6 +2369,15 @@ bool CNPC_GermanSoldier::CanSeeEnemyFromExposed( void )
 	if ( m_Cover.bCouldntSee && ( vecTarget - m_Cover.vecCouldntSeeAt ).Length() < 16.0f )
 		return false;
 	bool bSee = ( vecTarget - m_Cover.vecExposedEye ).Length() <= GetSenses()->GetDistLook();
+	const CornerSet_t *pSet = CornerSet();
+	if ( bSee && pSet )
+	{
+		// a corner aims only across what its three blended aims span (+10 degrees)
+		Vector vecTo = vecTarget - m_Cover.vecPos;
+		float flRel = AngleNormalize( RAD2DEG( atan2f( vecTo.y, vecTo.x ) ) - m_Cover.corner.flYaw );
+		float flLo = MIN( pSet->flYawLo, pSet->flYawHi ) - 10.0f, flHi = MAX( pSet->flYawLo, pSet->flYawHi ) + 10.0f;
+		bSee = flRel >= flLo && flRel <= flHi;
+	}
 	if ( bSee )
 	{
 		CTraceFilterSkipTwoEntities filter( this, pEnemy, COLLISION_GROUP_NONE );
@@ -2177,8 +2483,9 @@ void CNPC_GermanSoldier::SetCoverState( CoverState_t eState, const char *pszWhy 
 	case CS_RELOAD:
 		{
 			ChatterReloading();
-			ResetIdealActivity( ACT_RELOAD_LOW );	// hidden stance -> the CoD2 hidden reload (a fresh one each time)
-			Activity act = m_actCoverReload != ACT_INVALID ? m_actCoverReload : ACT_RELOAD_LOW;
+			ResetIdealActivity( ACT_RELOAD_LOW );	// hidden stance -> the CoD2 hidden reload / the corner reload (a fresh one each time)
+			Activity act = m_Cover.bCorner && CornerAct( CN_RELOAD ) != ACT_INVALID ? CornerAct( CN_RELOAD ) :
+						   m_actCoverReload != ACT_INVALID ? m_actCoverReload : ACT_RELOAD_LOW;
 			int iSeq = SelectWeightedSequence( act );
 			m_flReloadDoneTime = now + ( iSeq != ACTIVITY_NOT_AVAILABLE ? SequenceDuration( iSeq ) : 2.0f ) * 0.85f;
 			m_flGestureReloadDone = 0.0f;
@@ -2263,7 +2570,21 @@ void CNPC_GermanSoldier::RunCoverLoop( void )
 		return;
 	}
 	float now = gpGlobals->curtime;
-	GetMotor()->SetIdealYawToTargetAndUpdate( GetEnemyLKP(), AI_KEEP_YAW_SPEED );	// face his last known spot
+	if ( m_Cover.bCorner )
+	{
+		// At a corner he faces the way the corner set needs (measured), and the blend aims.
+		GetMotor()->SetIdealYawAndUpdate( m_Cover.corner.flYaw, AI_KEEP_YAW_SPEED );
+		UpdateCornerAim();
+		float flOff = fabsf( AngleDiff( GetAbsAngles().y, m_Cover.corner.flYaw ) );
+		if ( flOff < 25.0f )
+			m_flCornerYawBad = 0.0f;
+		else if ( m_flCornerYawBad == 0.0f )
+			m_flCornerYawBad = now;
+		else if ( now - m_flCornerYawBad > 1.5f )
+			Invariant( INV_CORNER_YAW, "at his corner but facing %.0f deg off it for %.1f s", flOff, now - m_flCornerYawBad );
+	}
+	else
+		GetMotor()->SetIdealYawToTargetAndUpdate( GetEnemyLKP(), AI_KEEP_YAW_SPEED );	// face his last known spot
 
 	// A squad order (not mid-reload or mid-transition): hand him back to the brain to carry it out.
 	if ( m_eSquadOrder != ORDER_NONE && now >= m_flSquadOrderAt && m_eCoverState != CS_RELOAD && !IsInStanceTransition() )
@@ -2288,7 +2609,8 @@ void CNPC_GermanSoldier::RunCoverLoop( void )
 
 	// The stance each state wants. If the stance owner says "not yet" (min hold), the state waits.
 	bool bUp = m_eCoverState == CS_RISE || m_eCoverState == CS_SHOOT || m_eCoverState == CS_LOOK;
-	Stance_t eWant = bUp ? ( m_Cover.nType == COVER_STAND ? STANCE_MID_UP : STANCE_LOW_UP ) : STANCE_HIDE;
+	Stance_t eWant = m_Cover.bCorner ? ( bUp ? STANCE_CORNER_AIM : STANCE_CORNER_HIDE ) :
+					 bUp ? ( m_Cover.nType == COVER_STAND ? STANCE_MID_UP : STANCE_LOW_UP ) : STANCE_HIDE;
 	if ( m_eStance != eWant )
 	{
 		if ( !SetStance( eWant, s_pszCoverState[m_eCoverState] ) )
@@ -2436,7 +2758,7 @@ bool CNPC_GermanSoldier::IsSpotBad( const Vector &vecPos ) const
 //   dark grey = wrong place for this order (not closer / not further back / not on the flank side)
 //   red = you'd see him there (or only something far off hides him)
 //   orange = out of your sight completely, but he can't shoot from it (inside a house, behind a corner)
-//   green = usable cover                 blue = the one he picked
+//   green = usable low cover   cyan = usable corner (hide beside it, step out to fire)   blue = the one he picked
 static void DrawSearchNode( const Vector &vecPos, int r, int g, int b )
 {
 	if ( npc_german_debug.GetInt() >= 2 )
@@ -2458,7 +2780,7 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, int nMode )
 	Vector vecFacing = -m_vecFlankFrom;
 	Vector vecLeft( -vecFacing.y, vecFacing.x, 0.0f );
 
-	struct Cand_t { Vector pos; float cover; float foe; float score; };
+	struct Cand_t { Vector pos; float cover; float foe; float score; CornerFit_t fit; };
 	const int MAX_CANDS = 6;
 	Cand_t cands[MAX_CANDS];
 	int nCands = 0, nTested = 0;
@@ -2518,7 +2840,14 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, int nMode )
 		}
 		nTested++;
 		int nCover = CoverAt( vecPos, pEnemy );
-		if ( nCover <= COVER_FULL )
+		Cand_t c;
+		c.fit.bValid = false;
+		if ( nCover == COVER_FULL && CornerFitAt( vecPos, pEnemy, c.fit ) )
+		{
+			nCover = COVER_CORNER;		// hidden here, and a corner set can step out and shoot from it
+			DrawSearchNode( vecPos, 0, 220, 255 );
+		}
+		else if ( nCover <= COVER_FULL )
 		{
 			if ( nCover == COVER_FULL )
 				DrawSearchNode( vecPos, 255, 140, 0 );
@@ -2526,10 +2855,10 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, int nMode )
 				DrawSearchNode( vecPos, 255, 0, 0 );
 			continue;
 		}
-		DrawSearchNode( vecPos, 0, 255, 0 );
-		Cand_t c;
+		else
+			DrawSearchNode( vecPos, 0, 255, 0 );
 		c.pos = vecPos;
-		c.cover = ( nCover == COVER_CROUCH ? 100.0f : 80.0f )
+		c.cover = ( nCover == COVER_CROUCH ? 100.0f : nCover == COVER_CORNER ? ( c.fit.iStance == 0 ? 90.0f : 80.0f ) : 80.0f )
 				- ( flFoe < 400.0f ? ( 400.0f - flFoe ) * 0.1f : 0.0f );	// not right in his face
 		c.foe = flFoe;
 		if ( bOrdinary && flCloser > 0.0f )
@@ -2557,6 +2886,11 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, int nMode )
 	// Check the candidates best-first with a real route; score by route length.
 	float flBest = -FLT_MAX, flBestLen = 0.0f, flBestExposed = 0.0f;
 	Vector vecBest = vec3_origin;
+	CornerFit_t fitBest;
+	fitBest.bValid = false;
+	int nCorners = 0;
+	for ( int k = 0; k < nCands; k++ )
+		nCorners += cands[k].fit.bValid ? 1 : 0;
 	int nNoRoute = 0;
 	for ( int pass = 0; pass < nCands; pass++ )
 	{
@@ -2595,20 +2929,22 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, int nMode )
 		{
 			flBest = flScore;
 			vecBest = c.pos;
+			fitBest = c.fit;
 			flBestLen = flLen;
 			flBestExposed = flExposed;
 		}
 	}
 	if ( npc_german_debug.GetBool() )
-		Msg( "[%.2f] npc_german_soldier %d: %s - %d spots tested, %d gave cover, %d had no route: %s (run %.0f, %.0f of it in your line of fire)\n",
+		Msg( "[%.2f] npc_german_soldier %d: %s - %d spots tested, %d gave cover (%d corners), %d had no route: %s%s (run %.0f, %.0f of it in your line of fire)\n",
 			 gpGlobals->curtime, entindex(), bAdvance ? "advance search (closer cover)" : bFlank ? ( nMode == SEARCH_FLANK_LEFT ? "flank search (left)" : "flank search (right)" ) :
-			 bRetreat ? "fall-back search" : "cover search", nTested, nCands, nNoRoute,
-			 flBest > -FLT_MAX ? "going" : "nothing usable", flBestLen, flBestExposed );
+			 bRetreat ? "fall-back search" : "cover search", nTested, nCands, nCorners, nNoRoute,
+			 flBest > -FLT_MAX ? "going" : "nothing usable", flBest > -FLT_MAX && fitBest.bValid ? " to a corner" : "", flBestLen, flBestExposed );
 	if ( flBest == -FLT_MAX )
 		return false;
 	if ( npc_german_debug.GetInt() >= 2 )
 		NDebugOverlay::Box( vecBest, Vector( -8, -8, 0 ), Vector( 8, 8, 24 ), 0, 80, 255, 200, 4.0f );
 	m_vecCoverSpot = vecBest;
+	m_PendingCorner = fitBest;
 	m_vecCoverSearchEye = pEnemy->EyePosition();
 	m_bHasCoverSpot = true;
 	m_flLastSearchRun = flBestLen;
@@ -2656,7 +2992,7 @@ void CNPC_GermanSoldier::DrawDebugOverlay( void )
 	NDebugOverlay::EntityText( entindex(), line++, sz, 0.12f );
 	if ( GetEnemy() )
 	{
-		static const char *s_Cover[] = { "EXPOSED", "full cover", "low wall (crouch fire)", "chest-high (stand fire)" };
+		static const char *s_Cover[] = { "EXPOSED", "full cover", "low wall (crouch fire)", "chest-high (stand fire)", "corner" };
 		m_flCoverCheckTime = 0.0f;		// fresh check so the traces get drawn
 		Q_snprintf( sz, sizeof( sz ), "cover: %s%s%s%s", s_Cover[ LowCoverAgainst( GetEnemy() ) + 1 ],
 					gpGlobals->curtime < m_flUnderFireUntil ? "  UNDER FIRE" : "", IsWounded() ? "  WOUNDED" : "",
@@ -2669,6 +3005,18 @@ void CNPC_GermanSoldier::DrawDebugOverlay( void )
 				IsCurSchedule( SCHED_GERMAN_COVER, false ) || IsCurSchedule( SCHED_GERMAN_MOVE_TO_COVER, false ) ? s_pszCoverState[m_eCoverState] :
 				IsCurSchedule( SCHED_GERMAN_OPEN, false ) ? s_pszOpenState[m_eOpenState] : "" );
 	NDebugOverlay::EntityText( entindex(), line++, sz, 0.12f );
+	if ( m_Cover.bValid && m_Cover.bCorner )
+	{
+		// his corner: where his head hides (green), where it comes out to fire (yellow), his facing
+		NDebugOverlay::Box( m_Cover.corner.vecHideEye, Vector( -3, -3, -3 ), Vector( 3, 3, 3 ), 0, 255, 0, 160, 0.12f );
+		NDebugOverlay::Box( m_Cover.corner.vecAimEye, Vector( -3, -3, -3 ), Vector( 3, 3, 3 ), 255, 255, 0, 160, 0.12f );
+		Vector vecFwd;
+		AngleVectors( QAngle( 0, m_Cover.corner.flYaw, 0 ), &vecFwd );
+		NDebugOverlay::Line( m_Cover.vecPos + Vector( 0, 0, 4 ), m_Cover.vecPos + Vector( 0, 0, 4 ) + vecFwd * 32.0f, 0, 220, 255, true, 0.12f );
+		Q_snprintf( sz, sizeof( sz ), "corner: %s, %s%s", m_Cover.corner.iSide == 0 ? "on his right" : "on his left",
+					m_Cover.corner.iStance == 0 ? "standing" : "crouched", m_poseCornerYaw >= 0 ? "" : "  (no corner_yaw pose param!)" );
+		NDebugOverlay::EntityText( entindex(), line++, sz, 0.12f );
+	}
 	Q_snprintf( sz, sizeof( sz ), "health %d/%d", GetHealth(), GetMaxHealth() );
 	NDebugOverlay::EntityText( entindex(), line++, sz, 0.12f );
 }
@@ -2702,7 +3050,7 @@ void CNPC_GermanSoldier::UpdatePlaybackRate( void )
 	if ( m_bDeathAnim || !GetModelPtr() || GetSequence() < 0 )
 		return;
 	Activity actSeq = GetSequenceActivity( GetSequence() );
-	bool bCoverFire = actSeq != ACT_INVALID && ( actSeq == m_actCoverLowFire || actSeq == m_actCoverMidFire );
+	bool bCoverFire = actSeq != ACT_INVALID && ( actSeq == m_actCoverLowFire || actSeq == m_actCoverMidFire || actSeq == CornerFireAct() );
 	SetPlaybackRate( bCoverFire && gpGlobals->curtime >= m_flCoverRecoilUntil ? 0.0f : 1.0f );
 }
 
@@ -2730,6 +3078,15 @@ Activity CNPC_GermanSoldier::NPC_TranslateActivity( Activity eNewActivity )
 		eNewActivity = m_actCoverLowFire;
 	else if ( bStatic && m_eStance == STANCE_MID_UP && m_actCoverMidFire != ACT_INVALID && bIdleOrAim )
 		eNewActivity = m_actCoverMidFire;
+	else if ( bStatic && m_eStance == STANCE_CORNER_HIDE && CornerAct( CN_ALERT ) != ACT_INVALID )
+	{
+		if ( bIsReload && CornerAct( CN_RELOAD ) != ACT_INVALID )
+			return CornerAct( CN_RELOAD );
+		if ( bIdleOrAim )
+			return CornerAct( CN_ALERT );
+	}
+	else if ( bStatic && m_eStance == STANCE_CORNER_AIM && CornerFireAct() != ACT_INVALID && bIdleOrAim )
+		return CornerFireAct();		// held on its first frame (the aim) between shots; each shot plays it
 
 	Activity eResult = TranslateToDoD( eNewActivity );
 
@@ -2828,7 +3185,7 @@ bool CNPC_GermanSoldier::FireOneShot( bool bPlayGesture )
 	}
 
 	Activity actNow = GetSequenceActivity( GetSequence() );
-	if ( actNow != ACT_INVALID && ( actNow == m_actCoverLowFire || actNow == m_actCoverMidFire ) )
+	if ( actNow != ACT_INVALID && ( actNow == m_actCoverLowFire || actNow == m_actCoverMidFire || actNow == CornerFireAct() ) )
 	{
 		// The CoD2 firing pose has its own recoil: replay it for this shot.
 		if ( m_bCoverFireSemi )
@@ -3030,8 +3387,8 @@ void CNPC_GermanSoldier::StartTask( const Task_t *pTask )
 	case TASK_GERMAN_WATCH:
 		{
 			// Watching his last spot: up over his cover if he's at one, else as he is.
-			if ( IsAtCoverSpot() && m_Cover.bValid )
-				SetStance( m_Cover.nType == COVER_STAND ? STANCE_MID_UP : STANCE_LOW_UP, "watching over his cover" );
+			if ( IsAtCoverSpot() && m_Cover.bValid && ( m_Cover.vecPos - GetAbsOrigin() ).Length2D() < 24.0f )
+				SetStance( m_Cover.bCorner ? STANCE_CORNER_AIM : m_Cover.nType == COVER_STAND ? STANCE_MID_UP : STANCE_LOW_UP, "watching over his cover" );
 			SetIdealActivity( ACT_IDLE_ANGRY );
 			m_flWatchUntil = gpGlobals->curtime + random->RandomFloat( 1.0f, 2.0f );	// takes time; re-decides after (no instant interrupts: no dithering)
 		}
@@ -3066,7 +3423,9 @@ void CNPC_GermanSoldier::StartTask( const Task_t *pTask )
 				// Arrived, but it doesn't cover him now. Blame the spot only if it was wrong all
 				// along (it doesn't cover him even from where the enemy was when it was chosen);
 				// if the enemy has simply moved, the spot is fine - he just needs another one now.
-				bool bSpotWasRight = CoverAt( GetAbsOrigin(), GetEnemy(), NULL, &m_vecCoverSearchEye ) > COVER_FULL;
+				CornerFit_t fitThen;
+				bool bSpotWasRight = CoverAt( GetAbsOrigin(), GetEnemy(), NULL, &m_vecCoverSearchEye ) > COVER_FULL ||
+									 ( m_PendingCorner.bValid && CornerFitAt( GetAbsOrigin(), GetEnemy(), fitThen, &m_vecCoverSearchEye ) );
 				if ( npc_german_debug.GetBool() )
 					Msg( "npc_german_soldier %d: reached his spot but it doesn't cover him - %s\n", entindex(),
 						 bSpotWasRight ? "you moved since he picked it; looking again" : "the spot was wrong, skipping it" );
@@ -3083,7 +3442,8 @@ void CNPC_GermanSoldier::StartTask( const Task_t *pTask )
 		m_flCoverNextLook = gpGlobals->curtime + random->RandomFloat( 0.5f, 2.0f );
 		m_flCoverHiddenSince = gpGlobals->curtime;
 		m_flCoverStateUntil = gpGlobals->curtime + random->RandomFloat( 0.05f, 0.8f );	// desync the squad (CoD)
-		SetCoverState( CS_HIDE, m_Cover.nType == COVER_STAND ? "took chest-high cover" : "took low cover" );
+		SetCoverState( CS_HIDE, m_Cover.bCorner ? ( m_Cover.corner.iSide == 0 ? "took a corner (on his right)" : "took a corner (on his left)" ) :
+								m_Cover.nType == COVER_STAND ? "took chest-high cover" : "took low cover" );
 		break;
 
 	case TASK_DIE:
@@ -3140,7 +3500,12 @@ void CNPC_GermanSoldier::RunTask( const Task_t *pTask )
 		break;
 
 	case TASK_GERMAN_WATCH:
-		if ( GetEnemy() )
+		if ( IsCornerStance( m_eStance ) && m_Cover.bCorner )
+		{
+			GetMotor()->SetIdealYawAndUpdate( m_Cover.corner.flYaw, AI_KEEP_YAW_SPEED );	// a corner faces its own way
+			UpdateCornerAim();
+		}
+		else if ( GetEnemy() )
 			GetMotor()->SetIdealYawToTargetAndUpdate( GetEnemyLKP(), AI_KEEP_YAW_SPEED );
 		if ( gpGlobals->curtime >= m_flWatchUntil )
 			TaskComplete();
@@ -3306,6 +3671,10 @@ Activity CNPC_GermanSoldier::PickDeathActivity( void )
 		if ( a != ACT_INVALID )
 			return a;
 	}
+
+	// At a corner: the corner set's own death
+	if ( IsCornerStance( m_eStance ) && !IsMoving() && CornerAct( CN_DEATH ) != ACT_INVALID )
+		return CornerAct( CN_DEATH );
 
 	// Crouched or in low cover
 	if ( IsInCrouchPose() )
