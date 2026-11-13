@@ -139,6 +139,7 @@ public:
 		SCHED_GERMAN_MOVE_TO_COVER,							// run to the best-scoring low cover nearby, then the cover loop
 		SCHED_GERMAN_HOLD_COVER,							// no enemy to fight from cover (alert) or a failed plan: watch his last spot
 		SCHED_GERMAN_OPEN,									// no cover he can reach: the open-ground loop owns him
+		SCHED_GERMAN_STACK,									// A3c: hidden right beside where the enemy was, waiting for him; then pushes through
 		NEXT_SCHEDULE
 	};
 	enum
@@ -147,6 +148,7 @@ public:
 		TASK_GERMAN_PATH_TO_COVER,
 		TASK_GERMAN_WATCH,
 		TASK_GERMAN_OPEN_LOOP,
+		TASK_GERMAN_STACK,
 		NEXT_TASK
 	};
 	enum
@@ -384,6 +386,17 @@ public:
 	float		m_flSquadAggression;	// script: 0.5 cautious defenders .. 2 assault troops (A3c)
 	float		m_flAssaultAfter;		// script: seconds the squad has lost you before it comes after you
 	int			SquadCrowding( const Vector &vecPos );	// squadmates already at / heading for a spot this close
+	// What a chosen spot is for (A3c). One owner: set when a spot is chosen, read on arrival.
+	//   COVER  cover he fights from (low wall, corner)       -> the cover loop
+	//   ANGLE  open, but he can see where you are/were from  -> the open-ground loop (he's "got an angle")
+	//   STACK  hidden right beside where you were            -> waits for you, then pushes through
+	//   PUSH   where you were last seen itself               -> the open-ground loop
+	enum SpotKind_t { SPOT_COVER, SPOT_ANGLE, SPOT_STACK, SPOT_PUSH };
+	SpotKind_t	m_ePendingSpotKind;		// the spot he's running to
+	SpotKind_t	m_eArrivedKind;			// just got to a non-cover spot (the brain acts on it once)
+	float		m_flArrivedAt;
+	bool		m_bPushPending;			// stacked, nothing came: push through next decision
+	float		m_flStackUntil;
 private:
 	void		SquadOrderFailed( SquadOrder_t eOrder );
 	void		ChatterOrderCoverMove( void );		// a squadmate calls out his run to cover
@@ -660,6 +673,9 @@ CNPC_GermanSoldier::CNPC_GermanSoldier() : m_AnimMap( DefLessFunc( int ) )
 	m_bSuppressing = false;
 	m_flSquadTempo = 1.0f;
 	m_flSquadAggression = 1.0f;
+	m_ePendingSpotKind = m_eArrivedKind = SPOT_COVER;
+	m_flArrivedAt = m_flStackUntil = 0.0f;
+	m_bPushPending = false;
 	m_flAssaultAfter = 6.0f;
 	m_flFlankRadius = 1200.0f;
 	m_flChatterSawEnemy = -100.0f;
@@ -2975,6 +2991,7 @@ bool CNPC_GermanSoldier::IsSpotBad( const Vector &vecPos ) const
 //   red = you'd see him there (or only something far off hides him)
 //   orange = out of your sight completely, but he can't shoot from it (inside a house, behind a corner)
 //   green = usable low cover   cyan = usable corner (hide beside it, step out to fire)   blue = the one he picked
+//   magenta = an angle on you (open, but sees you; flank/assault only)   purple = stack-up spot beside where you were (assault only)
 static void DrawSearchNode( const Vector &vecPos, int r, int g, int b )
 {
 	if ( npc_german_debug.GetInt() >= 2 )
@@ -2999,7 +3016,7 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, int nMode, const Ve
 	Vector vecFacing = -m_vecFlankFrom;
 	Vector vecLeft( -vecFacing.y, vecFacing.x, 0.0f );
 
-	struct Cand_t { Vector pos; float cover; float foe; float score; CornerFit_t fit; };
+	struct Cand_t { Vector pos; float cover; float foe; float score; CornerFit_t fit; SpotKind_t kind; };
 	const int MAX_CANDS = 6;
 	Cand_t cands[MAX_CANDS];
 	int nCands = 0, nTested = 0;
@@ -3062,23 +3079,55 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, int nMode, const Ve
 		int nCover = CoverAt( vecPos, pEnemy, NULL, &vecThreatEye );
 		Cand_t c;
 		c.fit.bValid = false;
+		c.kind = SPOT_COVER;
+		float flBase = 0.0f;
 		if ( nCover == COVER_FULL && CornerFitAt( vecPos, pEnemy, c.fit, &vecThreatEye ) )
 		{
 			nCover = COVER_CORNER;		// hidden here, and a corner set can step out and shoot from it
+			flBase = c.fit.iStance == 0 ? 90.0f : 80.0f;
 			DrawSearchNode( vecPos, 0, 220, 255 );
 		}
-		else if ( nCover <= COVER_FULL )
+		else if ( nCover > COVER_FULL )
 		{
-			if ( nCover == COVER_FULL )
-				DrawSearchNode( vecPos, 255, 140, 0 );
-			else
-				DrawSearchNode( vecPos, 255, 0, 0 );
-			continue;
+			flBase = nCover == COVER_CROUCH ? 100.0f : 80.0f;
+			DrawSearchNode( vecPos, 0, 255, 0 );
 		}
 		else
-			DrawSearchNode( vecPos, 0, 255, 0 );
+		{
+			// Not cover. Going after you or round your side, two other kinds of spot still do (A3c):
+			//   right beside where you were, out of your sight - he stacks up there (a doorway, your wall)
+			//   anywhere he can see where you are/were from - he's got an angle on you
+			bool bAngle = false;
+			if ( ( bAssault || bFlank ) && nCover == COVER_EXPOSED )
+			{
+				trace_t trAngle;
+				CTraceFilterSkipTwoEntities filterAngle( this, pEnemy, COLLISION_GROUP_NONE );
+				UTIL_TraceLine( vecPos + Vector( 0, 0, COVER_STAND_EYE ), vecThreatEye, COVER_MASK, &filterAngle, &trAngle );
+				bAngle = trAngle.fraction >= 1.0f;
+			}
+			if ( bAssault && nCover == COVER_FULL && flFoe <= 320.0f )
+			{
+				c.kind = SPOT_STACK;
+				flBase = 60.0f;
+				DrawSearchNode( vecPos, 150, 0, 255 );
+			}
+			else if ( bAngle )
+			{
+				c.kind = SPOT_ANGLE;
+				flBase = 65.0f;
+				DrawSearchNode( vecPos, 255, 0, 200 );
+			}
+			else
+			{
+				if ( nCover == COVER_FULL )
+					DrawSearchNode( vecPos, 255, 140, 0 );
+				else
+					DrawSearchNode( vecPos, 255, 0, 0 );
+				continue;
+			}
+		}
 		c.pos = vecPos;
-		c.cover = ( nCover == COVER_CROUCH ? 100.0f : nCover == COVER_CORNER ? ( c.fit.iStance == 0 ? 90.0f : 80.0f ) : 80.0f )
+		c.cover = flBase
 				- ( flFoe < 400.0f ? ( 400.0f - flFoe ) * 0.1f : 0.0f );	// not right in his face
 		c.foe = flFoe;
 		if ( bOrdinary && flCloser > 0.0f )
@@ -3111,9 +3160,14 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, int nMode, const Ve
 	Vector vecBest = vec3_origin;
 	CornerFit_t fitBest;
 	fitBest.bValid = false;
-	int nCorners = 0;
+	SpotKind_t kindBest = SPOT_COVER;
+	int nCorners = 0, nAngles = 0, nStacks = 0;
 	for ( int k = 0; k < nCands; k++ )
+	{
 		nCorners += cands[k].fit.bValid ? 1 : 0;
+		nAngles += cands[k].kind == SPOT_ANGLE ? 1 : 0;
+		nStacks += cands[k].kind == SPOT_STACK ? 1 : 0;
+	}
 	int nNoRoute = 0;
 	for ( int pass = 0; pass < nCands; pass++ )
 	{
@@ -3153,21 +3207,26 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, int nMode, const Ve
 			flBest = flScore;
 			vecBest = c.pos;
 			fitBest = c.fit;
+			kindBest = c.kind;
 			flBestLen = flLen;
 			flBestExposed = flExposed;
 		}
 	}
 	if ( npc_german_debug.GetBool() )
-		Msg( "[%.2f] npc_german_soldier %d: %s - %d spots tested, %d gave cover (%d corners), %d had no route: %s%s (run %.0f, %.0f of it in your line of fire)\n",
+		Msg( "[%.2f] npc_german_soldier %d: %s - %d spots tested, %d usable (%d corners, %d angles, %d stacks), %d had no route: %s%s (run %.0f, %.0f of it in your line of fire)\n",
 			 gpGlobals->curtime, entindex(), bAdvance ? "advance search (closer cover)" : bFlank ? ( nMode == SEARCH_FLANK_LEFT ? "flank search (left)" : "flank search (right)" ) :
-			 bRetreat ? "fall-back search" : bAssault ? "assault search (next to where you were)" : pvecThreatEye ? "watch search (your last position)" : "cover search", nTested, nCands, nCorners, nNoRoute,
-			 flBest > -FLT_MAX ? "going" : "nothing usable", flBest > -FLT_MAX && fitBest.bValid ? " to a corner" : "", flBestLen, flBestExposed );
+			 bRetreat ? "fall-back search" : bAssault ? "assault search (next to where you were)" : pvecThreatEye ? "watch search (your last position)" : "cover search",
+			 nTested, nCands, nCorners, nAngles, nStacks, nNoRoute,
+			 flBest > -FLT_MAX ? "going" : "nothing usable",
+			 flBest == -FLT_MAX ? "" : kindBest == SPOT_STACK ? " to stack up beside where you were" : kindBest == SPOT_ANGLE ? " to get an angle on you" :
+			 fitBest.bValid ? " to a corner" : "", flBestLen, flBestExposed );
 	if ( flBest == -FLT_MAX )
 		return false;
 	if ( npc_german_debug.GetInt() >= 2 )
 		NDebugOverlay::Box( vecBest, Vector( -8, -8, 0 ), Vector( 8, 8, 24 ), 0, 80, 255, 200, 4.0f );
 	m_vecCoverSpot = vecBest;
 	m_PendingCorner = fitBest;
+	m_ePendingSpotKind = kindBest;
 	m_vecCoverSearchEye = vecThreatEye;
 	m_bHasCoverSpot = true;
 	m_flLastSearchRun = flBestLen;
@@ -3626,6 +3685,12 @@ void CNPC_GermanSoldier::StartTask( const Task_t *pTask )
 		}
 		break;
 
+	case TASK_GERMAN_STACK:
+		SetStance( STANCE_CROUCH, "stacked up, waiting for you" );
+		SetIdealActivity( ACT_IDLE_ANGRY );
+		m_flStackUntil = gpGlobals->curtime + random->RandomFloat( 3.0f, 7.0f ) / m_flSquadAggression;
+		break;
+
 	case TASK_GERMAN_WATCH:
 		{
 			// Watching his last spot: up over his cover if he's at one, else as he is.
@@ -3658,6 +3723,18 @@ void CNPC_GermanSoldier::StartTask( const Task_t *pTask )
 
 	case TASK_GERMAN_COVER_LOOP:
 		VacateStrategySlot();
+		if ( IsCurSchedule( SCHED_GERMAN_MOVE_TO_COVER, false ) && m_ePendingSpotKind != SPOT_COVER )
+		{
+			// Got to an angle / a stack-up spot / where you were: not cover - the brain takes it from here.
+			static const char *s_pszArrived[] = { "", "has an angle on where you were", "stacked up beside where you were", "pushed through to where you were" };
+			m_eArrivedKind = m_ePendingSpotKind;
+			m_ePendingSpotKind = SPOT_COVER;
+			m_flArrivedAt = gpGlobals->curtime;
+			if ( npc_german_debug.GetBool() )
+				Msg( "[%.2f] npc_german_soldier %d: arrived - %s\n", gpGlobals->curtime, entindex(), s_pszArrived[m_eArrivedKind] );
+			TaskComplete();
+			break;
+		}
 		if ( !OccupyCover() )
 		{
 			if ( IsCurSchedule( SCHED_GERMAN_MOVE_TO_COVER, false ) && m_bHasCoverSpot && GetEnemy() )
@@ -3755,6 +3832,16 @@ void CNPC_GermanSoldier::RunTask( const Task_t *pTask )
 
 	case TASK_GERMAN_COVER_LOOP:
 		RunCoverLoop();
+		break;
+
+	case TASK_GERMAN_STACK:
+		if ( GetEnemy() )
+			GetMotor()->SetIdealYawToTargetAndUpdate( GetEnemyLKP(), AI_KEEP_YAW_SPEED );
+		if ( gpGlobals->curtime >= m_flStackUntil )
+		{
+			m_bPushPending = true;		// nothing came out: in after him
+			TaskComplete();
+		}
 		break;
 
 	case TASK_GERMAN_OPEN_LOOP:
@@ -4448,6 +4535,33 @@ int CNPC_GermanSoldier::SelectCombatSchedule( void )
 		SquadOrderFailed( eOrder );
 	}
 
+	// 2b. A3c: just got to an angle, a stack-up spot, or where you were.
+	if ( m_eArrivedKind != SPOT_COVER )
+	{
+		SpotKind_t eKind = m_eArrivedKind;
+		m_eArrivedKind = SPOT_COVER;
+		if ( now - m_flArrivedAt < 2.0f )
+		{
+			if ( eKind == SPOT_STACK )
+				return Decide( SCHED_GERMAN_STACK, "stacked up beside where you were - waiting for you" );
+			return Decide( SCHED_GERMAN_OPEN, eKind == SPOT_PUSH ? "pushed through to where you were - fights from there" : "has an angle on you - fights from there" );
+		}
+	}
+	// 2c. Stacked up and you never showed: in after you, to where you were last seen.
+	if ( m_bPushPending )
+	{
+		m_bPushPending = false;
+		if ( GetEnemy() && !HasCondition( COND_SEE_ENEMY ) )
+		{
+			m_vecCoverSpot = GetEnemyLKP();
+			m_bHasCoverSpot = true;
+			m_ePendingSpotKind = SPOT_PUSH;
+			m_PendingCorner.bValid = false;
+			m_eMoveKind = MOVE_ASSAULT;
+			return Decide( SCHED_GERMAN_MOVE_TO_COVER, "nothing came out - pushing through to where you were" );
+		}
+	}
+
 	// 3. In low cover (and not just flanked out of it): the cover loop. A man on his own who left it
 	//    bored bounds forward by himself (in a squad, the coordinator decides who bounds).
 	if ( bInCover && !bFlanked )
@@ -4880,6 +4994,7 @@ AI_BEGIN_CUSTOM_NPC( npc_german_soldier, CNPC_GermanSoldier )
 	DECLARE_TASK( TASK_GERMAN_PATH_TO_COVER )
 	DECLARE_TASK( TASK_GERMAN_WATCH )
 	DECLARE_TASK( TASK_GERMAN_OPEN_LOOP )
+	DECLARE_TASK( TASK_GERMAN_STACK )
 	DECLARE_SQUADSLOT( SQUAD_SLOT_GERMAN_FIRE1 )
 	DECLARE_SQUADSLOT( SQUAD_SLOT_GERMAN_FIRE2 )
 	DECLARE_SQUADSLOT( SQUAD_SLOT_GERMAN_FIRE3 )
@@ -4959,6 +5074,28 @@ AI_BEGIN_CUSTOM_NPC( npc_german_soldier, CNPC_GermanSoldier )
 		"	Interrupts"
 		"		COND_NEW_ENEMY"
 		"		COND_ENEMY_DEAD"
+		"		COND_HEAR_DANGER"
+	)
+
+	//=========================================================
+	// SCHED_GERMAN_STACK (A3c): hidden beside where the enemy was last seen - a doorway, the
+	// corner of his house. Crouched, facing that way, for a few seconds: he shows himself ->
+	// the brain fights him; nothing -> he pushes through to that spot.
+	//=========================================================
+	DEFINE_SCHEDULE
+	(
+		SCHED_GERMAN_STACK,
+
+		"	Tasks"
+		"		TASK_STOP_MOVING			0"
+		"		TASK_GERMAN_STACK			0"
+		""
+		"	Interrupts"
+		"		COND_SEE_ENEMY"
+		"		COND_NEW_ENEMY"
+		"		COND_ENEMY_DEAD"
+		"		COND_LIGHT_DAMAGE"
+		"		COND_HEAVY_DAMAGE"
 		"		COND_HEAR_DANGER"
 	)
 
