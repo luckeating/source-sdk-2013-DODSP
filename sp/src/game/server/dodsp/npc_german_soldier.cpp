@@ -435,7 +435,7 @@ private:
 	enum { COVER_EXPOSED = -1, COVER_FULL = 0, COVER_CROUCH = 1, COVER_STAND = 2, COVER_CORNER = 3 };
 	int			LowCoverAgainst( CBaseEntity *pEnemy );	// COVER_*: > 0 means low cover he can fire from
 	int			CoverAt( const Vector &vecPos, CBaseEntity *pEnemy, trace_t *pHideTrace = NULL, const Vector *pvecEye = NULL );	// same test at any spot (pvecEye: against where his eyes were)
-	enum SearchMode_t { SEARCH_COVER, SEARCH_ADVANCE, SEARCH_FLANK_LEFT, SEARCH_FLANK_RIGHT, SEARCH_RETREAT, SEARCH_ASSAULT, SEARCH_SPREAD };
+	enum SearchMode_t { SEARCH_COVER, SEARCH_ADVANCE, SEARCH_FLANK_LEFT, SEARCH_FLANK_RIGHT, SEARCH_RETREAT, SEARCH_ASSAULT, SEARCH_SPREAD, SEARCH_WATCH };
 	// best-scoring cover for this kind of move; pvecThreatEye: against where the enemy was last
 	// seen (his eyes there) instead of where he is - for a squad that has lost sight of him
 	bool		FindCoverSpot( CBaseEntity *pEnemy, int nMode = SEARCH_COVER, const Vector *pvecThreatEye = NULL );
@@ -2059,10 +2059,12 @@ void CNPC_GermanSoldier::SquadTick( void )
 				pszEnd = "nobody got to the way in";
 			else if ( ( bAStacked && bBStacked ) || now > sq.flClearUntil )
 			{
-				// Both at the door (or long enough): in. First man, then his partner a moment after.
+				// Both at the door (or long enough): in together - the first man, his partner right on
+				// his heels (the drill's entry pair). Nobody stacked waits for a man still on his way:
+				// if one isn't there, the one who is still goes, but never before the time is up.
 				Vector vecTo = vec3_origin;
 				if ( pA ) pA->GiveSquadOrder( ORDER_CLEAR, 0.3f, vecTo );
-				if ( pB ) pB->GiveSquadOrder( ORDER_CLEAR, pA ? 1.6f : 0.3f, vecTo );
+				if ( pB ) pB->GiveSquadOrder( ORDER_CLEAR, pA ? 0.8f : 0.3f, vecTo );
 				CNPC_GermanSoldier *pCaller = SquadLeader() ? SquadLeader() : ( pA ? pA : pB );
 				pCaller->m_Chatter.Request( CHAT_ORDER_FORWARD, NULL, pA ? pA : pB );
 				sq.nClear = CLEAR_ENTERING;
@@ -2125,8 +2127,22 @@ void CNPC_GermanSoldier::SquadTick( void )
 				}
 			}
 			CNPC_GermanSoldier *pSecond = pFirst ? pFirst->Partner() : NULL;
-			if ( pSecond && !pSecond->CanTakeSquadOrder() )
+			if ( pFirst && ( !pSecond || !pSecond->CanTakeSquadOrder() ) )
+			{
+				// his partner's busy: nobody goes in alone - the nearest free man goes with him
 				pSecond = NULL;
+				float flMate = FLT_MAX;
+				for ( int i = 0; i < nAlive; i++ )
+				{
+					CNPC_GermanSoldier *pG = apMembers[i];
+					float d = ( pG->GetAbsOrigin() - pFirst->GetAbsOrigin() ).Length();
+					if ( pG != pFirst && pG->CanTakeSquadOrder() && d < flMate )
+					{
+						flMate = d;
+						pSecond = pG;
+					}
+				}
+			}
 			Vector vecStack1, vecStack2, vecEntry;
 			if ( pFirst && pFirst->FindEntry( sq.vecLKP, vecStack1, vecStack2, vecEntry ) )
 			{
@@ -2145,9 +2161,10 @@ void CNPC_GermanSoldier::SquadTick( void )
 				sq.nClear = CLEAR_STACKING;
 				sq.hClear[0] = pFirst;
 				sq.hClear[1] = pSecond;
-				sq.flClearUntil = now + 15.0f;
+				sq.flClearUntil = now + 25.0f;		// time for the second man to come up from the back
+				// The covering group is everyone else: the squad comes up to the house.
 				int nWatch = 0;
-				for ( int i = 0; i < nAlive && nWatch < 4; i++ )
+				for ( int i = 0; i < nAlive; i++ )
 				{
 					CNPC_GermanSoldier *pG = apMembers[i];
 					if ( pG == pFirst || pG == pSecond || !pG->CanTakeSquadOrder() )
@@ -2155,7 +2172,7 @@ void CNPC_GermanSoldier::SquadTick( void )
 					Vector vecW = pG->GetAbsOrigin() - sq.vecLKP;
 					vecW.z = 0.0f;
 					VectorNormalize( vecW );
-					pG->GiveSquadOrder( ORDER_OVERWATCH, 0.2f + 0.5f * nWatch, vecW );
+					pG->GiveSquadOrder( ORDER_OVERWATCH, 0.2f + 0.4f * nWatch, vecW );
 					nWatch++;
 				}
 				if ( npc_german_debug.GetBool() )
@@ -3340,13 +3357,13 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, int nMode, const Ve
 	bool bFlank = nMode == SEARCH_FLANK_LEFT || nMode == SEARCH_FLANK_RIGHT;
 	bool bRetreat = nMode == SEARCH_RETREAT;
 	bool bSpread = nMode == SEARCH_SPREAD;			// too bunched up: somewhere apart from the squad (cover, or an angle)
-	bool bOrdinary = nMode == SEARCH_COVER || bSpread;
+	bool bOrdinary = nMode == SEARCH_COVER || bSpread;		// (watching is not ordinary: the covering group moves up to the house)
 	bool bAssault = nMode == SEARCH_ASSAULT;
-	bool bWatch = nMode == SEARCH_COVER && pvecThreatEye;	// watching where he was last seen (overwatch)
+	bool bWatch = nMode == SEARCH_WATCH;	// watching where he was last seen (the covering group)
 	// One rule for every move order (A3d): cover is best, but an open spot he can see the enemy
 	// (or where he was) from will do - an angle. Only falling back insists on cover.
 	bool bAnglesOk = bAssault || bFlank || bSpread || bAdvance || bWatch;
-	float flRadius = bFlank || bAssault ? m_flFlankRadius : m_flCoverSearchRadius;
+	float flRadius = bFlank || bAssault ? m_flFlankRadius : bWatch ? 2000.0f : m_flCoverSearchRadius;
 	// One owner for "where the threat is" in this search: his eyes now, or where he was last seen.
 	Vector vecThreatEye = pvecThreatEye ? *pvecThreatEye : pEnemy->EyePosition();
 	Vector vecMe = GetAbsOrigin(), vecFoe = pvecThreatEye ? *pvecThreatEye - Vector( 0, 0, 64 ) : pEnemy->GetAbsOrigin();
@@ -3391,7 +3408,8 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, int nMode, const Ve
 		}
 		if ( ( bAdvance && flFoe > flMyFoe - 128.0f ) ||		// bounding forward: only cover that actually gains ground
 			 ( bRetreat && flFoe < flMyFoe + 192.0f ) ||		// falling back: only cover that gives ground
-			 ( bAssault && ( flFoe > 450.0f || ( flFoe > flMyFoe - 64.0f && flMyFoe > 600.0f ) ) ) )	// going after him: next to where he was (closer, unless he's already near)
+			 ( bAssault && ( flFoe > 450.0f || ( flFoe > flMyFoe - 64.0f && flMyFoe > 600.0f ) ) ) ||	// going after him: next to where he was (closer, unless he's already near)
+			 ( bWatch && flFoe > 800.0f ) )		// covering the house: within 800 of it, however far that is from where he stands
 		{
 			DrawSearchNode( vecPos, 50, 50, 50 );
 			continue;
@@ -3548,7 +3566,7 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, int nMode, const Ve
 			flLen += ( pWp->GetPos() - vecPrev ).Length();
 			vecPrev = pWp->GetPos();
 		}
-		if ( flLen > flRadius * 1.5f || ( bAdvance && flLen > MAX( m_flBoundMax, ( c.pos - vecMe ).Length() * 1.6f ) ) )
+		if ( flLen > ( bWatch ? 2400.0f : flRadius * 1.5f ) || ( bAdvance && flLen > MAX( m_flBoundMax, ( c.pos - vecMe ).Length() * 1.6f ) ) )
 		{
 			DeleteAll( pRoute );
 			continue;	// reachable, but only the long way round (a bound is a short dash)
@@ -3571,7 +3589,7 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, int nMode, const Ve
 		Msg( "[%.2f] npc_german_soldier %d: %s - %d spots tested, %d usable (%d corners, %d angles, %d stacks), %d had no route: %s%s (run %.0f, %.0f of it in your line of fire)\n",
 			 gpGlobals->curtime, entindex(), bAdvance ? "advance search (closer cover)" : bFlank ? ( nMode == SEARCH_FLANK_LEFT ? "flank search (left)" : "flank search (right)" ) :
 			 bRetreat ? "fall-back search" : bAssault ? "assault search (next to where you were)" : bSpread ? "spread search (too bunched up)" :
-			 pvecThreatEye ? "watch search (your last position)" : "cover search",
+			 bWatch ? "watch search (your last position)" : "cover search",
 			 nTested, nCands, nCorners, nAngles, nStacks, nNoRoute,
 			 flBest > -FLT_MAX ? "going" : "nothing usable",
 			 flBest == -FLT_MAX ? "" : kindBest == SPOT_STACK ? " to stack up beside where you were" : kindBest == SPOT_ANGLE ? " to get an angle on you" :
@@ -4237,7 +4255,7 @@ void CNPC_GermanSoldier::RunTask( const Task_t *pTask )
 			// one of the clearing pair: the squad says when (both at the door) - not his own timer
 			if ( m_eSquadOrder == ORDER_CLEAR && gpGlobals->curtime >= m_flSquadOrderAt )
 				TaskComplete();
-			else if ( gpGlobals->curtime >= m_flStackUntil + 15.0f )
+			else if ( gpGlobals->curtime >= m_flStackUntil + 30.0f )
 			{
 				m_bInDrill = false;			// the drill fell apart: on his own again
 				m_bPushPending = true;
@@ -4933,7 +4951,7 @@ int CNPC_GermanSoldier::SelectCombatSchedule( void )
 		}
 		if ( eOrder == ORDER_CLEAR )
 			return Decide( SCHED_GERMAN_CLEAR, "squad: in through the way in, clearing toward where you were" );
-		static const int s_nMode[NUM_ORDERS] = { SEARCH_COVER, SEARCH_ADVANCE, SEARCH_FLANK_LEFT, SEARCH_FLANK_RIGHT, SEARCH_RETREAT, SEARCH_ASSAULT, SEARCH_COVER, SEARCH_COVER, SEARCH_COVER };
+		static const int s_nMode[NUM_ORDERS] = { SEARCH_COVER, SEARCH_ADVANCE, SEARCH_FLANK_LEFT, SEARCH_FLANK_RIGHT, SEARCH_RETREAT, SEARCH_ASSAULT, SEARCH_WATCH, SEARCH_COVER, SEARCH_COVER };
 		static const MoveKind_t s_eKind[NUM_ORDERS] = { MOVE_COVER, MOVE_BOUND, MOVE_FLANK_LEFT, MOVE_FLANK_RIGHT, MOVE_FALLBACK, MOVE_ASSAULT, MOVE_OVERWATCH, MOVE_ASSAULT, MOVE_ASSAULT };
 		// going after him / watching for him: against where he was last seen, not where he is
 		Vector vecLastEye = GetEnemyLKP() + Vector( 0, 0, 64 );
