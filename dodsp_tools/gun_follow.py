@@ -84,13 +84,51 @@ def blend(mats, weights):
     out = np.eye(4); out[:3, :3] = _mat(qs); out[:3, 3] = t / ws
     return out
 
-def holder_weights(labels):
-    """One-hot holder per frame -> cross-faded weights (triangle kernel)."""
+MAX_FREE_GAP = 6         # frames: a gun can't leave a hand and come back this fast - a "free" blip is a slipped grip
+
+def is_loop(src_frames, tol=3.0):
+    """A cycle (run, idle): first and last frames have the hands and gun in the same places relative
+    to each other (the body itself travels in a run, so not in model space)."""
+    if len(src_frames) < 3: return False
+    (R0, L0, G0), (R1, L1, G1) = src_frames[0], src_frames[-1]
+    return (np.linalg.norm((G0 - R0)[:3, 3] - (G1 - R1)[:3, 3]) < tol and
+            np.linalg.norm((L0 - R0)[:3, 3] - (L1 - R1)[:3, 3]) < tol)
+
+def fill_free_gaps(labels, loop):
+    """Short runs of 'free' (2) between frames held by the same hand -> that hand. In a cycle the
+    run can straddle the seam (end of the loop -> its start). Real drops (deaths, setting the gun
+    down) never come back to a hand, so they're left alone."""
+    n = len(labels); out = list(labels)
+    if n == 0 or all(l == 2 for l in labels): return out
+    i = 0
+    while i < n:
+        if labels[i] != 2: i += 1; continue
+        j = i
+        while j < n and labels[j] == 2: j += 1
+        before = labels[i - 1] if i > 0 else (labels[n - 1] if loop else None)
+        after = labels[j] if j < n else (labels[0] if loop else None)
+        length = j - i
+        if loop and i == 0:          # a gap at the start may continue from the end of the loop
+            k = n - 1
+            while k > j and labels[k] == 2: length += 1; k -= 1
+            before = labels[k]
+        if loop and j == n:
+            k = 0
+            while k < i and labels[k] == 2: length += 1; k += 1
+            after = labels[k]
+        if before is not None and before == after and before != 2 and length <= MAX_FREE_GAP:
+            for k in range(i, j): out[k] = before
+        i = j
+    return out
+
+def holder_weights(labels, loop=False):
+    """One-hot holder per frame -> cross-faded weights (triangle kernel). A cycle wraps round its
+    seam (clamping there made the gun jump once per loop - between steps of a run)."""
     n = len(labels); out = []
     for i in range(n):
         w = np.zeros(3)
         for k in range(-SMOOTH_FRAMES, SMOOTH_FRAMES + 1):
-            j = min(n - 1, max(0, i + k))
+            j = (i + k) % n if loop else min(n - 1, max(0, i + k))
             w[labels[j]] += SMOOTH_FRAMES + 1 - abs(k)
         out.append(w / w.sum())
     return out
@@ -100,7 +138,9 @@ def place_guns(ref, src_frames, dod_frames, offsets, free_scale=1.0):
     offsets: list of O matrices (one per DoD gun bone). Returns per frame a list of DoD
     model-space gun transforms (same order as offsets), plus the holder labels."""
     labels = [ref.holder(*f, slip_L=sl, slip_R=sr) for f, sl, sr in zip(src_frames, left_slip(src_frames), left_slip(src_frames, 0))]
-    weights = holder_weights(labels)
+    loop = is_loop(src_frames)
+    labels = fill_free_gaps(labels, loop)
+    weights = holder_weights(labels, loop)
     result = []
     for (sR, sL, sG), (dR, dL), w in zip(src_frames, dod_frames, weights):
         free = sG.copy(); free[:3, 3] *= free_scale
