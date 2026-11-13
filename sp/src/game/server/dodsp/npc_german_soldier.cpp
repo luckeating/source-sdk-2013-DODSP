@@ -1067,6 +1067,21 @@ bool CNPC_GermanSoldier::OverrideMoveFacing( const AILocalMoveGoal_t &move, floa
 
 	float flMoveYaw = UTIL_VecToYaw( move.dir );
 
+	// A4a: the helmet run only goes forward (it's not a direction blend): under fire he faces
+	// where he's running, head down - no strafing, no aiming over his shoulder.
+	if ( m_actRunHelmet != ACT_INVALID && GetTranslatedActivity() == m_actRunHelmet )
+	{
+		GetMotor()->SetIdealYawAndUpdate( UTIL_AngleMod( flMoveYaw ) );
+		SetPoseParameter( m_poseMoveX, 1.0f );
+		SetPoseParameter( m_poseMoveY, 0.0f );
+		if ( m_poseMoveYaw >= 0 )
+			SetPoseParameter( m_poseMoveYaw, 0.0f );
+		float flSpeed = GetSequenceGroundSpeed( GetSequence() );
+		if ( flSpeed > 0.0f )
+			m_flGroundSpeed = flSpeed;
+		return true;
+	}
+
 	Vector vecFacing;
 	float flInfluence = GetMotor()->GetFacingDirection( vecFacing );
 	Vector dir = move.facing * ( 1.0f - flInfluence ) + vecFacing * flInfluence;

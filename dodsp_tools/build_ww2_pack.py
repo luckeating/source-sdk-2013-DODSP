@@ -52,11 +52,16 @@ for m in re.finditer(r'^\$sequence "([^"]+)" \{\n(.*?)^\}', qc, re.M | re.S):
 poseparams = {m.group(1): m.group(0) for m in re.finditer(r'^\$poseparameter "([^"]+)".*$', qc, re.M)}
 
 WANT = re.compile(r'^cod2_(death|pain|turn|corn|cover|jump_(lowwall|fence|window|down)|drag|surrender|mg42|30cal|plant|rocket|grenade|melee'
-                  r'|run(B|C|Helmet)?(_\d+)?$|crouch_run(_\d+)?$)')
+                  r'|run(B|C)?(_\d+)?$|crouch_run(_\d+)?$)')
 # A4a running gaits (move_yaw blends): the three CoD2 combat runs share one activity, so the
 # engine picks one of them at random each time he starts running (variety in a squad); the
 # helmet-hand run is the under-fire gait; the crouch run is the hunched hop between cover.
-RENAME_ACT = {'ACT_WW2_RUNB': 'ACT_WW2_RUN', 'ACT_WW2_RUNC': 'ACT_WW2_RUN', 'ACT_WW2_RUNHELMET': 'ACT_WW2_RUN_HELMET'}
+RENAME_ACT = {'ACT_WW2_RUNB': 'ACT_WW2_RUN', 'ACT_WW2_RUNC': 'ACT_WW2_RUN'}
+# The helmet run is its own forward-only sequence, NOT the port's move_yaw blend: blending it with
+# the side runs mixes bone-local gun tracks from very different holds. The K98 hangs off the left
+# hand, which is on his helmet here and on the fore-end in the side runs - any strafe angle pulled
+# the rifle up to his head. He faces where he runs while on it (npc code).
+EXTRA_SEQS = [('cod2_run_helmet', ['a_combat_run_helmethand'], None, [])]
 KEEP_HL2_ACT = re.compile(r'^ACT_(DIE|FLINCH|BIG_FLINCH|SMALL_FLINCH)')  # turns: later, need rotation extraction
 
 # Flinch gestures (CoD deltas layered on DoD poses) are switched off: the deltas come
@@ -74,7 +79,7 @@ GESTURE_FOR = {   # full-body flinch activity -> gesture activity
 }
 LEG_GESTURES = {'ACT_GESTURE_FLINCH_LEFTLEG', 'ACT_GESTURE_FLINCH_RIGHTLEG'}
 
-chosen = [s for s in sequences if WANT.match(s[0])]
+chosen = [s for s in sequences if WANT.match(s[0])] + EXTRA_SEQS
 needed_params = []
 for s in chosen:
     for l in s[3]:
