@@ -468,6 +468,19 @@ private:
 	void		AddPinned( float flAmount );
 	void		UpdatePinned( void );
 	Activity	PickRunGait( void );
+	bool		IsPainOverlayPlaying( void );
+	// on a CoD run now - or about to be: a hit on any combat run switches him to the helmet run
+	bool		IsOnCoDGait( void )
+	{
+		if ( !IsMoving() )
+			return false;
+		Activity a = GetTranslatedActivity();
+		if ( a != ACT_INVALID && ( a == m_actRunCombat || a == m_actRunCrouch || a == m_actRunHelmet ) )
+			return true;
+		Activity eIdeal = GetIdealActivity();
+		bool bRun = eIdeal == ACT_RUN || eIdeal == ACT_RUN_AIM || eIdeal == ACT_RUN_RIFLE || eIdeal == ACT_RUN_STIMULATED || eIdeal == ACT_RUN_AGITATED;
+		return bRun && m_actRunHelmet != ACT_INVALID && GetState() == NPC_STATE_COMBAT && !IsCurSchedule( SCHED_GERMAN_CLEAR, false );
+	}
 	bool		OnBeginMoveAndShoot( void );
 	void		RunOpenPinned( void );
 	bool		IsCommitted( void );	// A4a-2: on a rush (the drill, an assault or flank just arrived): pinning doesn't stop him
@@ -4221,10 +4234,26 @@ void CNPC_GermanSoldier::UpdatePinned( void )
 		if ( IsMoving() && ( GetTranslatedActivity() == m_actRunCombat || GetTranslatedActivity() == m_actRunCrouch || GetTranslatedActivity() == m_actRunHelmet ) )
 			ResetIdealActivity( GetIdealActivity() );
 	}
-	else if ( IsMoving() && now - m_flLastSuppressed < 0.1f && GetTranslatedActivity() != m_actRunHelmet && m_actRunHelmet != ACT_INVALID && !IsCurSchedule( SCHED_GERMAN_CLEAR, false ) )
+	else if ( IsMoving() && now - m_flLastSuppressed < 0.1f && GetTranslatedActivity() != m_actRunHelmet && m_actRunHelmet != ACT_INVALID &&
+			  !IsCurSchedule( SCHED_GERMAN_CLEAR, false ) && PickRunGait() == m_actRunHelmet )
 		ResetIdealActivity( GetIdealActivity() );		// shot at mid-run: head down, helmet in hand
 	else if ( IsMoving() && m_actRunHelmet != ACT_INVALID && GetTranslatedActivity() == m_actRunHelmet && PickRunGait() != m_actRunHelmet )
 		ResetIdealActivity( GetIdealActivity() );		// the fire's stopped: gun back up for the rest of the run
+}
+
+// An upper-body pain overlay (rebased onto DoD's hips) is playing.
+bool CNPC_GermanSoldier::IsPainOverlayPlaying( void )
+{
+	for ( int i = 0; i < GetNumAnimOverlays(); i++ )
+	{
+		CAnimationLayer *pLayer = GetAnimOverlay( i );
+		if ( !pLayer || !pLayer->IsActive() || pLayer->IsKillMe() )
+			continue;
+		const char *psz = ActivityList_NameForIndex( pLayer->m_nActivity );
+		if ( psz && !Q_strnicmp( psz, "ACT_WW2_UPPER_", 14 ) )
+			return true;
+	}
+	return false;
 }
 
 // The run he uses in a fight (A4a). One owner: the run activity always comes through here.
@@ -4232,6 +4261,8 @@ Activity CNPC_GermanSoldier::PickRunGait( void )
 {
 	if ( GetState() != NPC_STATE_COMBAT || !IsAlive() )
 		return ACT_INVALID;		// patrols and alerts keep DoD's run
+	if ( IsPainOverlayPlaying() )
+		return ACT_INVALID;		// the pain overlays only fit DoD's hips: DoD's run until it's over
 	float now = gpGlobals->curtime;
 	if ( ( m_bPinned || now - m_flLastSuppressed < 2.0f ) && m_actRunHelmet != ACT_INVALID )
 		return m_actRunHelmet;		// under fire: one hand on his helmet, head down
@@ -5381,6 +5412,12 @@ void CNPC_GermanSoldier::DoHitReaction( const CTakeDamageInfo &info )
 		else if ( ( actFull = PickFullBodyPain( info ) ) == ACT_INVALID )
 			pszSkip = "no full-body pain animation (are both WW2 packs included?)";
 	}
+	else if ( IsOnCoDGait() )
+		// A4a: the upper-body pains are rebased onto DoD's hips. Over a CoD run (combat run, crouch
+		// run, the helmet run) the hips and spine sit differently and the overlay twisted him. The
+		// hit already reacts: it's a round past him, so he's into the helmet run, head down - plus
+		// the procedural kick, which fits any pose.
+		pszSkip = "on a CoD run - the kick and the helmet run are his reaction";
 	else if ( !bForce && info.GetDamage() < m_flFullFlinchDamage && random->RandomFloat( 0.0f, 1.0f ) > m_flFullFlinchChance )
 		pszSkip = "small hit on the move, chance roll failed";
 	else if ( LastHitGroup() == HITGROUP_HEAD && !m_bLastHitCrouched )
