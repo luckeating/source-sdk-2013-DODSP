@@ -95,4 +95,5 @@ sp/src/vgui2/*.dll
 sp/src/vgui2/*.pdb
 
 # Build support files
-sp/src/devtools/gcc9+support.o__pycache__/
+sp/src/devtools/gcc9+support.o
+__pycache__/
