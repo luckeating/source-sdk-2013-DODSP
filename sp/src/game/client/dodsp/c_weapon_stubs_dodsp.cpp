@@ -14,3 +14,4 @@
 
 STUB_WEAPON_CLASS( weapon_k98, WeaponK98, C_BaseHLCombatWeapon );
 STUB_WEAPON_CLASS( weapon_mp40, WeaponMP40, C_BaseHLCombatWeapon );
+STUB_WEAPON_CLASS( weapon_mg42, WeaponMG42, C_BaseHLCombatWeapon );

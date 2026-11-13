@@ -105,6 +105,10 @@ public:
 
 	void		BoltSoundThink( void );
 
+	// MG42 (A4b): bipod down = deployed (the w_..bd model, tight spread); up = carried (hip fire, wide)
+	virtual void SetDeployed( bool bDeployed ) {}
+	virtual bool IsDeployed( void ) const { return false; }
+
 protected:
 	virtual bool UsesRifleAnims( void ) { return false; }
 	void		LoadNPCTuning( void );
@@ -120,6 +124,7 @@ protected:
 	float		m_flSpreadDegrees;
 	int			m_nTracerFreq;
 	float		m_flBoltSoundDelay;
+	float		m_flHipSpreadScale;		// MG: spread x this when not deployed
 };
 
 BEGIN_DATADESC( CWeaponDODSPGun )
@@ -139,6 +144,7 @@ CWeaponDODSPGun::CWeaponDODSPGun()
 	m_flSpreadDegrees = 3.0f;
 	m_nTracerFreq = 2;
 	m_flBoltSoundDelay = 0.0f;
+	m_flHipSpreadScale = 1.0f;
 	m_fMinRange1 = 0;
 	m_fMaxRange1 = 32768;	// whole map: a K98 is effective to ~500 m, longer than any Source map. sight_distance and spread limit him
 }
@@ -177,6 +183,7 @@ void CWeaponDODSPGun::LoadNPCTuning( void )
 			m_flSpreadDegrees	= pNPC->GetFloat( "spread", m_flSpreadDegrees );
 			m_nTracerFreq		= pNPC->GetInt( "tracer_freq", m_nTracerFreq );
 			m_flBoltSoundDelay	= pNPC->GetFloat( "bolt_sound_delay", m_flBoltSoundDelay );
+			m_flHipSpreadScale	= MAX( 1.0f, pNPC->GetFloat( "hip_spread_scale", m_flHipSpreadScale ) );
 		}
 		else
 		{
@@ -193,7 +200,8 @@ void CWeaponDODSPGun::LoadNPCTuning( void )
 const Vector &CWeaponDODSPGun::GetBulletSpread( void )
 {
 	static Vector cone;
-	float flSin = sinf( DEG2RAD( m_flSpreadDegrees * 0.5f ) );
+	float flDeg = m_flSpreadDegrees * ( IsDeployed() ? 1.0f : m_flHipSpreadScale );	// hip_spread_scale: 1 unless the script says (the MG42)
+	float flSin = sinf( DEG2RAD( flDeg * 0.5f ) );
 	cone.Init( flSin, flSin, flSin );
 	return cone;
 }
@@ -223,6 +231,8 @@ void CWeaponDODSPGun::FireNPCPrimaryAttack( CBaseCombatCharacter *pOperator, con
 		int iAttachment = LookupAttachment( "muzzle_flash" );
 		if ( iAttachment <= 0 )
 			iAttachment = LookupAttachment( "muzzle" );
+		if ( iAttachment <= 0 )
+			iAttachment = LookupAttachment( "0" );		// DoD's MG world models name the muzzle "0" (shell eject "1")
 
 		CEffectData data;
 		data.m_nEntIndex = entindex();
@@ -336,3 +346,64 @@ END_SEND_TABLE()
 
 LINK_ENTITY_TO_CLASS( weapon_mp40, CWeaponMP40 );
 PRECACHE_WEAPON_REGISTER( weapon_mp40 );
+
+//-----------------------------------------------------------------------------
+// MG42 - the squad's machine gun (A4b). Carried with the bipod up (w_mg42bu); the gunner
+// deploys it on a wall or prone and it swaps to the bipod-down model (w_mg42bd). Both put the
+// gun on ValveBiped.weapon_bone (the right hand), like the MP40.
+//-----------------------------------------------------------------------------
+#define MG42_MODEL_UP		"models/weapons/w_mg42bu.mdl"
+#define MG42_MODEL_DOWN		"models/weapons/w_mg42bd.mdl"
+
+class CWeaponMG42 : public CWeaponDODSPGun
+{
+	DECLARE_CLASS( CWeaponMG42, CWeaponDODSPGun );
+public:
+	DECLARE_SERVERCLASS();
+	DECLARE_DATADESC();
+
+	CWeaponMG42() { m_bDeployed = false; }
+
+	void Precache( void )
+	{
+		BaseClass::Precache();
+		PrecacheModel( MG42_MODEL_UP );
+		PrecacheModel( MG42_MODEL_DOWN );
+		PrecacheScriptSound( "DODSP_MG42.Deploy" );
+	}
+	void SetDeployed( bool bDeployed )
+	{
+		if ( bDeployed == m_bDeployed )
+			return;
+		m_bDeployed = bDeployed;
+		SetModel( bDeployed ? MG42_MODEL_DOWN : MG42_MODEL_UP );
+		EmitSound( "DODSP_MG42.Deploy" );
+	}
+	bool IsDeployed( void ) const { return m_bDeployed; }
+	void Drop( const Vector &vecVelocity )
+	{
+		SetDeployed( false );		// a dropped MG lies there with its bipod up
+		BaseClass::Drop( vecVelocity );
+	}
+protected:
+	bool UsesRifleAnims( void ) { return true; }
+	bool m_bDeployed;
+};
+
+BEGIN_DATADESC( CWeaponMG42 )
+	DEFINE_FIELD( m_bDeployed, FIELD_BOOLEAN ),
+END_DATADESC()
+
+IMPLEMENT_SERVERCLASS_ST( CWeaponMG42, DT_WeaponMG42 )
+END_SEND_TABLE()
+
+LINK_ENTITY_TO_CLASS( weapon_mg42, CWeaponMG42 );
+PRECACHE_WEAPON_REGISTER( weapon_mg42 );
+
+// For the German soldier: deploy / stow a DoD gun that has a bipod (no-op for the others).
+void DoDSP_SetWeaponDeployed( CBaseCombatWeapon *pWeapon, bool bDeployed )
+{
+	CWeaponDODSPGun *pGun = dynamic_cast<CWeaponDODSPGun *>( pWeapon );
+	if ( pGun )
+		pGun->SetDeployed( bDeployed );
+}

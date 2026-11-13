@@ -62,6 +62,8 @@
 #include "player.h"
 #include "german_chatter.h"
 
+void DoDSP_SetWeaponDeployed( CBaseCombatWeapon *pWeapon, bool bDeployed );		// weapon_dodsp_guns.cpp
+
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
@@ -143,6 +145,7 @@ public:
 		SCHED_GERMAN_STACK,									// A3c: hidden right beside where the enemy was, waiting for him; then pushes through
 		SCHED_GERMAN_CLEAR,									// A3d-2: in through the way in, at a walk with the rifle up, toward where he was
 		SCHED_GERMAN_DRILL_STACK,							// A3e: at the door for the drill - fires from it if he shows; only the squad's go moves him
+		SCHED_GERMAN_MG,									// A4b: the MG42 gunner, deployed on a wall or prone: the MG loop owns him
 		NEXT_SCHEDULE
 	};
 	enum
@@ -154,6 +157,7 @@ public:
 		TASK_GERMAN_STACK,
 		TASK_GERMAN_CLEAR_PATH,
 		TASK_GERMAN_CLEAR_DONE,
+		TASK_GERMAN_MG_LOOP,
 		NEXT_TASK
 	};
 	enum
@@ -339,7 +343,7 @@ private:
 	// Every state takes time; he leaves only when flanked, bored, or interrupted.
 	//-------------------------------------------------------------------------
 	enum CoverState_t { CS_HIDE, CS_RISE, CS_SHOOT, CS_LOOK, CS_DUCK, CS_RELOAD };
-	enum CoverExit_t { CEXIT_NONE, CEXIT_FLANKED, CEXIT_BORED, CEXIT_FOUND_COVER, CEXIT_ORDER, CEXIT_SHIFT };
+	enum CoverExit_t { CEXIT_NONE, CEXIT_FLANKED, CEXIT_BORED, CEXIT_FOUND_COVER, CEXIT_ORDER, CEXIT_SHIFT, CEXIT_RELOCATE };
 
 	//-------------------------------------------------------------------------
 	// The open-ground loop (R4): no cover he can reach. Stance chosen once (crouched far off or
@@ -418,7 +422,7 @@ public:
 	//   ANGLE  open, but he can see where you are/were from  -> the open-ground loop (he's "got an angle")
 	//   STACK  hidden right beside where you were            -> waits for you, then pushes through
 	//   PUSH   where you were last seen itself               -> the open-ground loop
-	enum SpotKind_t { SPOT_COVER, SPOT_ANGLE, SPOT_STACK, SPOT_PUSH };
+	enum SpotKind_t { SPOT_COVER, SPOT_ANGLE, SPOT_STACK, SPOT_PUSH, SPOT_MG };
 	SpotKind_t	m_ePendingSpotKind;		// the spot he's running to
 	SpotKind_t	m_eArrivedKind;			// just got to a non-cover spot (the brain acts on it once)
 	float		m_flArrivedAt;
@@ -438,7 +442,7 @@ private:
 	//-------------------------------------------------------------------------
 	// Watchdog (R1): passive. Prints INVARIANT lines when a rule is broken; changes nothing.
 	//-------------------------------------------------------------------------
-	enum Invariant_t { INV_STANCE_FLIPS, INV_STANCE_OWNER, INV_SCHED_CHURN, INV_DECISION_CHURN, INV_COVER_CHURN, INV_POSE_FLIPS, INV_ANIM_STUCK, INV_COVER_STANCE, INV_ORDER_STUCK, INV_FLANK_TIMEOUT, INV_CORNER_YAW, INV_ASSAULT_TIMEOUT, INV_PAIR_SPLIT, INV_CLEAR_TIMEOUT, INV_PINNED_STUCK, NUM_INVARIANTS };
+	enum Invariant_t { INV_STANCE_FLIPS, INV_STANCE_OWNER, INV_SCHED_CHURN, INV_DECISION_CHURN, INV_COVER_CHURN, INV_POSE_FLIPS, INV_ANIM_STUCK, INV_COVER_STANCE, INV_ORDER_STUCK, INV_FLANK_TIMEOUT, INV_CORNER_YAW, INV_ASSAULT_TIMEOUT, INV_PAIR_SPLIT, INV_CLEAR_TIMEOUT, INV_PINNED_STUCK, INV_MG_MOVING, NUM_INVARIANTS };
 	void		WatchdogPose( void );		// what the body actually plays: down / crouched / standing flips
 	bool		IsClipEmpty( void );		// one owner for "he has no rounds in the gun"
 	void		Invariant( Invariant_t eWhich, const char *pszFormat, ... );
@@ -446,7 +450,7 @@ private:
 	enum { COVER_EXPOSED = -1, COVER_FULL = 0, COVER_CROUCH = 1, COVER_STAND = 2, COVER_CORNER = 3 };
 	int			LowCoverAgainst( CBaseEntity *pEnemy );	// COVER_*: > 0 means low cover he can fire from
 	int			CoverAt( const Vector &vecPos, CBaseEntity *pEnemy, trace_t *pHideTrace = NULL, const Vector *pvecEye = NULL );	// same test at any spot (pvecEye: against where his eyes were)
-	enum SearchMode_t { SEARCH_COVER, SEARCH_ADVANCE, SEARCH_FLANK_LEFT, SEARCH_FLANK_RIGHT, SEARCH_RETREAT, SEARCH_ASSAULT, SEARCH_SPREAD, SEARCH_WATCH, SEARCH_SHIFT };
+	enum SearchMode_t { SEARCH_COVER, SEARCH_ADVANCE, SEARCH_FLANK_LEFT, SEARCH_FLANK_RIGHT, SEARCH_RETREAT, SEARCH_ASSAULT, SEARCH_SPREAD, SEARCH_WATCH, SEARCH_SHIFT, SEARCH_MG };
 	// best-scoring cover for this kind of move; pvecThreatEye: against where the enemy was last
 	// seen (his eyes there) instead of where he is - for a squad that has lost sight of him
 	bool		FindCoverSpot( CBaseEntity *pEnemy, int nMode = SEARCH_COVER, const Vector *pvecThreatEye = NULL );
@@ -483,6 +487,34 @@ private:
 	}
 	bool		OnBeginMoveAndShoot( void );
 	void		RunOpenPinned( void );
+	//-------------------------------------------------------------------------
+	// A4b - the MG42 gunner. One owner for the gun's state (deployed on a wall / prone / carried):
+	// MGDeploy / MGUndeploy. He finds a firing position with a field of fire (SEARCH_MG: a wall
+	// top 28-58 units high in front of him he can rest the bipod on, else prone with a line at
+	// ground level), deploys and works the gun: long bursts at you, covering fire on where you
+	// were when you're out of sight, belt changes. Too close, flanked out of his field, or pinned
+	// there: he picks the gun up and relocates. Never fires a carried MG except at close range.
+	//-------------------------------------------------------------------------
+	enum MGDeploy_t { MGD_NONE, MGD_WALL, MGD_PRONE };
+	enum MGState_t { MGS_AIM, MGS_FIRE, MGS_RELOAD };
+	bool		m_bMGGunner;
+	MGDeploy_t	m_eMGDeploy, m_eMGPending;
+	float		m_flMGHeight, m_flMGPendingHeight;	// wall top above his feet (DoD's body_height)
+	MGState_t	m_eMGState;
+	float		m_flMGStateUntil;
+	int			m_nMGBurst;
+	bool		m_bMGSuppressing;
+	float		m_flMGNoTarget;			// since when he's had nothing to shoot or suppress
+	float		m_flMGDeployedAt;
+	float		m_flNextMGSearch;
+	Activity	m_actMGDeployStand, m_actMGDeployProne, m_actMGFire, m_actMGFireProne, m_actMGReload, m_actMGReloadProne;
+	int			m_poseBodyHeight;
+	bool		MGDeployAt( const Vector &vecPos, const Vector &vecThreatEye, CBaseEntity *pEnemy, MGDeploy_t &eKind, float &flHeight );
+	bool		MGDeploy( void );
+	void		MGUndeploy( const char *pszWhy );
+	void		RunMGLoop( void );
+	void		SetMGState( MGState_t eState, const char *pszWhy );
+	Vector		MGMuzzle( void );
 	bool		IsCommitted( void );	// A4a-2: on a rush (the drill, an assault or flank just arrived): pinning doesn't stop him
 	float		PinResolve( void );		// A4a-2: 1..2 - the squad's odds make him harder to pin
 	bool		m_bShiftAfterPin;		// A4a-2: pinned at his cover - once it eases, move along to a new firing spot
@@ -770,6 +802,15 @@ CNPC_GermanSoldier::CNPC_GermanSoldier() : m_AnimMap( DefLessFunc( int ) )
 	m_flArrivedAt = m_flStackUntil = 0.0f;
 	m_eArrivedMove = MOVE_COVER;
 	m_bShiftAfterPin = false;
+	m_bMGGunner = false;
+	m_eMGDeploy = m_eMGPending = MGD_NONE;
+	m_flMGHeight = m_flMGPendingHeight = 40.0f;
+	m_eMGState = MGS_AIM;
+	m_flMGStateUntil = m_flMGNoTarget = m_flMGDeployedAt = m_flNextMGSearch = 0.0f;
+	m_nMGBurst = 0;
+	m_bMGSuppressing = false;
+	m_actMGDeployStand = m_actMGDeployProne = m_actMGFire = m_actMGFireProne = m_actMGReload = m_actMGReloadProne = ACT_INVALID;
+	m_poseBodyHeight = -1;
 	m_flHunkerEnded = m_flPinnedRunCheck = 0.0f;
 	m_bPushPending = false;
 	m_flAssaultAfter = 6.0f;
@@ -1015,6 +1056,14 @@ Vector CNPC_GermanSoldier::GetCrouchGunOffset( void )
 Vector CNPC_GermanSoldier::GetShootEnemyDir( const Vector &shootOrigin, bool bNoisy )
 {
 	CBaseEntity *pEnemy = GetEnemy();
+	if ( pEnemy && m_bMGSuppressing )
+	{
+		// A4b covering fire: rounds onto where you were, walked about a little
+		Vector vecTarget = GetEnemyLKP() + Vector( random->RandomFloat( -32, 32 ), random->RandomFloat( -32, 32 ), random->RandomFloat( 24, 56 ) );
+		Vector vecDir = vecTarget - shootOrigin;
+		VectorNormalize( vecDir );
+		return vecDir;
+	}
 	if ( pEnemy && ( m_eStance == STANCE_LOW_UP || m_eStance == STANCE_MID_UP || m_eStance == STANCE_CORNER_AIM ) )
 	{
 		Vector vecFeet = GetEnemyLKP();
@@ -1039,6 +1088,8 @@ Vector CNPC_GermanSoldier::GetShootEnemyDir( const Vector &shootOrigin, bool bNo
 
 Vector CNPC_GermanSoldier::Weapon_ShootPosition( void )
 {
+	if ( m_eMGDeploy != MGD_NONE )
+		return MGMuzzle();		// on the bipod: the gun's own muzzle
 	if ( m_eStance == STANCE_CORNER_AIM && m_Cover.bCorner && !IsInStanceTransition() )
 		return m_Cover.vecExposedEye - Vector( 0, 0, 3 );	// stepped out: where the corner set (measured) puts his rifle
 	if ( IsCrouching() || IsCrouchedActivity( GetActivity() ) )
@@ -1063,6 +1114,7 @@ void CNPC_GermanSoldier::PopulatePoseParameters( void )
 	m_poseMoveY = LookupPoseParameter( "move_y" );
 	m_poseCornerYaw = LookupPoseParameter( "corner_yaw" );
 	m_poseMoveYaw = LookupPoseParameter( "move_yaw" );
+	m_poseBodyHeight = LookupPoseParameter( "body_height" );
 }
 
 //-----------------------------------------------------------------------------
@@ -1290,6 +1342,17 @@ void CNPC_GermanSoldier::BuildAnimMap( void )
 
 	const char *pszSet = pWeapon ? pWeapon->GetString( "anims", "RIFLE" ) : "RIFLE";
 	m_iFireEvent = pWeapon ? pWeapon->GetInt( "fire_event", 0 ) : 0;
+
+	// A4b: an MG42 makes him the gunner; DoD's deployed MG set (any missing -> he can't deploy)
+	m_bMGGunner = !Q_stricmp( pszWeapon, "weapon_mg42" );
+	m_actMGDeployStand	= ResolveNamedActivity( "ACT_DOD_DEPLOY_MG" );
+	m_actMGDeployProne	= ResolveNamedActivity( "ACT_DOD_PRONE_DEPLOY_MG" );
+	m_actMGFire			= ResolveNamedActivity( "ACT_DOD_PRIMARYATTACK_DEPLOYED_MG" );
+	m_actMGFireProne	= ResolveNamedActivity( "ACT_DOD_PRIMARYATTACK_PRONE_DEPLOYED_MG" );
+	m_actMGReload		= ResolveNamedActivity( "ACT_DOD_RELOAD_DEPLOYED_MG" );
+	m_actMGReloadProne	= ResolveNamedActivity( "ACT_DOD_RELOAD_PRONE_DEPLOYED_MG" );
+	if ( m_bMGGunner && ( m_actMGDeployStand == ACT_INVALID || m_actMGDeployProne == ACT_INVALID ) )
+		Warning( "npc_german_soldier %d: MG42 but no deployed MG animations on %s - he won't deploy\n", entindex(), STRING( GetModelName() ) );
 
 	// Body activities
 	KeyValues *pActs = pScript->FindKey( "activities" );
@@ -1869,7 +1932,7 @@ bool CNPC_GermanSoldier::IsSquadSuppressor( void )
 
 bool CNPC_GermanSoldier::CanTakeSquadOrder( void )
 {
-	return IsAlive() && m_eSquadOrder == ORDER_NONE && gpGlobals->curtime >= m_flOrderRefusedUntil && !m_bPinned &&
+	return IsAlive() && m_eSquadOrder == ORDER_NONE && gpGlobals->curtime >= m_flOrderRefusedUntil && !m_bPinned && !m_bMGGunner &&
 		   ( IsInCoverLoop() || IsInOpenLoop() || IsCurSchedule( SCHED_GERMAN_HOLD_COVER, false ) );
 }
 
@@ -1934,7 +1997,7 @@ void CNPC_GermanSoldier::SquadOrderFailed( SquadOrder_t eOrder )
 // his own wall.
 bool CNPC_GermanSoldier::CanSuppressEnemy( const Vector &vecTarget )
 {
-	Vector vecFrom = ( IsInCoverLoop() && m_Cover.bValid ) ? m_Cover.vecExposedEye : EyePosition();
+	Vector vecFrom = m_eMGDeploy != MGD_NONE ? MGMuzzle() : ( IsInCoverLoop() && m_Cover.bValid ) ? m_Cover.vecExposedEye : EyePosition();
 	Vector vecAim = vecTarget + Vector( 0, 0, 40 );
 	CTraceFilterSkipTwoEntities filter( this, GetEnemy(), COLLISION_GROUP_NONE );
 	trace_t tr;
@@ -3901,10 +3964,11 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, int nMode, const Ve
 	bool bAssault = nMode == SEARCH_ASSAULT;
 	bool bWatch = nMode == SEARCH_WATCH;	// watching where he was last seen (the covering group)
 	bool bShift = nMode == SEARCH_SHIFT;	// A4a-2 fire and move: along his cover to another firing spot, out of sight
+	bool bMG = nMode == SEARCH_MG;			// A4b: a firing position for the MG42 (a wall to rest it on, or prone)
 	// One rule for every move order (A3d): cover is best, but an open spot he can see the enemy
 	// (or where he was) from will do - an angle. Only falling back insists on cover.
 	bool bAnglesOk = bAssault || bFlank || bSpread || bAdvance || bWatch;
-	float flRadius = bFlank || bAssault ? m_flFlankRadius : bWatch ? 2000.0f : bShift ? 512.0f : m_flCoverSearchRadius;
+	float flRadius = bFlank || bAssault ? m_flFlankRadius : bWatch ? 2000.0f : bShift ? 512.0f : bMG ? 1500.0f : m_flCoverSearchRadius;
 	// One owner for "where the threat is" in this search: his eyes now, or where he was last seen.
 	Vector vecThreatEye = pvecThreatEye ? *pvecThreatEye : pEnemy->EyePosition();
 	Vector vecMe = GetAbsOrigin(), vecFoe = pvecThreatEye ? *pvecThreatEye - Vector( 0, 0, 64 ) : pEnemy->GetAbsOrigin();
@@ -3913,7 +3977,7 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, int nMode, const Ve
 	Vector vecFacing = -m_vecFlankFrom;
 	Vector vecLeft( -vecFacing.y, vecFacing.x, 0.0f );
 
-	struct Cand_t { Vector pos; float cover; float foe; float score; CornerFit_t fit; SpotKind_t kind; };
+	struct Cand_t { Vector pos; float cover; float foe; float score; CornerFit_t fit; SpotKind_t kind; MGDeploy_t mgKind; float mgHeight; };
 	// A3d: where his partner is (or is going), and the leader's leash for ordinary moves
 	CNPC_GermanSoldier *pPartner = Partner();
 	Vector vecPartner = pPartner ? ( pPartner->m_bHasCoverSpot ? pPartner->m_vecCoverSpot : pPartner->GetAbsOrigin() ) : vec3_origin;
@@ -3951,7 +4015,8 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, int nMode, const Ve
 			 ( bRetreat && flFoe < flMyFoe + 192.0f ) ||		// falling back: only cover that gives ground
 			 ( bAssault && ( flFoe > 450.0f || ( flFoe > flMyFoe - 64.0f && flMyFoe > 600.0f ) ) ) ||	// going after him: next to where he was (closer, unless he's already near)
 			 ( bWatch && flFoe > 800.0f ) ||		// covering the house: within 800 of it, however far that is from where he stands
-			 ( bShift && ( flDist < 96.0f || fabsf( flFoe - flMyFoe ) > 256.0f ) ) )	// fire and move: a real move, same fighting distance
+			 ( bShift && ( flDist < 96.0f || fabsf( flFoe - flMyFoe ) > 256.0f ) ) ||	// fire and move: a real move, same fighting distance
+			 ( bMG && flFoe < 400.0f ) )		// an MG wants room: not on top of you
 		{
 			DrawSearchNode( vecPos, 50, 50, 50 );
 			continue;
@@ -3985,12 +4050,28 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, int nMode, const Ve
 			continue;	// taking cover is not attacking: ground is only taken by bounding / flanking
 		}
 		nTested++;
-		int nCover = CoverAt( vecPos, pEnemy, NULL, &vecThreatEye );
+		int nCover = bMG ? COVER_EXPOSED : CoverAt( vecPos, pEnemy, NULL, &vecThreatEye );
 		Cand_t c;
 		c.fit.bValid = false;
 		c.kind = SPOT_COVER;
+		c.mgKind = MGD_NONE;
+		c.mgHeight = 40.0f;
 		float flBase = 0.0f;
-		if ( nCover == COVER_FULL && CornerFitAt( vecPos, pEnemy, c.fit, &vecThreatEye ) )
+		if ( bMG )
+		{
+			// a wall top to rest the bipod on (best), or prone with a line at ground level; at
+			// 600-1400 from you, the higher the better
+			if ( !MGDeployAt( vecPos, vecThreatEye, pEnemy, c.mgKind, c.mgHeight ) )
+			{
+				DrawSearchNode( vecPos, 255, 0, 0 );
+				continue;
+			}
+			c.kind = SPOT_MG;
+			flBase = ( c.mgKind == MGD_WALL ? 100.0f : 70.0f ) - MAX( 0.0f, fabsf( flFoe - 1000.0f ) - 400.0f ) * 0.03f +
+					 clamp( ( vecPos.z - vecFoe.z ) * 0.05f, 0.0f, 20.0f );
+			DrawSearchNode( vecPos, 255, 255, 0 );
+		}
+		else if ( nCover == COVER_FULL && CornerFitAt( vecPos, pEnemy, c.fit, &vecThreatEye ) )
 		{
 			nCover = COVER_CORNER;		// hidden here, and a corner set can step out and shoot from it
 			flBase = c.fit.iStance == 0 ? 90.0f : 80.0f;
@@ -4118,7 +4199,7 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, int nMode, const Ve
 		// Killzone / TLOU: the run itself matters - every unit of it in your line of fire costs.
 		float flExposed = RouteExposure( vecMe, pRoute, pEnemy, &vecThreatEye );
 		DeleteAll( pRoute );
-		float flScore = c.cover - flLen * 0.08f - flExposed * ( bFlank || bAssault ? 0.25f : bShift ? 0.4f : 0.1f );	// a flank / an assault / a shift must stay out of his sight
+		float flScore = c.cover - flLen * 0.08f - flExposed * ( bFlank || bAssault ? 0.25f : bShift ? 0.4f : bMG ? 0.15f : 0.1f );	// a flank / an assault / a shift must stay out of his sight
 		if ( bShift && flExposed > 96.0f )
 			continue;	// fire and move along the cover: not across your sights
 		if ( flScore > flBest )
@@ -4127,6 +4208,8 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, int nMode, const Ve
 			vecBest = c.pos;
 			fitBest = c.fit;
 			kindBest = c.kind;
+			m_eMGPending = c.mgKind;
+			m_flMGPendingHeight = c.mgHeight;
 			flBestLen = flLen;
 			flBestExposed = flExposed;
 		}
@@ -4135,10 +4218,11 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, int nMode, const Ve
 		Msg( "[%.2f] npc_german_soldier %d: %s - %d spots tested, %d usable (%d corners, %d angles, %d stacks), %d had no route: %s%s (run %.0f, %.0f of it in your line of fire)\n",
 			 gpGlobals->curtime, entindex(), bAdvance ? "advance search (closer cover)" : bFlank ? ( nMode == SEARCH_FLANK_LEFT ? "flank search (left)" : "flank search (right)" ) :
 			 bRetreat ? "fall-back search" : bAssault ? "assault search (next to where you were)" : bSpread ? "spread search (too bunched up)" :
-			 bWatch ? "watch search (your last position)" : bShift ? "shift search (fire and move)" : "cover search",
+			 bWatch ? "watch search (your last position)" : bShift ? "shift search (fire and move)" : bMG ? "MG search (firing position)" : "cover search",
 			 nTested, nCands, nCorners, nAngles, nStacks, nNoRoute,
 			 flBest > -FLT_MAX ? "going" : "nothing usable",
 			 flBest == -FLT_MAX ? "" : kindBest == SPOT_STACK ? " to stack up beside where you were" : kindBest == SPOT_ANGLE ? " to get an angle on you" :
+			 kindBest == SPOT_MG ? ( m_eMGPending == MGD_WALL ? " to rest the MG on a wall" : " to go prone with the MG" ) :
 			 fitBest.bValid ? " to a corner" : "", flBestLen, flBestExposed );
 	if ( flBest == -FLT_MAX )
 		return false;
@@ -4168,6 +4252,253 @@ void CNPC_GermanSoldier::AddPinned( float flAmount )
 {
 	m_flPinned = MIN( 2.0f, m_flPinned + flAmount / PinResolve() );
 	UpdatePinned();
+}
+
+//-----------------------------------------------------------------------------
+// A4b - the MG42 gunner (see the declaration)
+//-----------------------------------------------------------------------------
+// Can he get the MG down here, facing the threat? Wall: something in front of him (within 28
+// units) whose top is 28-58 above his feet - DoD's deploy heights - with a clear line from the
+// muzzle over it. Prone: room to lie down and a line from the muzzle at ground level.
+bool CNPC_GermanSoldier::MGDeployAt( const Vector &vecPos, const Vector &vecThreatEye, CBaseEntity *pEnemy, MGDeploy_t &eKind, float &flHeight )
+{
+	Vector vecDir = vecThreatEye - vecPos;
+	vecDir.z = 0.0f;
+	if ( VectorNormalize( vecDir ) < 1.0f )
+		return false;
+	CTraceFilterSkipTwoEntities filter( this, pEnemy, COLLISION_GROUP_NONE );
+	trace_t tr;
+	float flTop = -1.0f;
+	bool bBlocked = false;
+	for ( float h = 24.0f; h <= 62.0f; h += 4.0f )
+	{
+		UTIL_TraceLine( vecPos + Vector( 0, 0, h ), vecPos + vecDir * 28.0f + Vector( 0, 0, h ), COVER_MASK, &filter, &tr );
+		if ( tr.fraction < 1.0f )
+			bBlocked = true;
+		else if ( bBlocked )
+		{
+			flTop = h - 2.0f;
+			break;
+		}
+	}
+	if ( flTop >= 28.0f && flTop <= 58.0f )
+	{
+		Vector vecMuzzle = vecPos + vecDir * 24.0f + Vector( 0, 0, flTop + 6.0f );
+		UTIL_TraceLine( vecMuzzle, vecThreatEye - Vector( 0, 0, 16 ), COVER_MASK, &filter, &tr );
+		if ( tr.fraction >= 1.0f )
+		{
+			eKind = MGD_WALL;
+			flHeight = flTop;
+			return true;
+		}
+		return false;		// a wall in the way, and no line over it: not here
+	}
+	if ( bBlocked )
+		return false;		// something in front, but not a wall he can rest it on
+	// prone: lying room behind him and a line at ground level
+	UTIL_TraceLine( vecPos + Vector( 0, 0, 12 ), vecPos - vecDir * 40.0f + Vector( 0, 0, 12 ), COVER_MASK, &filter, &tr );
+	if ( tr.fraction < 1.0f )
+		return false;
+	Vector vecMuzzle = vecPos + vecDir * 30.0f + Vector( 0, 0, 14 );
+	UTIL_TraceLine( vecMuzzle, vecThreatEye - Vector( 0, 0, 16 ), COVER_MASK, &filter, &tr );
+	if ( tr.fraction < 1.0f )
+		return false;
+	eKind = MGD_PRONE;
+	flHeight = 14.0f;
+	return true;
+}
+
+Vector CNPC_GermanSoldier::MGMuzzle( void )
+{
+	CBaseCombatWeapon *pWeapon = GetActiveWeapon();
+	if ( pWeapon )
+	{
+		int iAtt = pWeapon->LookupAttachment( "0" );		// DoD's MG world models: "0" is the muzzle
+		Vector vecMuzzle;
+		QAngle ang;
+		if ( iAtt > 0 && pWeapon->GetAttachment( iAtt, vecMuzzle, ang ) )
+			return vecMuzzle;
+	}
+	return GetAbsOrigin() + Vector( 0, 0, m_eMGDeploy == MGD_PRONE ? 14.0f : m_flMGHeight + 6.0f );
+}
+
+bool CNPC_GermanSoldier::MGDeploy( void )
+{
+	MGDeploy_t eKind = m_eMGPending;
+	float flHeight = m_flMGPendingHeight;
+	if ( eKind == MGD_NONE && GetEnemy() && !MGDeployAt( GetAbsOrigin(), GetEnemyLKP() + Vector( 0, 0, 64 ), GetEnemy(), eKind, flHeight ) )
+		return false;
+	if ( eKind == MGD_NONE )
+		return false;
+	m_eMGDeploy = eKind;
+	m_eMGPending = MGD_NONE;
+	m_flMGHeight = flHeight;
+	m_flMGDeployedAt = gpGlobals->curtime;
+	SetStance( eKind == MGD_PRONE ? STANCE_CROUCH : STANCE_STAND, eKind == MGD_PRONE ? "MG - goes prone" : "MG - on the wall", true );
+	DoDSP_SetWeaponDeployed( GetActiveWeapon(), true );
+	if ( GetEnemy() )
+		GetMotor()->SetIdealYawToTarget( GetEnemyLKP() );
+	ResetActivity();
+	VacateStrategySlot();
+	if ( npc_german_debug.GetBool() )
+		Msg( "[%.2f] npc_german_soldier %d: MG - deploys %s\n", gpGlobals->curtime, entindex(),
+			 eKind == MGD_PRONE ? "prone" : CFmtStr( "on the wall (top %.0f above his feet)", flHeight ).Access() );
+	return true;
+}
+
+void CNPC_GermanSoldier::MGUndeploy( const char *pszWhy )
+{
+	if ( m_eMGDeploy == MGD_NONE )
+		return;
+	m_eMGDeploy = MGD_NONE;
+	m_bMGSuppressing = false;
+	DoDSP_SetWeaponDeployed( GetActiveWeapon(), false );
+	if ( !IsMoving() )
+		ResetActivity();
+	if ( npc_german_debug.GetBool() )
+		Msg( "[%.2f] npc_german_soldier %d: MG - picks the gun up (%s)\n", gpGlobals->curtime, entindex(), pszWhy );
+}
+
+static const char *s_pszMGState[] = { "aim", "fire", "belt" };
+
+void CNPC_GermanSoldier::SetMGState( MGState_t eState, const char *pszWhy )
+{
+	float now = gpGlobals->curtime;
+	if ( npc_german_debug.GetBool() && eState != m_eMGState )
+		Msg( "[%.2f] npc_german_soldier %d: MG %s -> %s (%s)\n", now, entindex(), s_pszMGState[m_eMGState], s_pszMGState[eState], pszWhy );
+	m_eMGState = eState;
+	if ( eState == MGS_RELOAD )
+	{
+		m_bMGSuppressing = false;
+		ChatterReloading();
+		Activity act = m_eMGDeploy == MGD_PRONE ? m_actMGReloadProne : m_actMGReload;
+		float flDuration = 4.0f;
+		if ( act != ACT_INVALID )
+		{
+			RestartGesture( act );
+			int iSeq = SelectWeightedSequence( act );
+			if ( iSeq != ACTIVITY_NOT_AVAILABLE )
+				flDuration = SequenceDuration( iSeq );
+		}
+		m_flMGStateUntil = now + flDuration * 0.9f;		// a belt change: your window to move
+	}
+}
+
+void CNPC_GermanSoldier::RunMGLoop( void )
+{
+	CBaseEntity *pEnemy = GetEnemy();
+	if ( !pEnemy || m_eMGDeploy == MGD_NONE )
+	{
+		TaskComplete();
+		return;
+	}
+	float now = gpGlobals->curtime;
+	GetMotor()->SetIdealYawToTargetAndUpdate( GetEnemyLKP(), AI_KEEP_YAW_SPEED );
+	bool bSee = HasCondition( COND_SEE_ENEMY );
+	GermanSquadState_t *pSq = m_pSquad ? GetGermanSquad( m_SquadName ) : NULL;
+	float flLastSeen = pSq ? pSq->flLastSeen : GetEnemyLastTimeSeen();
+
+	// Leaving the gun: you're on top of him, or nothing to shoot or suppress from here a while,
+	// or (fire and move) he was pinned here and it's eased.
+	if ( ( pEnemy->GetAbsOrigin() - GetAbsOrigin() ).Length() < 300.0f )
+	{
+		MGUndeploy( "you're too close - fights with it at the hip" );
+		m_flNextMGSearch = now + 8.0f;
+		TaskComplete();
+		return;
+	}
+	if ( m_bShiftAfterPin && !m_bPinned && m_eMGState != MGS_RELOAD )
+	{
+		m_bShiftAfterPin = false;
+		if ( now - m_flMGDeployedAt > 6.0f )
+		{
+			m_eCoverExit = CEXIT_RELOCATE;
+			m_flNextMGSearch = 0.0f;
+			TaskComplete();
+			return;
+		}
+	}
+	bool bSuppress = !bSee && now - flLastSeen < 12.0f && CanSuppressEnemy( GetEnemyLKP() );
+	if ( bSee || bSuppress )
+		m_flMGNoTarget = 0.0f;
+	else if ( m_flMGNoTarget == 0.0f )
+		m_flMGNoTarget = now;
+	else if ( now - m_flMGNoTarget > 8.0f && m_eMGState != MGS_RELOAD )
+	{
+		m_eCoverExit = CEXIT_RELOCATE;
+		m_flNextMGSearch = 0.0f;
+		if ( npc_german_debug.GetBool() )
+			Msg( "[%.2f] npc_german_soldier %d: MG - nothing to shoot from here for 8 s\n", now, entindex() );
+		TaskComplete();
+		return;
+	}
+
+	CBaseCombatWeapon *pWeapon = GetActiveWeapon();
+	int nClip = ( pWeapon && pWeapon->UsesClipsForAmmo1() ) ? pWeapon->Clip1() : 1;
+	switch ( m_eMGState )
+	{
+	case MGS_AIM:
+		if ( now < m_flMGStateUntil )
+			break;
+		if ( nClip <= 0 )
+		{
+			SetMGState( MGS_RELOAD, "belt's empty" );
+			break;
+		}
+		if ( m_bPinned )
+			break;		// head down behind the gun
+		if ( bSee && HasCondition( COND_CAN_RANGE_ATTACK1 ) )
+		{
+			m_bMGSuppressing = false;
+			m_nMGBurst = random->RandomInt( 15, 40 );
+			SetMGState( MGS_FIRE, "on you" );
+		}
+		else if ( bSuppress )
+		{
+			m_bMGSuppressing = true;
+			m_nMGBurst = random->RandomInt( 10, 25 );
+			SetMGState( MGS_FIRE, "covering fire where you were" );
+		}
+		else if ( pWeapon && nClip < pWeapon->GetMaxClip1() / 2 )
+			SetMGState( MGS_RELOAD, "nothing to shoot - a fresh belt" );
+		break;
+
+	case MGS_FIRE:
+		{
+			const char *pszStop = NULL;
+			if ( nClip <= 0 )						pszStop = "belt's empty";
+			else if ( m_bPinned )					pszStop = "pinned - gets his head down";
+			else if ( m_nMGBurst <= 0 )				pszStop = "burst done";
+			else if ( !m_bMGSuppressing && !bSee )	pszStop = "lost you";
+			if ( pszStop )
+			{
+				m_flMGStateUntil = now + ( m_bMGSuppressing ? random->RandomFloat( 0.8f, 2.0f ) : random->RandomFloat( 0.4f, 1.1f ) );
+				m_bMGSuppressing = false;
+				SetMGState( nClip <= 0 ? MGS_RELOAD : MGS_AIM, pszStop );
+				break;
+			}
+			// the MG42 fires faster than he thinks: catch up, up to three rounds a think
+			for ( int k = 0; k < 3 && m_nMGBurst > 0 && now >= m_flNextShotTime && !IsUpperBodyBusy(); k++ )
+			{
+				if ( !FireOneShot( true ) )
+					break;
+				m_nMGBurst--;
+				SetLastAttackTime( now );
+				float flRate = pWeapon ? pWeapon->GetFireRate() : 0.05f;
+				m_flNextShotTime = ( m_flNextShotTime > now - 0.2f ? m_flNextShotTime : now ) + flRate;
+			}
+		}
+		break;
+
+	case MGS_RELOAD:
+		if ( now >= m_flMGStateUntil )
+		{
+			FinishReload();
+			m_flMGStateUntil = now + 0.3f;
+			SetMGState( MGS_AIM, "new belt in" );
+		}
+		break;
+	}
 }
 
 // The odds as the squad reads them (A3e): 10 against 1, a man takes twice the fire to pin; it
@@ -4206,7 +4537,7 @@ void CNPC_GermanSoldier::UpdatePinned( void )
 		m_bPinned = true;
 		m_flPinnedSince = now;
 		m_flOpenNextCoverCheck = m_flPinnedRunCheck = 0.0f;		// in the open: look for cover right now
-		if ( IsInCoverLoop() && !m_bInDrill )
+		if ( ( IsInCoverLoop() || IsCurSchedule( SCHED_GERMAN_MG, false ) ) && !m_bInDrill )
 			m_bShiftAfterPin = true;		// he had you on him there: once it eases, fire and move
 		if ( npc_german_debug.GetBool() )
 			Msg( "[%.2f] npc_german_soldier %d: pinned down (%.2f, odds make him x%.1f harder to pin)%s\n", now, entindex(), m_flPinned, PinResolve(),
@@ -4263,6 +4594,8 @@ Activity CNPC_GermanSoldier::PickRunGait( void )
 		return ACT_INVALID;		// patrols and alerts keep DoD's run
 	if ( IsPainOverlayPlaying() )
 		return ACT_INVALID;		// the pain overlays only fit DoD's hips: DoD's run until it's over
+	if ( m_bMGGunner )
+		return ACT_INVALID;		// the MG42 is carried in DoD's MG runs (the CoD runs hold a rifle)
 	float now = gpGlobals->curtime;
 	if ( ( m_bPinned || now - m_flLastSuppressed < 2.0f ) && m_actRunHelmet != ACT_INVALID )
 		return m_actRunHelmet;		// under fire: one hand on his helmet, head down
@@ -4454,6 +4787,13 @@ Activity CNPC_GermanSoldier::NPC_TranslateActivity( Activity eNewActivity )
 					  eNewActivity == ACT_COVER_LOW || eNewActivity == ACT_COVER || eNewActivity == ACT_COVER_MED ||
 					  eNewActivity == ACT_CROUCHIDLE || eNewActivity == ACT_RANGE_AIM_LOW ||
 					  eNewActivity == ACT_RANGE_ATTACK1 || eNewActivity == ACT_RANGE_ATTACK1_LOW;
+	// A4b: on the MG, the deployed pose (wall: DoD blends it to the wall's height; prone)
+	if ( bStatic && m_eMGDeploy != MGD_NONE && ( bIdleOrAim || bIsReload ) )
+	{
+		Activity actMG = m_eMGDeploy == MGD_PRONE ? m_actMGDeployProne : m_actMGDeployStand;
+		if ( actMG != ACT_INVALID )
+			return actMG;
+	}
 	if ( bStatic && IsInStanceTransition() && ( bIdleOrAim || bIsReload ) )
 		return m_actStanceTransition;		// ducking / rising: the transition, until the stance owner says it's over
 	if ( bStatic && m_eStance == STANCE_HIDE && m_actHide != ACT_INVALID )
@@ -4599,6 +4939,13 @@ bool CNPC_GermanSoldier::FireOneShot( bool bPlayGesture )
 		else
 			m_flCoverRecoilUntil = gpGlobals->curtime + 0.15f;	// automatic: the loop plays while he's firing
 	}
+	else if ( bPlayGesture && m_eMGDeploy != MGD_NONE )
+	{
+		// A4b: the deployed recoil, kept running through a burst (not restarted 20 times a second)
+		Activity actMG = m_eMGDeploy == MGD_PRONE ? m_actMGFireProne : m_actMGFire;
+		if ( actMG != ACT_INVALID && !IsPlayingGesture( actMG ) )
+			RestartGesture( actMG );
+	}
 	else if ( bPlayGesture && m_actFireGesture != ACT_INVALID )
 		RestartGesture( m_actFireGesture );
 
@@ -4691,6 +5038,13 @@ void CNPC_GermanSoldier::PrescheduleThink( void )
 	m_Chatter.Update();
 	UpdateCoverTransition();
 	UpdateCoverAwareness();
+	if ( m_eMGDeploy != MGD_NONE && IsMoving() )
+	{
+		Invariant( INV_MG_MOVING, "moving with the MG still deployed (schedule %s) - picking it up", GetCurSchedule() ? GetCurSchedule()->GetName() : "-" );
+		MGUndeploy( "on the move" );
+	}
+	if ( m_eMGDeploy == MGD_WALL && m_poseBodyHeight >= 0 )
+		SetPoseParameter( m_poseBodyHeight, m_flMGHeight );
 	if ( npc_german_debug.GetInt() >= 2 )
 		DrawDebugOverlay();
 	UpdatePlaybackRate();
@@ -4818,6 +5172,19 @@ void CNPC_GermanSoldier::StartTask( const Task_t *pTask )
 		}
 		break;
 
+	case TASK_GERMAN_MG_LOOP:
+		if ( m_eMGDeploy == MGD_NONE && !MGDeploy() )
+		{
+			MarkSpotBad( GetAbsOrigin() );		// refusal memory: not this spot again for a while
+			m_flNextMGSearch = gpGlobals->curtime + 2.0f;
+			TaskFail( "can't get the MG down here" );
+			break;
+		}
+		SetMGState( MGS_AIM, "on the gun" );
+		m_flMGStateUntil = gpGlobals->curtime + 0.6f;		// the bipod settling
+		m_flMGNoTarget = 0.0f;
+		break;
+
 	case TASK_GERMAN_CLEAR_DONE:
 		m_bInDrill = false;
 		m_bClearRush = false;
@@ -4870,7 +5237,7 @@ void CNPC_GermanSoldier::StartTask( const Task_t *pTask )
 		if ( IsCurSchedule( SCHED_GERMAN_MOVE_TO_COVER, false ) && m_ePendingSpotKind != SPOT_COVER )
 		{
 			// Got to an angle / a stack-up spot / where you were: not cover - the brain takes it from here.
-			static const char *s_pszArrived[] = { "", "has an angle on where you were", "stacked up beside where you were", "pushed through to where you were" };
+			static const char *s_pszArrived[] = { "", "has an angle on where you were", "stacked up beside where you were", "pushed through to where you were", "at his MG position" };
 			m_eArrivedKind = m_ePendingSpotKind;
 			m_ePendingSpotKind = SPOT_COVER;
 			m_flArrivedAt = gpGlobals->curtime;
@@ -5050,6 +5417,10 @@ void CNPC_GermanSoldier::RunTask( const Task_t *pTask )
 
 	case TASK_GERMAN_OPEN_LOOP:
 		RunOpenLoop();
+		break;
+
+	case TASK_GERMAN_MG_LOOP:
+		RunMGLoop();
 		break;
 
 	case TASK_BIG_FLINCH:
@@ -5403,7 +5774,8 @@ void CNPC_GermanSoldier::DoHitReaction( const CTakeDamageInfo &info )
 	// out of the fight for it (the cooldown keeps him from being stun-locked). On the move:
 	// big hits (or the chance roll) give an upper-body pain over his running legs, else the
 	// kick alone. npc_german_test_hit forces a reaction: no cooldown, no chance roll.
-	if ( !bForce && gpGlobals->curtime < m_flNextFullFlinch )	pszSkip = "cooldown";
+	if ( m_eMGDeploy != MGD_NONE )								pszSkip = "on the MG - the kick only (the pains don't fit a deployed pose)";
+	else if ( !bForce && gpGlobals->curtime < m_flNextFullFlinch )	pszSkip = "cooldown";
 	else if ( IsCurSchedule( SCHED_BIG_FLINCH ) )				pszSkip = "already down";
 	else if ( bStill )
 	{
@@ -5722,6 +6094,31 @@ int CNPC_GermanSoldier::SelectCombatSchedule( void )
 	{
 		m_Chatter.Request( CHAT_INCOMING_GRENADE );
 		return Decide( SCHED_TAKE_COVER_FROM_BEST_SOUND, "danger heard" );
+	}
+
+	// 1b. A4b: the MG gunner works his gun - deployed, he stays on it; otherwise he finds a
+	//     firing position and gets the gun onto it. Nothing at all: a rifleman (gun at the hip).
+	if ( m_bMGGunner && GetEnemy() && m_actMGDeployStand != ACT_INVALID )
+	{
+		if ( m_eMGDeploy != MGD_NONE && eExit != CEXIT_RELOCATE && eExit != CEXIT_FLANKED )
+			return Decide( SCHED_GERMAN_MG, "on the MG - keeps it on you" );
+		if ( m_eMGDeploy != MGD_NONE )
+			MGUndeploy( eExit == CEXIT_RELOCATE ? "relocating" : "flanked" );
+		if ( m_eArrivedKind == SPOT_MG )
+		{
+			m_eArrivedKind = SPOT_COVER;
+			if ( now - m_flArrivedAt < 2.0f )
+				return Decide( SCHED_GERMAN_MG, "at his MG position - gets the gun down" );
+		}
+		if ( now >= m_flNextMGSearch )
+		{
+			m_flNextMGSearch = now + 5.0f;
+			if ( FindCoverSpot( GetEnemy(), SEARCH_MG ) )
+			{
+				m_eMoveKind = MOVE_COVER;
+				return Decide( SCHED_GERMAN_MOVE_TO_COVER, eExit == CEXIT_RELOCATE ? "MG - picks up the gun and moves to a new position" : "MG - moving the gun to a firing position" );
+			}
+		}
 	}
 
 	// 2. A squad order: find his own spot for it; if there's none, say so (the squad asks someone else).
@@ -6232,6 +6629,7 @@ AI_BEGIN_CUSTOM_NPC( npc_german_soldier, CNPC_GermanSoldier )
 	DECLARE_TASK( TASK_GERMAN_STACK )
 	DECLARE_TASK( TASK_GERMAN_CLEAR_PATH )
 	DECLARE_TASK( TASK_GERMAN_CLEAR_DONE )
+	DECLARE_TASK( TASK_GERMAN_MG_LOOP )
 	DECLARE_SQUADSLOT( SQUAD_SLOT_GERMAN_FIRE1 )
 	DECLARE_SQUADSLOT( SQUAD_SLOT_GERMAN_FIRE2 )
 	DECLARE_SQUADSLOT( SQUAD_SLOT_GERMAN_FIRE3 )
@@ -6333,6 +6731,24 @@ AI_BEGIN_CUSTOM_NPC( npc_german_soldier, CNPC_GermanSoldier )
 		"		COND_ENEMY_DEAD"
 		"		COND_LIGHT_DAMAGE"
 		"		COND_HEAVY_DAMAGE"
+		"		COND_HEAR_DANGER"
+	)
+
+	//=========================================================
+	// SCHED_GERMAN_MG (A4b): the gunner on his deployed MG42. The MG loop decides when he
+	// picks the gun up (too close, nothing to shoot from here, pinned there).
+	//=========================================================
+	DEFINE_SCHEDULE
+	(
+		SCHED_GERMAN_MG,
+
+		"	Tasks"
+		"		TASK_STOP_MOVING			0"
+		"		TASK_GERMAN_MG_LOOP			0"
+		""
+		"	Interrupts"
+		"		COND_NEW_ENEMY"
+		"		COND_ENEMY_DEAD"
 		"		COND_HEAR_DANGER"
 	)
 
