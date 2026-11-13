@@ -103,6 +103,25 @@ or a release frame timed in code.
 - **Known issue**: in some corner sets the hands don't line up with the bonemerged rifle. Left for the
   animation-polish pass.
 
+## Animation sweep (to do - logged 2026-11-13)
+
+Gameplay with the A4a set is right; these are visual and wait for a full animation pass:
+
+- **K98 swings during transitions** (most visible going into and out of the helmet run, cover to run, pains
+  fading). Cause: DoD's skeleton hangs the K98 off the LEFT hand (`weapon_bone_left`); cross-fades blend each
+  bone in its parent's space, so when the left hand is somewhere else relative to the rifle in the two poses
+  (on the fore-end vs on the helmet / on the ground), the rifle travels through the air. The MP40 hangs off the
+  right hand and is fine. A4a-4's client-side hold (rifle kept in the right hand during blends, rate-limited
+  catch-up) helps but doesn't cure it. Options for the sweep:
+  - give the K98 man a world model that bonemerges to `weapon_bone` (right hand) and generate matching
+    BOLT sequences with `weapon_bone` animated, so every pose holds it from the right hand;
+  - or do the cross-fade of the rifle in world space on the client using each blended sequence's own pose.
+- **Upper-body pains over CoD runs**: switched off for now (kick + helmet run instead). The pains are rebased
+  onto DoD's hips; CoD-run versions would need rebasing per base pose.
+- **Corner sets**: hands / rifle not lining up in some sets (see above).
+- **Big pose changes cross-fade in 0.2 s** (crouched cover straight into a sprint): can look rubbery; per-pair
+  transition times or transition animations.
+
 ### MG team (with A6)
 - CoD2 MG42: `MG42_CARRY_RUN`, `MG42_SETUP_PRONE`, `MG42_SETUP_WALL`, `MG42_AIM`, `MG42_FIRE`, `MG42PRONE_AIM`,
   `MG42PRONE_FIRE`.
