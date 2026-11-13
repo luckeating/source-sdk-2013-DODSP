@@ -346,7 +346,7 @@ private:
 	// under fire, else standing; only ever goes lower), bursts with rests, reload in place, a
 	// look for cover every 3 s, bored when he hasn't seen you for cover_hold_time.
 	//-------------------------------------------------------------------------
-	enum OpenState_t { OS_AIM, OS_FIRE, OS_RELOAD };
+	enum OpenState_t { OS_AIM, OS_FIRE, OS_RELOAD, OS_PINNED };
 	void		SetOpenState( OpenState_t eState, const char *pszWhy );
 	void		RunOpenLoop( void );
 	void		OpenPose( void );
@@ -437,7 +437,7 @@ private:
 	//-------------------------------------------------------------------------
 	// Watchdog (R1): passive. Prints INVARIANT lines when a rule is broken; changes nothing.
 	//-------------------------------------------------------------------------
-	enum Invariant_t { INV_STANCE_FLIPS, INV_STANCE_OWNER, INV_SCHED_CHURN, INV_DECISION_CHURN, INV_COVER_CHURN, INV_POSE_FLIPS, INV_ANIM_STUCK, INV_COVER_STANCE, INV_ORDER_STUCK, INV_FLANK_TIMEOUT, INV_CORNER_YAW, INV_ASSAULT_TIMEOUT, INV_PAIR_SPLIT, INV_CLEAR_TIMEOUT, NUM_INVARIANTS };
+	enum Invariant_t { INV_STANCE_FLIPS, INV_STANCE_OWNER, INV_SCHED_CHURN, INV_DECISION_CHURN, INV_COVER_CHURN, INV_POSE_FLIPS, INV_ANIM_STUCK, INV_COVER_STANCE, INV_ORDER_STUCK, INV_FLANK_TIMEOUT, INV_CORNER_YAW, INV_ASSAULT_TIMEOUT, INV_PAIR_SPLIT, INV_CLEAR_TIMEOUT, INV_PINNED_STUCK, NUM_INVARIANTS };
 	void		WatchdogPose( void );		// what the body actually plays: down / crouched / standing flips
 	bool		IsClipEmpty( void );		// one owner for "he has no rounds in the gun"
 	void		Invariant( Invariant_t eWhich, const char *pszFormat, ... );
@@ -453,6 +453,37 @@ private:
 	bool		IsCoverSpotTaken( const Vector &vecPos );
 	bool		IsWounded( void ) const { return GetMaxHealth() > 0 && GetHealth() < GetMaxHealth() * m_flWoundedHealth; }
 	void		NoteUnderFire( void );
+	//-------------------------------------------------------------------------
+	// A4a - pinned. One owner (UpdatePinned) for how much fire is coming his way: every round
+	// that passes close (the bullet's path, not just where it lands) or hits him adds to it; it
+	// drains once the fire stops, faster with the squad's confidence. Pinned (on at 1, off at
+	// 0.5): down behind cover flinching, or hunkered in the open covering his head; no orders,
+	// no shooting; the under-fire run (helmet in hand) when he moves.
+	//-------------------------------------------------------------------------
+public:
+	void		NoteNearMiss( CBaseEntity *pShooter, float flDist );
+	bool		IsPinned( void ) const { return m_bPinned; }
+private:
+	void		AddPinned( float flAmount );
+	void		UpdatePinned( void );
+	Activity	PickRunGait( void );
+	bool		OnBeginMoveAndShoot( void );
+	void		RunOpenPinned( void );
+	float		m_flPinned;				// 0..2
+	bool		m_bPinned;
+	float		m_flPinnedSince;
+	float		m_flPinnedUpdated;
+	float		m_flPinnedGain;			// script: scale on what each round adds
+	float		m_flPinnedRecover;		// script: per second once the fire stops
+	int			m_nHunkerPhase;			// open loop, pinned: 0 going down, 1 down, 2 coming up, 3 a flinch
+	int			m_nHunkerSide;
+	float		m_flHunkerPhaseStart;
+	Activity	m_actHideTwitch, m_actCrouchTwitch, m_actHunkerIn[2], m_actHunker[2], m_actHunkerOut[2];
+	Activity	m_actRunCombat, m_actRunHelmet, m_actRunCrouch;
+	int			m_poseMoveYaw;			// CoD2 runs blend direction on move_yaw (+ = to his left)
+public:
+	void		UpdateOnRemove( void );
+private:
 	void		UpdateCoverAwareness( void );
 	void		UpdateCoverTransition( void );
 	bool		IsInCrouchPose( void );
@@ -679,6 +710,16 @@ CNPC_GermanSoldier::CNPC_GermanSoldier() : m_AnimMap( DefLessFunc( int ) )
 	m_flCoverNextLook = m_flCoverBoredAt = m_flCoverLastSaw = 0.0f;
 	m_flCoverLostSight = m_flCoverHiddenSince = 0.0f;
 	m_flLastSuppressed = -100.0f;
+	m_flPinned = 0.0f;
+	m_bPinned = false;
+	m_flPinnedSince = m_flPinnedUpdated = 0.0f;
+	m_flPinnedGain = 1.0f;
+	m_flPinnedRecover = 0.35f;
+	m_nHunkerPhase = m_nHunkerSide = 0;
+	m_flHunkerPhaseStart = 0.0f;
+	m_actHideTwitch = m_actCrouchTwitch = m_actRunCombat = m_actRunHelmet = m_actRunCrouch = ACT_INVALID;
+	m_actHunkerIn[0] = m_actHunkerIn[1] = m_actHunker[0] = m_actHunker[1] = m_actHunkerOut[0] = m_actHunkerOut[1] = ACT_INVALID;
+	m_poseMoveYaw = -1;
 	for ( int i = 0; i < 6; i++ )
 		m_flCoverStateTimes[i] = -100.0f;
 	m_iCoverStateFlip = 0;
@@ -838,8 +879,41 @@ void CNPC_GermanSoldier::OnRestore( void )
 	m_Chatter.Init( this, m_SquadName != NULL_STRING ? STRING( m_SquadName ) : NULL );
 }
 
+// A4a: every live soldier, for the bullet-path test (a few dozen at most - cheaper than a
+// classname search per bullet).
+static CUtlVector<CNPC_GermanSoldier *> s_GermanSoldiers;
+
+void CNPC_GermanSoldier::UpdateOnRemove( void )
+{
+	s_GermanSoldiers.FindAndRemove( this );
+	BaseClass::UpdateOnRemove();
+}
+
+// Called for every bullet any entity fires (CBaseEntity::FireBullets, server): a round whose
+// path passes within 96 units of a German's head or chest is a near miss for him - whether it
+// hits the wall beside him or flies on for 50 m. Only from someone he's hostile to.
+void DoDSP_BulletPassed( CBaseEntity *pShooter, const Vector &vecStart, const Vector &vecEnd )
+{
+	if ( !pShooter )
+		return;
+	for ( int i = 0; i < s_GermanSoldiers.Count(); i++ )
+	{
+		CNPC_GermanSoldier *pG = s_GermanSoldiers[i];
+		if ( pG == pShooter || !pG->IsAlive() || pG->IRelationType( pShooter ) != D_HT )
+			continue;
+		Vector vecHead = pG->EyePosition();
+		Vector vecChest = pG->WorldSpaceCenter();
+		float t;
+		float flDist = MIN( CalcDistanceToLineSegment( vecHead, vecStart, vecEnd, &t ), CalcDistanceToLineSegment( vecChest, vecStart, vecEnd, &t ) );
+		if ( flDist < 96.0f )
+			pG->NoteNearMiss( pShooter, flDist );
+	}
+}
+
 void CNPC_GermanSoldier::Spawn( void )
 {
+	if ( s_GermanSoldiers.Find( this ) < 0 )
+		s_GermanSoldiers.AddToTail( this );
 	Precache();
 	SetModel( STRING( GetModelName() ) );
 
@@ -966,6 +1040,7 @@ void CNPC_GermanSoldier::PopulatePoseParameters( void )
 	m_poseMoveX = LookupPoseParameter( "move_x" );
 	m_poseMoveY = LookupPoseParameter( "move_y" );
 	m_poseCornerYaw = LookupPoseParameter( "corner_yaw" );
+	m_poseMoveYaw = LookupPoseParameter( "move_yaw" );
 }
 
 //-----------------------------------------------------------------------------
@@ -994,6 +1069,8 @@ bool CNPC_GermanSoldier::OverrideMoveFacing( const AILocalMoveGoal_t &move, floa
 	float flDiff = DEG2RAD( UTIL_AngleDiff( flMoveYaw, GetLocalAngles().y ) );
 	SetPoseParameter( m_poseMoveX, cosf( flDiff ) );
 	SetPoseParameter( m_poseMoveY, sinf( flDiff ) * m_flMoveYSign );
+	if ( m_poseMoveYaw >= 0 )
+		SetPoseParameter( m_poseMoveYaw, RAD2DEG( flDiff ) );		// the CoD2 runs (A4a)
 
 	// Sideways and backwards DoD cycles cover ground at different speeds; move at
 	// the speed of the blend we are actually showing so the feet don't slide.
@@ -1160,6 +1237,8 @@ void CNPC_GermanSoldier::BuildAnimMap( void )
 	m_flSquadAggression = clamp( pScript->GetFloat( "squad_aggression", 1.0f ), 0.25f, 4.0f );
 	m_flAssaultAfter = clamp( pScript->GetFloat( "assault_after", 6.0f ), 1.0f, 60.0f );
 	m_flUnderFireHide = MAX( 0.0f, pScript->GetFloat( "under_fire_hide", 2.5f ) );
+	m_flPinnedGain = clamp( pScript->GetFloat( "pinned_gain", 1.0f ), 0.0f, 5.0f );
+	m_flPinnedRecover = clamp( pScript->GetFloat( "pinned_recover", 0.35f ), 0.05f, 5.0f );
 	m_flWoundedHealth = clamp( pScript->GetFloat( "wounded_health", 0.5f ), 0.0f, 1.0f );
 	m_flWoundedHideScale = MAX( 1.0f, pScript->GetFloat( "wounded_hide_scale", 1.75f ) );
 	m_flWoundedBurstScale = clamp( pScript->GetFloat( "wounded_burst_scale", 0.5f ), 0.1f, 1.0f );
@@ -1213,6 +1292,19 @@ void CNPC_GermanSoldier::BuildAnimMap( void )
 	m_actStand2Hide	= ResolveNamedActivity( "ACT_WW2_COVER_MID_DOWN" );
 	m_actHide2Stand	= ResolveNamedActivity( "ACT_WW2_COVER_MID_UP" );
 	m_actCoverReload	= ResolveNamedActivity( "ACT_WW2_COVER_LOW_RELOAD" );
+	// A4a: pinned and the running gaits (any missing -> the old behaviour: still hide pose,
+	// DoD's run). Hunker = CoD1's grenade-hide: down over his knees, arms over his head.
+	m_actHideTwitch		= ResolveNamedActivity( "ACT_WW2_COVER_LOW_TWITCH" );
+	m_actCrouchTwitch	= ResolveNamedActivity( "ACT_WW2_CROUCH_TWITCH" );
+	m_actHunkerIn[0]	= ResolveNamedActivity( "ACT_WW2_GRENADEHIDE_LEFT_IN" );
+	m_actHunker[0]		= ResolveNamedActivity( "ACT_WW2_GRENADEHIDE_LEFT" );
+	m_actHunkerOut[0]	= ResolveNamedActivity( "ACT_WW2_GRENADEHIDE_LEFT_OUT" );
+	m_actHunkerIn[1]	= ResolveNamedActivity( "ACT_WW2_GRENADEHIDE_RIGHT_IN" );
+	m_actHunker[1]		= ResolveNamedActivity( "ACT_WW2_GRENADEHIDE_RIGHT" );
+	m_actHunkerOut[1]	= ResolveNamedActivity( "ACT_WW2_GRENADEHIDE_RIGHT_OUT" );
+	m_actRunCombat		= ResolveNamedActivity( "ACT_WW2_RUN" );
+	m_actRunHelmet		= ResolveNamedActivity( "ACT_WW2_RUN_HELMET" );
+	m_actRunCrouch		= ResolveNamedActivity( "ACT_WW2_CROUCH_RUN" );
 	{
 		// automatic weapons fire the burst loop, everything else single shots
 		m_bCoverFireSemi = !( Q_stristr( pszSet, "MP40" ) || Q_stristr( pszSet, "MP44" ) || Q_stristr( pszSet, "TOMMY" ) ||
@@ -1239,7 +1331,7 @@ CNPC_GermanSoldier::CoverFamily_t CNPC_GermanSoldier::PoseFamily( Activity act )
 {
 	if ( act == ACT_INVALID )
 		return POSE_OTHER;
-	if ( act == m_actHide || act == m_actCoverReload )
+	if ( act == m_actHide || act == m_actCoverReload || act == m_actHideTwitch )
 		return POSE_HIDE;
 	if ( act == m_actCoverLowFire )
 		return POSE_CROUCH;
@@ -1536,7 +1628,7 @@ void CNPC_GermanSoldier::WatchdogPose( void )
 
 	const char *pszAct = ActivityList_NameForIndex( actSeq );
 	int nClass;
-	if ( actSeq == m_actHide || actSeq == m_actCoverReload || ( pszAct && Q_stristr( pszAct, "HIDE" ) ) )
+	if ( actSeq == m_actHide || actSeq == m_actCoverReload || actSeq == m_actHideTwitch || ( pszAct && Q_stristr( pszAct, "HIDE" ) ) )
 		nClass = 0;
 	else if ( ( pszAct && ( Q_stristr( pszAct, "CROUCH" ) || Q_stristr( pszAct, "_LOW" ) || Q_stristr( pszAct, "PRONE" ) ) ) ||
 			  ( pszSeq && Q_stristr( pszSeq, "crouch" ) ) )
@@ -1740,7 +1832,7 @@ bool CNPC_GermanSoldier::IsSquadSuppressor( void )
 
 bool CNPC_GermanSoldier::CanTakeSquadOrder( void )
 {
-	return IsAlive() && m_eSquadOrder == ORDER_NONE && gpGlobals->curtime >= m_flOrderRefusedUntil &&
+	return IsAlive() && m_eSquadOrder == ORDER_NONE && gpGlobals->curtime >= m_flOrderRefusedUntil && !m_bPinned &&
 		   ( IsInCoverLoop() || IsInOpenLoop() || IsCurSchedule( SCHED_GERMAN_HOLD_COVER, false ) );
 }
 
@@ -2789,12 +2881,20 @@ void CNPC_GermanSoldier::ChatterThreat( void )
 //=============================================================================
 // R4 - the open-ground loop
 //=============================================================================
-static const char *s_pszOpenState[] = { "aim", "fire", "reload" };
+static const char *s_pszOpenState[] = { "aim", "fire", "reload", "pinned" };
 
 // The pose for the open loop: DoD's aim, crouched or standing (the stance decides); the same
 // activity aiming and firing so nothing restarts between shots.
 void CNPC_GermanSoldier::OpenPose( void )
 {
+	if ( m_eOpenState == OS_PINNED )
+	{
+		Activity act = m_nHunkerPhase == 3 ? m_actCrouchTwitch : m_nHunkerPhase == 0 ? m_actHunkerIn[m_nHunkerSide] :
+					   m_nHunkerPhase == 1 ? m_actHunker[m_nHunkerSide] : m_actHunkerOut[m_nHunkerSide];
+		if ( act != ACT_INVALID && GetIdealActivity() != act )
+			SetIdealActivity( act );
+		return;
+	}
 	Activity act = m_eOpenState == OS_RELOAD ? ( IsCrouching() ? ACT_RELOAD_LOW : ACT_RELOAD ) :
 				   ( IsCrouching() ? ACT_RANGE_ATTACK1_LOW : ACT_RANGE_ATTACK1 );
 	if ( GetIdealActivity() != act )
@@ -2817,6 +2917,10 @@ void CNPC_GermanSoldier::SetOpenState( OpenState_t eState, const char *pszWhy )
 	switch ( eState )
 	{
 	case OS_AIM:
+		break;
+	case OS_PINNED:
+		VacateStrategySlot();
+		m_flHunkerPhaseStart = now;
 		break;
 	case OS_FIRE:
 		{
@@ -2871,8 +2975,10 @@ void CNPC_GermanSoldier::RunOpenLoop( void )
 		return;
 	}
 
-	// Leaving: cover turned up (looks every 3 s, not mid-reload), or nothing to shoot for a while.
-	if ( m_eOpenState != OS_RELOAD && now >= m_flOpenNextCoverCheck )
+	// Leaving: cover turned up (looks every 3 s, not mid-reload, not while going down or coming
+	// up from a hunker), or nothing to shoot for a while.
+	bool bHunkerMove = m_eOpenState == OS_PINNED && m_nHunkerPhase != 1;
+	if ( m_eOpenState != OS_RELOAD && !bHunkerMove && now >= m_flOpenNextCoverCheck )
 	{
 		m_flOpenNextCoverCheck = now + 3.0f;
 		m_flNextCoverSearch = now + 3.0f;
@@ -2887,7 +2993,7 @@ void CNPC_GermanSoldier::RunOpenLoop( void )
 			return;
 		}
 	}
-	if ( m_eOpenState != OS_RELOAD && now - m_flOpenLastSaw > m_flCoverHoldTime )
+	if ( m_eOpenState != OS_RELOAD && m_eOpenState != OS_PINNED && now - m_flOpenLastSaw > m_flCoverHoldTime )
 	{
 		VacateStrategySlot();
 		m_eCoverExit = CEXIT_BORED;
@@ -2899,6 +3005,29 @@ void CNPC_GermanSoldier::RunOpenLoop( void )
 	// in this loop (no bobbing).
 	if ( m_eStance == STANCE_STAND && now - m_flLastSuppressed < 0.5f )
 		SetStance( STANCE_CROUCH, "rounds cracking past - gets low" );
+
+	// A4a: pinned in the open (no cover he could reach): head down, arms over it, no shooting.
+	// Rounds close by but not pinned yet: a flinch between bursts.
+	if ( m_eOpenState != OS_RELOAD && m_eOpenState != OS_PINNED && m_eStance == STANCE_CROUCH && !IsInStanceTransition() )
+	{
+		if ( m_bPinned && m_actHunkerIn[0] != ACT_INVALID )
+		{
+			m_nHunkerPhase = 0;
+			m_nHunkerSide = random->RandomInt( 0, 1 );
+			SetOpenState( OS_PINNED, "pinned down in the open - gets his head down" );
+		}
+		else if ( m_eOpenState == OS_AIM && m_flPinned >= 0.6f && now - m_flLastSuppressed < 0.3f && m_actCrouchTwitch != ACT_INVALID &&
+				  now - m_flHunkerPhaseStart > 5.0f )	// a flinch now and then, not every round: he still fights back
+		{
+			m_nHunkerPhase = 3;
+			SetOpenState( OS_PINNED, "rounds cracking past - flinches" );
+		}
+	}
+	if ( m_eOpenState == OS_PINNED )
+	{
+		RunOpenPinned();
+		return;
+	}
 	OpenPose();
 
 	switch ( m_eOpenState )
@@ -3404,7 +3533,7 @@ void CNPC_GermanSoldier::CoverDecideWhileHidden( void )
 	CBaseCombatWeapon *pWeapon = GetActiveWeapon();
 	int nClip = ( pWeapon && pWeapon->UsesClipsForAmmo1() ) ? pWeapon->Clip1() : 1;
 	int nMaxClip = ( pWeapon && pWeapon->UsesClipsForAmmo1() ) ? pWeapon->GetMaxClip1() : 1;
-	bool bPinned = now - m_flLastSuppressed < m_flUnderFireHide && now - m_flCoverHiddenSince < 10.0f;	// 10 s at most
+	bool bPinned = m_bPinned || ( now - m_flLastSuppressed < m_flUnderFireHide && now - m_flCoverHiddenSince < 10.0f );	// near-miss duck: 10 s at most; pinned: until the fire eases
 
 	if ( bPinned )
 	{
@@ -3413,7 +3542,7 @@ void CNPC_GermanSoldier::CoverDecideWhileHidden( void )
 		else
 		{
 			m_flCoverStateUntil = now + random->RandomFloat( 0.4f, 0.8f );
-			SetCoverState( CS_HIDE, "pinned down - rounds cracking past" );
+			SetCoverState( CS_HIDE, m_bPinned ? "pinned down - can't get his head up" : "rounds cracking past - stays down" );
 		}
 		return;
 	}
@@ -3527,6 +3656,9 @@ void CNPC_GermanSoldier::RunCoverLoop( void )
 	switch ( m_eCoverState )
 	{
 	case CS_HIDE:
+		// the pinned flinch is a one-shot: again while he's pinned
+		if ( m_actHideTwitch != ACT_INVALID && GetTranslatedActivity() == m_actHideTwitch && IsActivityFinished() )
+			ResetActivity();
 		if ( now >= m_flCoverStateUntil )
 			CoverDecideWhileHidden();
 		break;
@@ -3952,6 +4084,136 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, int nMode, const Ve
 	return true;
 }
 
+//-----------------------------------------------------------------------------
+// A4a - pinned (see the declaration)
+//-----------------------------------------------------------------------------
+void CNPC_GermanSoldier::NoteNearMiss( CBaseEntity *pShooter, float flDist )
+{
+	NoteUnderFire();
+	AddPinned( m_flPinnedGain * ( 0.12f + 0.23f * ( 1.0f - clamp( flDist / 96.0f, 0.0f, 1.0f ) ) ) );	// 0.12 at 96 units .. 0.35 past his ear
+}
+
+void CNPC_GermanSoldier::AddPinned( float flAmount )
+{
+	m_flPinned = MIN( 2.0f, m_flPinned + flAmount );
+	UpdatePinned();
+}
+
+void CNPC_GermanSoldier::UpdatePinned( void )
+{
+	float now = gpGlobals->curtime;
+	float dt = clamp( now - m_flPinnedUpdated, 0.0f, 0.5f );
+	m_flPinnedUpdated = now;
+	if ( !IsAlive() )
+		return;
+	if ( now - m_flLastSuppressed > 1.0f && m_flPinned > 0.0f )
+	{
+		// the fire's stopped: it drains - faster when the squad has the odds
+		GermanSquadState_t *pSq = m_pSquad ? GetGermanSquad( m_SquadName ) : NULL;
+		float flMorale = pSq ? clamp( pSq->flConfidence, 0.5f, 1.5f ) : 1.0f;
+		m_flPinned = MAX( 0.0f, m_flPinned - dt * m_flPinnedRecover * flMorale );
+	}
+	bool bWas = m_bPinned;
+	if ( !m_bPinned && m_flPinned >= 1.0f )
+	{
+		m_bPinned = true;
+		m_flPinnedSince = now;
+		m_flOpenNextCoverCheck = 0.0f;		// in the open: look for cover right now
+		if ( npc_german_debug.GetBool() )
+			Msg( "[%.2f] npc_german_soldier %d: pinned down (%.2f)\n", now, entindex(), m_flPinned );
+	}
+	else if ( m_bPinned && m_flPinned <= 0.5f )
+	{
+		m_bPinned = false;
+		if ( npc_german_debug.GetBool() )
+			Msg( "[%.2f] npc_german_soldier %d: the fire's eased off - up again after %.1f s pinned\n", now, entindex(), now - m_flPinnedSince );
+	}
+	else if ( m_bPinned && now - m_flPinnedSince > 20.0f && now - m_flLastSuppressed > 8.0f )
+	{
+		// it drains once the fire stops: pinned 20 s with nothing near him for 8 is a contradiction
+		Invariant( INV_PINNED_STUCK, "pinned %.0f s but nothing's come near him for %.0f s (level %.2f) - letting him up",
+				   now - m_flPinnedSince, now - m_flLastSuppressed, m_flPinned );
+		m_flPinned = 0.0f;
+		m_bPinned = false;
+	}
+	if ( bWas != m_bPinned )
+	{
+		// the poses that depend on it: hidden (flinch / still) and the run (under fire / not)
+		if ( m_eStance == STANCE_HIDE && !IsMoving() && !IsInStanceTransition() )
+			ResetActivity();
+		if ( IsMoving() && ( GetTranslatedActivity() == m_actRunCombat || GetTranslatedActivity() == m_actRunCrouch || GetTranslatedActivity() == m_actRunHelmet ) )
+			ResetIdealActivity( GetIdealActivity() );
+	}
+	else if ( IsMoving() && now - m_flLastSuppressed < 0.1f && GetTranslatedActivity() != m_actRunHelmet && m_actRunHelmet != ACT_INVALID && !IsCurSchedule( SCHED_GERMAN_CLEAR, false ) )
+		ResetIdealActivity( GetIdealActivity() );		// shot at mid-run: head down, helmet in hand
+	else if ( IsMoving() && m_actRunHelmet != ACT_INVALID && GetTranslatedActivity() == m_actRunHelmet && PickRunGait() != m_actRunHelmet )
+		ResetIdealActivity( GetIdealActivity() );		// the fire's stopped: gun back up for the rest of the run
+}
+
+// The run he uses in a fight (A4a). One owner: the run activity always comes through here.
+Activity CNPC_GermanSoldier::PickRunGait( void )
+{
+	if ( GetState() != NPC_STATE_COMBAT || !IsAlive() )
+		return ACT_INVALID;		// patrols and alerts keep DoD's run
+	float now = gpGlobals->curtime;
+	if ( ( m_bPinned || now - m_flLastSuppressed < 2.0f ) && m_actRunHelmet != ACT_INVALID )
+		return m_actRunHelmet;		// under fire: one hand on his helmet, head down
+	if ( IsCurSchedule( SCHED_GERMAN_MOVE_TO_COVER, false ) && m_bHasCoverSpot && m_actRunCrouch != ACT_INVALID && GetNavigator()->IsGoalActive() )
+	{
+		float flRoute = GetNavigator()->GetPathDistanceToGoal();
+		if ( flRoute > 0.0f && flRoute < 320.0f )
+			return m_actRunCrouch;	// a short hop between cover: hunched
+	}
+	return m_actRunCombat;			// CoD2's combat runs (or DoD's if the pack is old)
+}
+
+// No shooting on the move with one hand on his helmet.
+bool CNPC_GermanSoldier::OnBeginMoveAndShoot( void )
+{
+	if ( m_actRunHelmet != ACT_INVALID && GetTranslatedActivity() == m_actRunHelmet )
+		return false;
+	if ( m_bPinned )
+		return false;
+	return BaseClass::OnBeginMoveAndShoot();
+}
+
+// Open loop, pinned (A4a): down over his knees with his arms over his head until the fire eases,
+// then back up to aim. Phase 3 is a one-shot flinch between bursts (rounds close, not pinned).
+void CNPC_GermanSoldier::RunOpenPinned( void )
+{
+	float now = gpGlobals->curtime;
+	OpenPose();
+	bool bDone = IsActivityFinished() && GetActivity() == GetIdealActivity();
+	switch ( m_nHunkerPhase )
+	{
+	case 0:		// going down
+		if ( bDone || now - m_flHunkerPhaseStart > 1.5f )
+		{
+			m_nHunkerPhase = 1;
+			m_flHunkerPhaseStart = now;
+		}
+		break;
+	case 1:		// down: until the fire eases (or he's been down long and it's quietened)
+		if ( !m_bPinned || ( now - m_flHunkerPhaseStart > 10.0f && now - m_flLastSuppressed > 3.0f ) )
+		{
+			m_nHunkerPhase = 2;
+			m_flHunkerPhaseStart = now;
+			if ( npc_german_debug.GetBool() )
+				Msg( "[%.2f] npc_german_soldier %d: open pinned -> coming up (%s)\n", now, entindex(), m_bPinned ? "it's quietened" : "the fire's eased off" );
+		}
+		break;
+	case 2:		// coming up
+	case 3:		// a flinch
+		if ( bDone || now - m_flHunkerPhaseStart > 4.0f )
+		{
+			m_flOpenStateUntil = now + random->RandomFloat( 0.3f, 0.7f );
+			SetOpenState( OS_AIM, m_nHunkerPhase == 2 ? "back up - aims again" : "flinch over" );
+		}
+		break;
+	}
+	OpenPose();
+}
+
 // Rounds hitting near him (or into him): keep his head down for a while; if he's up in
 // low cover, duck right now.
 void CNPC_GermanSoldier::NoteUnderFire( void )
@@ -3964,15 +4226,9 @@ void CNPC_GermanSoldier::UpdateCoverAwareness( void )
 {
 	if ( !IsAlive() )
 		return;
-	// Near misses: bullet impacts from someone he's hostile to, close to him.
-	if ( HasCondition( COND_HEAR_BULLET_IMPACT ) )
-	{
-		CSound *pSound = GetBestSound( SOUND_BULLET_IMPACT );
-		CBaseEntity *pOwner = pSound ? pSound->m_hOwner.Get() : NULL;
-		if ( pSound && pOwner && pOwner != this && IRelationType( pOwner ) == D_HT &&
-			 ( pSound->GetSoundOrigin() - WorldSpaceCenter() ).Length() < 96.0f )
-			NoteUnderFire();
-	}
+	// Near misses come from the bullets' own paths now (DoDSP_BulletPassed, A4a): a round
+	// cracking past his head counts even if it lands 50 m behind him.
+	UpdatePinned();
 
 }
 
@@ -3994,7 +4250,7 @@ void CNPC_GermanSoldier::DrawDebugOverlay( void )
 		static const char *s_Cover[] = { "EXPOSED", "full cover", "low wall (crouch fire)", "chest-high (stand fire)", "corner" };
 		m_flCoverCheckTime = 0.0f;		// fresh check so the traces get drawn
 		Q_snprintf( sz, sizeof( sz ), "cover: %s%s%s%s", s_Cover[ LowCoverAgainst( GetEnemy() ) + 1 ],
-					gpGlobals->curtime < m_flUnderFireUntil ? "  UNDER FIRE" : "", IsWounded() ? "  WOUNDED" : "",
+					m_bPinned ? "  PINNED" : gpGlobals->curtime < m_flUnderFireUntil ? "  UNDER FIRE" : "", IsWounded() ? "  WOUNDED" : "",
 					m_iMySquadSlot != SQUAD_SLOT_NONE ? "  [firing slot]" : "" );
 		NDebugOverlay::EntityText( entindex(), line++, sz, 0.12f );
 	}
@@ -4090,7 +4346,7 @@ Activity CNPC_GermanSoldier::NPC_TranslateActivity( Activity eNewActivity )
 		if ( ( eNewActivity == ACT_RELOAD || eNewActivity == ACT_RELOAD_LOW ) && m_actCoverReload != ACT_INVALID )
 			eNewActivity = m_actCoverReload;
 		else if ( bIdleOrAim )
-			eNewActivity = m_actHide;
+			eNewActivity = ( m_bPinned && m_actHideTwitch != ACT_INVALID ) ? m_actHideTwitch : m_actHide;	// A4a: pinned - flinching down there
 	}
 	else if ( bStatic && m_eStance == STANCE_LOW_UP && m_actCoverLowFire != ACT_INVALID && bIdleOrAim )
 		eNewActivity = m_actCoverLowFire;
@@ -4105,6 +4361,18 @@ Activity CNPC_GermanSoldier::NPC_TranslateActivity( Activity eNewActivity )
 	}
 	else if ( bStatic && m_eStance == STANCE_CORNER_AIM && CornerFireAct() != ACT_INVALID && bIdleOrAim )
 		return CornerFireAct();		// held on its first frame (the aim) between shots; each shot plays it
+
+	// A4a: running in a fight - CoD2's combat runs (three, picked at random), the hunched run
+	// for a short hop, the helmet-in-hand run under fire.
+	// The aim run (move-and-shoot switches to it whenever he could aim at you) gives way to the
+	// helmet run under fire too - except going through the door on a clearing drill.
+	bool bRun = eNewActivity == ACT_RUN || eNewActivity == ACT_RUN_RIFLE || eNewActivity == ACT_RUN_STIMULATED || eNewActivity == ACT_RUN_AGITATED;
+	if ( bRun || ( eNewActivity == ACT_RUN_AIM && !IsCurSchedule( SCHED_GERMAN_CLEAR, false ) ) )
+	{
+		Activity eGait = PickRunGait();
+		if ( eGait != ACT_INVALID && ( bRun || eGait == m_actRunHelmet ) )
+			return eGait;
+	}
 
 	Activity eResult = TranslateToDoD( eNewActivity );
 
@@ -4936,6 +5204,7 @@ int CNPC_GermanSoldier::OnTakeDamage_Alive( const CTakeDamageInfo &info )
 	{
 		DoHitReaction( info );
 		NoteUnderFire();
+		AddPinned( 0.5f * m_flPinnedGain );
 	}
 	return nResult;
 }

@@ -25,7 +25,8 @@ WANT = re.compile(r'^(pain_|crouch_pain|prone_pain|stumble|wounded_|death_|crouc
                   r'aim2hide|grenade_return|crouch_grenade_return|grenade_kick|grenadehide|grenade_throw|'
                   r'crouch_grenade_throw|melee|crouch_melee|wave_|dodge_|mantle_|jump_down|trav_|medic_|rescue|'
                   r'rescued|fallen_|downed_|carried_fall|rechamber|crouch_rechamber|crouch2prone|crouchrun2prone|'
-                  r'prone2crouch|prone_|plant_bomb|run_hurt|walk_hurt)')
+                  r'prone2crouch|prone_|plant_bomb|run_hurt|walk_hurt|'
+                  r'crouch_twitch|idle_twitch)')     # A4a: flinching in place under fire, crouched / standing
 
 # Activities the base HL2 AI already asks for: keep them where the animation fits.
 KEEP_HL2 = {

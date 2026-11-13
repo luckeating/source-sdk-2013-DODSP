@@ -60,6 +60,10 @@ ConVar hl2_episodic( "hl2_episodic", "0", FCVAR_REPLICATED );
 #include "rumble_shared.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
+#ifdef GAME_DLL
+void DoDSP_BulletPassed( CBaseEntity *pShooter, const Vector &vecStart, const Vector &vecEnd );	// dodsp/npc_german_soldier.cpp
+#endif
+
 #include "tier0/memdbgon.h"
 
 #ifdef GAME_DLL
@@ -1880,6 +1884,8 @@ void CBaseEntity::FireBullets( const FireBulletsInfo_t &info )
 		triggerInfo.SetAmmoType( info.m_iAmmoType );
 #ifdef GAME_DLL
 		TraceAttackToTriggers( triggerInfo, tr.startpos, tr.endpos, vecDir );
+		// DOD-SP (A4a): near misses for the German soldiers - the round's whole path, not just its impact
+		DoDSP_BulletPassed( info.m_pAttacker ? info.m_pAttacker : this, tr.startpos, tr.endpos );
 #endif
 
 		// Make sure given a valid bullet type

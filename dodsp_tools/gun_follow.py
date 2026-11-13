@@ -2,7 +2,9 @@
 
 The CoD animations carry their own gun bone. Per frame we look at it and decide who has
 the gun:
-  R  right hand - the gun sits in the right hand the way it does in the reference aim pose;
+  R  right hand - the gun sits in the right hand the way it does in the reference aim pose,
+                  or it's carried one-handed: close to the right hand and moving rigidly with
+                  it (CoD2 helmet-hand run - left hand on the helmet, rifle low in the right);
   L  left hand  - the right hand isn't, and the left hand is on its usual grip spot (fore-end),
                   or near the gun and moving rigidly with it (CoD2 helmet hit, melee,
                   grenade throws where the left hand carries the rifle by its middle);
@@ -22,6 +24,8 @@ RIGHT_ROT_TOL = 30.0     # degrees
 LEFT_POS_TOL = 5.0       # units from the left hand's reference grip spot
 LEFT_NEAR = 12.0         # ...or this close and rigid with the gun:
 LEFT_SLIP = 0.5          # gun-in-left-hand change per frame (units + 0.1/deg)
+RIGHT_NEAR = 8.0         # one-handed carry: the gun this close to the right hand...
+RIGHT_SLIP = 0.5         # ...and moving with it this rigidly (units + 0.1/deg per frame)
 SMOOTH_FRAMES = 4        # half-width of the cross-fade between holders (frames)
 
 def inv(M):
@@ -36,7 +40,7 @@ class GunReference:
         self.rel_R = inv(src_R) @ src_G                 # gun in the right hand
         self.pL = (inv(src_G) @ src_L)[:3, 3]           # left hand's grip spot, in gun space
 
-    def holder(self, src_R, src_L, src_G, slip_L=99.0):
+    def holder(self, src_R, src_L, src_G, slip_L=99.0, slip_R=99.0):
         rel = inv(src_R) @ src_G
         if (np.linalg.norm(rel[:3, 3] - self.rel_R[:3, 3]) < RIGHT_POS_TOL
                 and rot_angle(rel, self.rel_R) < RIGHT_ROT_TOL):
@@ -44,11 +48,13 @@ class GunReference:
         d = np.linalg.norm((inv(src_G) @ src_L)[:3, 3] - self.pL)
         if d < LEFT_POS_TOL or (d < LEFT_NEAR and slip_L < LEFT_SLIP):
             return 1
+        if np.linalg.norm(src_G[:3, 3] - src_R[:3, 3]) < RIGHT_NEAR and slip_R < RIGHT_SLIP:
+            return 0
         return 2
 
-def left_slip(src_frames):
-    """Per frame: how much the gun moves inside the left hand (max over both neighbours)."""
-    rel = [inv(L) @ G for _, L, G in src_frames]
+def left_slip(src_frames, hand=1):
+    """Per frame: how much the gun moves inside the left hand (hand=0: the right) - max over both neighbours."""
+    rel = [inv(f[hand]) @ f[2] for f in src_frames]
     step = [np.linalg.norm(rel[k + 1][:3, 3] - rel[k][:3, 3]) + 0.1 * rot_angle(rel[k + 1], rel[k])
             for k in range(len(rel) - 1)]
     if not step: return [0.0] * len(rel)
@@ -93,7 +99,7 @@ def place_guns(ref, src_frames, dod_frames, offsets, free_scale=1.0):
     """src_frames: per frame (src_R, src_L, src_G); dod_frames: per frame (dod_R, dod_L).
     offsets: list of O matrices (one per DoD gun bone). Returns per frame a list of DoD
     model-space gun transforms (same order as offsets), plus the holder labels."""
-    labels = [ref.holder(*f, slip) for f, slip in zip(src_frames, left_slip(src_frames))]
+    labels = [ref.holder(*f, slip_L=sl, slip_R=sr) for f, sl, sr in zip(src_frames, left_slip(src_frames), left_slip(src_frames, 0))]
     weights = holder_weights(labels)
     result = []
     for (sR, sL, sG), (dR, dL), w in zip(src_frames, dod_frames, weights):

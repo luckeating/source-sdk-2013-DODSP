@@ -51,7 +51,12 @@ for m in re.finditer(r'^\$sequence "([^"]+)" \{\n(.*?)^\}', qc, re.M | re.S):
     sequences.append((m.group(1), anims, act, extra))
 poseparams = {m.group(1): m.group(0) for m in re.finditer(r'^\$poseparameter "([^"]+)".*$', qc, re.M)}
 
-WANT = re.compile(r'^cod2_(death|pain|turn|corn|cover|jump_(lowwall|fence|window|down)|drag|surrender|mg42|30cal|plant|rocket|grenade|melee)')
+WANT = re.compile(r'^cod2_(death|pain|turn|corn|cover|jump_(lowwall|fence|window|down)|drag|surrender|mg42|30cal|plant|rocket|grenade|melee'
+                  r'|run(B|C|Helmet)?(_\d+)?$|crouch_run(_\d+)?$)')
+# A4a running gaits (move_yaw blends): the three CoD2 combat runs share one activity, so the
+# engine picks one of them at random each time he starts running (variety in a squad); the
+# helmet-hand run is the under-fire gait; the crouch run is the hunched hop between cover.
+RENAME_ACT = {'ACT_WW2_RUNB': 'ACT_WW2_RUN', 'ACT_WW2_RUNC': 'ACT_WW2_RUN', 'ACT_WW2_RUNHELMET': 'ACT_WW2_RUN_HELMET'}
 KEEP_HL2_ACT = re.compile(r'^ACT_(DIE|FLINCH|BIG_FLINCH|SMALL_FLINCH)')  # turns: later, need rotation extraction
 
 # Flinch gestures (CoD deltas layered on DoD poses) are switched off: the deltas come
@@ -262,6 +267,7 @@ for name, anims, act, extra in chosen:
         activity = act
     else:
         activity = 'ACT_WW2_' + re.sub(r'_\d+$', '', short).upper()
+        activity = RENAME_ACT.get(activity, activity)
     if (tuple(anims), activity) in seen:
         continue    # the port repeats one animation under several HL2 activities we don't keep
     seen.add((tuple(anims), activity))

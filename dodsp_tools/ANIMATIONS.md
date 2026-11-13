@@ -26,6 +26,12 @@ or a release frame timed in code.
   - Aim angles are calibrated from the muzzle at load.
 - **Pains**: `ACT_WW2_UPPER_PAIN_HEAD/GUT/LARM/RARM/LSHOULDER/RSHOULDER/HUNCH` and `UPPER_CROUCH_PAIN` as gestures.
   `ACT_WW2_CROUCH_PAIN` and `PAIN_FALLTOHAND` play as full-body pains, along with the stock `ACT_FLINCH_*`.
+- **Running (A4a)**: CoD2 combat runs `ACT_WW2_RUN` (three variants, random), the hunched `ACT_WW2_CROUCH_RUN`
+  for short hops between cover, and the helmet-in-hand `ACT_WW2_RUN_HELMET` under fire. All blend direction on
+  `move_yaw`. DoD's run stays for patrols and as the fallback.
+- **Pinned (A4a)**: `ACT_WW2_COVER_LOW_TWITCH` (flinching behind a low wall), CoD1 `GRENADEHIDE_LEFT/RIGHT` with
+  `_IN`/`_OUT` (hunkered in the open, arms over his head), CoD1 `ACT_WW2_CROUCH_TWITCH` (two takes, a flinch
+  between bursts). `ACT_WW2_IDLE_TWITCH` is built but not used yet.
 - **Deaths**: `ACT_WW2_DEATH_RUN_*` (front, back, left, right, crumple, stumble, onfront, onleft),
   `DEATH_CROUCH_*` (headshot, hands, flip, fetal), `CROUCH_DEATH(_HEAD)` and `DEATH_CROUCHRUN`.
   The stock `ACT_DIE*` set (CoD2 standing deaths) also plays.
@@ -124,9 +130,11 @@ or a release frame timed in code.
   Kübelwagen, wagon, jeep. Use these for reinforcements arriving by truck.
 - Shoot-while-moving
   - `stand_shoot_walk_back/left/right`, `stand_shoot_run_forward/back/left/right`.
-  - Combat runs: `combatrun_*` and `crouchrun_loop_*` (forward, back, left, right), `crouchwalk_loop`,
-    `stand_walk_combat_loop_01`.
+  - `crouchwalk_loop`, `stand_walk_combat_loop_01`. (The combat runs and crouch runs are built now - A4a.)
   - DoD's walk-aim and run-aim cover most of this.
+- Gun hold note (A4a): `gun_follow.py` now treats a gun carried one-handed (close to the right hand and moving
+  rigidly with it) as held by the right hand. Before, those frames counted as "free" and the gun floated off the
+  hand; this changed 87 CoD1 animations (mostly corner sets, hide, downed) and ~20 CoD2 ones.
 - Idles and reloads: `stand_alert_1/2/3`, `crouch_alert_a/b`, `reload_stand/crouch_rifle`, `pistol_stand_reload`.
 - Car-chase seats: drive and get-out.
 
