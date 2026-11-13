@@ -385,7 +385,7 @@ public:
 	float		m_flFlankRadius;		// script
 	float		m_flSquadAggression;	// script: 0.5 cautious defenders .. 2 assault troops (A3c)
 	float		m_flAssaultAfter;		// script: seconds the squad has lost you before it comes after you
-	int			SquadCrowding( const Vector &vecPos );	// squadmates already at / heading for a spot this close
+	int			SquadCrowding( const Vector &vecPos, float flRadius = 128.0f );	// squadmates already at / heading for a spot this close
 	// What a chosen spot is for (A3c). One owner: set when a spot is chosen, read on arrival.
 	//   COVER  cover he fights from (low wall, corner)       -> the cover loop
 	//   ANGLE  open, but he can see where you are/were from  -> the open-ground loop (he's "got an angle")
@@ -418,7 +418,7 @@ private:
 	enum { COVER_EXPOSED = -1, COVER_FULL = 0, COVER_CROUCH = 1, COVER_STAND = 2, COVER_CORNER = 3 };
 	int			LowCoverAgainst( CBaseEntity *pEnemy );	// COVER_*: > 0 means low cover he can fire from
 	int			CoverAt( const Vector &vecPos, CBaseEntity *pEnemy, trace_t *pHideTrace = NULL, const Vector *pvecEye = NULL );	// same test at any spot (pvecEye: against where his eyes were)
-	enum SearchMode_t { SEARCH_COVER, SEARCH_ADVANCE, SEARCH_FLANK_LEFT, SEARCH_FLANK_RIGHT, SEARCH_RETREAT, SEARCH_ASSAULT };
+	enum SearchMode_t { SEARCH_COVER, SEARCH_ADVANCE, SEARCH_FLANK_LEFT, SEARCH_FLANK_RIGHT, SEARCH_RETREAT, SEARCH_ASSAULT, SEARCH_SPREAD };
 	// best-scoring cover for this kind of move; pvecThreatEye: against where the enemy was last
 	// seen (his eyes there) instead of where he is - for a squad that has lost sight of him
 	bool		FindCoverSpot( CBaseEntity *pEnemy, int nMode = SEARCH_COVER, const Vector *pvecThreatEye = NULL );
@@ -2187,7 +2187,10 @@ void CNPC_GermanSoldier::RunOpenLoop( void )
 	{
 		m_flOpenNextCoverCheck = now + 3.0f;
 		m_flNextCoverSearch = now + 3.0f;
-		if ( FindCoverSpot( pEnemy ) )
+		// Bunched up with squadmates in the open (one grenade gets them all): spread out - cover
+		// if there is some, otherwise any spot apart from them he can fire from.
+		bool bBunched = SquadCrowding( GetAbsOrigin(), 96.0f ) > 0;
+		if ( FindCoverSpot( pEnemy, bBunched ? SEARCH_SPREAD : SEARCH_COVER ) )
 		{
 			VacateStrategySlot();
 			m_eCoverExit = CEXIT_FOUND_COVER;
@@ -2944,9 +2947,9 @@ bool CNPC_GermanSoldier::IsCoverSpotTaken( const Vector &vecPos )
 // Position evaluation (Killzone-style): score every ground node within reach by the cover it
 // gives against this enemy, how far he has to run, and how close it puts him to the enemy.
 // Squadmates' spots are skipped. Picks the best; the move schedule finds the path.
-// How many squadmates are already at, or heading for, a spot within 96 units of this one.
+// How many squadmates are already at, or heading for, a spot within flRadius of this one.
 // (Searches score against it: a squad spreads out instead of piling onto one wall.)
-int CNPC_GermanSoldier::SquadCrowding( const Vector &vecPos )
+int CNPC_GermanSoldier::SquadCrowding( const Vector &vecPos, float flRadius )
 {
 	if ( !m_pSquad )
 		return 0;
@@ -2958,7 +2961,7 @@ int CNPC_GermanSoldier::SquadCrowding( const Vector &vecPos )
 			continue;
 		CNPC_GermanSoldier *pG = static_cast<CNPC_GermanSoldier *>( pMember );
 		Vector vecTheirs = pG->m_bHasCoverSpot ? pG->m_vecCoverSpot : pG->GetAbsOrigin();
-		if ( ( vecTheirs - vecPos ).Length2D() < 96.0f )
+		if ( ( vecTheirs - vecPos ).Length2D() < flRadius )
 			n++;
 	}
 	return n;
@@ -3005,7 +3008,8 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, int nMode, const Ve
 	bool bAdvance = nMode == SEARCH_ADVANCE;
 	bool bFlank = nMode == SEARCH_FLANK_LEFT || nMode == SEARCH_FLANK_RIGHT;
 	bool bRetreat = nMode == SEARCH_RETREAT;
-	bool bOrdinary = nMode == SEARCH_COVER;
+	bool bSpread = nMode == SEARCH_SPREAD;			// too bunched up: somewhere apart from the squad (cover, or an angle)
+	bool bOrdinary = nMode == SEARCH_COVER || bSpread;
 	bool bAssault = nMode == SEARCH_ASSAULT;
 	float flRadius = bFlank || bAssault ? m_flFlankRadius : m_flCoverSearchRadius;
 	// One owner for "where the threat is" in this search: his eyes now, or where he was last seen.
@@ -3029,20 +3033,24 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, int nMode, const Ve
 		float flDist = ( vecPos - vecMe ).Length();
 		if ( flDist > flRadius )
 			continue;
-		if ( fabsf( vecPos.z - vecMe.z ) > 160.0f || flDist < 24.0f )
+		// Other floors and the slopes of a hilly town are fine (the route decides if he can get
+		// there); only a cliff's worth of height is out.
+		if ( fabsf( vecPos.z - vecMe.z ) > 384.0f || flDist < ( bSpread ? 96.0f : 24.0f ) )
 		{
 			DrawSearchNode( vecPos, 120, 120, 120 );
 			continue;
 		}
 		float flFoe = ( vecPos - vecFoe ).Length2D();
-		if ( flFoe < 192.0f || IsSpotBad( vecPos ) || IsCoverSpotTaken( vecPos ) )
+		// not in his face - except stacking up right beside where he was, which is the point of it
+		if ( flFoe < ( bAssault ? 64.0f : 192.0f ) || IsSpotBad( vecPos ) || IsCoverSpotTaken( vecPos ) ||
+			 ( bSpread && SquadCrowding( vecPos ) > 0 ) )
 		{
 			DrawSearchNode( vecPos, 120, 120, 120 );
 			continue;
 		}
 		if ( ( bAdvance && flFoe > flMyFoe - 128.0f ) ||		// bounding forward: only cover that actually gains ground
 			 ( bRetreat && flFoe < flMyFoe + 192.0f ) ||		// falling back: only cover that gives ground
-			 ( bAssault && ( flFoe > 450.0f || flFoe > flMyFoe - 64.0f ) ) )	// going after him: next to where he was, and closer
+			 ( bAssault && ( flFoe > 450.0f || ( flFoe > flMyFoe - 64.0f && flMyFoe > 600.0f ) ) ) )	// going after him: next to where he was (closer, unless he's already near)
 		{
 			DrawSearchNode( vecPos, 50, 50, 50 );
 			continue;
@@ -3098,7 +3106,7 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, int nMode, const Ve
 			//   right beside where you were, out of your sight - he stacks up there (a doorway, your wall)
 			//   anywhere he can see where you are/were from - he's got an angle on you
 			bool bAngle = false;
-			if ( ( bAssault || bFlank ) && nCover == COVER_EXPOSED )
+			if ( ( bAssault || bFlank || bSpread ) && nCover == COVER_EXPOSED )
 			{
 				trace_t trAngle;
 				CTraceFilterSkipTwoEntities filterAngle( this, pEnemy, COLLISION_GROUP_NONE );
@@ -3138,7 +3146,7 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, int nMode, const Ve
 			c.cover += ( flFoe - flMyFoe ) * 0.05f;
 		if ( bAssault )
 			c.cover += ( 450.0f - flFoe ) * 0.08f;		// the closer to where he was, the better
-		c.cover -= 25.0f * SquadCrowding( vecPos );		// spread out: not onto a squadmate's wall
+		c.cover -= 40.0f * SquadCrowding( vecPos );		// spread out: not onto a squadmate's wall
 		c.score = c.cover - flDist * 0.08f;		// straight-line estimate (a route is never shorter)
 		// keep the best MAX_CANDS by estimate
 		int iSlot = nCands < MAX_CANDS ? nCands++ : -1;
@@ -3215,7 +3223,8 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, int nMode, const Ve
 	if ( npc_german_debug.GetBool() )
 		Msg( "[%.2f] npc_german_soldier %d: %s - %d spots tested, %d usable (%d corners, %d angles, %d stacks), %d had no route: %s%s (run %.0f, %.0f of it in your line of fire)\n",
 			 gpGlobals->curtime, entindex(), bAdvance ? "advance search (closer cover)" : bFlank ? ( nMode == SEARCH_FLANK_LEFT ? "flank search (left)" : "flank search (right)" ) :
-			 bRetreat ? "fall-back search" : bAssault ? "assault search (next to where you were)" : pvecThreatEye ? "watch search (your last position)" : "cover search",
+			 bRetreat ? "fall-back search" : bAssault ? "assault search (next to where you were)" : bSpread ? "spread search (too bunched up)" :
+			 pvecThreatEye ? "watch search (your last position)" : "cover search",
 			 nTested, nCands, nCorners, nAngles, nStacks, nNoRoute,
 			 flBest > -FLT_MAX ? "going" : "nothing usable",
 			 flBest == -FLT_MAX ? "" : kindBest == SPOT_STACK ? " to stack up beside where you were" : kindBest == SPOT_ANGLE ? " to get an angle on you" :
