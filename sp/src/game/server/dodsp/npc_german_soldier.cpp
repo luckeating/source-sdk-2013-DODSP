@@ -140,6 +140,7 @@ public:
 		SCHED_GERMAN_HOLD_COVER,							// no enemy to fight from cover (alert) or a failed plan: watch his last spot
 		SCHED_GERMAN_OPEN,									// no cover he can reach: the open-ground loop owns him
 		SCHED_GERMAN_STACK,									// A3c: hidden right beside where the enemy was, waiting for him; then pushes through
+		SCHED_GERMAN_CLEAR,									// A3d-2: in through the way in, at a walk with the rifle up, toward where he was
 		NEXT_SCHEDULE
 	};
 	enum
@@ -149,6 +150,8 @@ public:
 		TASK_GERMAN_WATCH,
 		TASK_GERMAN_OPEN_LOOP,
 		TASK_GERMAN_STACK,
+		TASK_GERMAN_CLEAR_PATH,
+		TASK_GERMAN_CLEAR_DONE,
 		NEXT_TASK
 	};
 	enum
@@ -364,10 +367,13 @@ private:
 	// search) and reports back if he can't.
 	//-------------------------------------------------------------------------
 public:
-	enum SquadOrder_t { ORDER_NONE, ORDER_BOUND, ORDER_FLANK_LEFT, ORDER_FLANK_RIGHT, ORDER_FALLBACK, ORDER_ASSAULT, ORDER_OVERWATCH, NUM_ORDERS };
+	enum SquadOrder_t { ORDER_NONE, ORDER_BOUND, ORDER_FLANK_LEFT, ORDER_FLANK_RIGHT, ORDER_FALLBACK, ORDER_ASSAULT, ORDER_OVERWATCH, ORDER_STACK, ORDER_CLEAR, NUM_ORDERS };
 	enum MoveKind_t { MOVE_COVER, MOVE_BOUND, MOVE_FLANK_LEFT, MOVE_FLANK_RIGHT, MOVE_FALLBACK, MOVE_ASSAULT, MOVE_OVERWATCH };
 	void		SquadTick( void );
 	void		GiveSquadOrder( SquadOrder_t eOrder, float flDelay, const Vector &vecEnemyToSquad );
+	Vector		m_vecOrderPos;			// ORDER_STACK: the exact spot (worked out by the squad)
+	bool		m_bInDrill;				// A3d-2: one of the clearing pair - waits at his stack for the squad's go
+	bool		FindEntry( const Vector &vecTarget, Vector &vecStack1, Vector &vecStack2, Vector &vecEntry );
 	bool		CanTakeSquadOrder( void );
 	bool		CanSuppressEnemy( const Vector &vecTarget );
 	bool		IsInCoverLoop( void ) { return IsCurSchedule( SCHED_GERMAN_COVER, false ); }
@@ -421,7 +427,7 @@ private:
 	//-------------------------------------------------------------------------
 	// Watchdog (R1): passive. Prints INVARIANT lines when a rule is broken; changes nothing.
 	//-------------------------------------------------------------------------
-	enum Invariant_t { INV_STANCE_FLIPS, INV_STANCE_OWNER, INV_SCHED_CHURN, INV_DECISION_CHURN, INV_COVER_CHURN, INV_POSE_FLIPS, INV_ANIM_STUCK, INV_COVER_STANCE, INV_ORDER_STUCK, INV_FLANK_TIMEOUT, INV_CORNER_YAW, INV_ASSAULT_TIMEOUT, INV_PAIR_SPLIT, NUM_INVARIANTS };
+	enum Invariant_t { INV_STANCE_FLIPS, INV_STANCE_OWNER, INV_SCHED_CHURN, INV_DECISION_CHURN, INV_COVER_CHURN, INV_POSE_FLIPS, INV_ANIM_STUCK, INV_COVER_STANCE, INV_ORDER_STUCK, INV_FLANK_TIMEOUT, INV_CORNER_YAW, INV_ASSAULT_TIMEOUT, INV_PAIR_SPLIT, INV_CLEAR_TIMEOUT, NUM_INVARIANTS };
 	void		WatchdogPose( void );		// what the body actually plays: down / crouched / standing flips
 	bool		IsClipEmpty( void );		// one owner for "he has no rounds in the gun"
 	void		Invariant( Invariant_t eWhich, const char *pszFormat, ... );
@@ -686,6 +692,8 @@ CNPC_GermanSoldier::CNPC_GermanSoldier() : m_AnimMap( DefLessFunc( int ) )
 	m_flSquadAggression = 1.0f;
 	m_hPartner = NULL;
 	m_flPairApartSince = 0.0f;
+	m_vecOrderPos = vec3_origin;
+	m_bInDrill = false;
 	m_ePendingSpotKind = m_eArrivedKind = SPOT_COVER;
 	m_flArrivedAt = m_flStackUntil = 0.0f;
 	m_bPushPending = false;
@@ -1463,7 +1471,7 @@ void CNPC_GermanSoldier::Invariant( Invariant_t eWhich, const char *pszFormat, .
 	if ( gpGlobals->curtime < m_flInvariantNext[eWhich] )
 		return;
 	m_flInvariantNext[eWhich] = gpGlobals->curtime + 2.0f;
-	static const char *s_pszNames[] = { "STANCE_FLIPS", "STANCE_OWNER", "SCHED_CHURN", "DECISION_CHURN", "COVER_CHURN", "POSE_FLIPS", "ANIM_STUCK", "COVER_STANCE", "ORDER_STUCK", "FLANK_TIMEOUT", "CORNER_YAW", "ASSAULT_TIMEOUT", "PAIR_SPLIT" };
+	static const char *s_pszNames[] = { "STANCE_FLIPS", "STANCE_OWNER", "SCHED_CHURN", "DECISION_CHURN", "COVER_CHURN", "POSE_FLIPS", "ANIM_STUCK", "COVER_STANCE", "ORDER_STUCK", "FLANK_TIMEOUT", "CORNER_YAW", "ASSAULT_TIMEOUT", "PAIR_SPLIT", "CLEAR_TIMEOUT" };
 	char sz[512];
 	va_list ap;
 	va_start( ap, pszFormat );
@@ -1664,6 +1672,11 @@ struct GermanSquadState_t
 	EHANDLE	hOverwatch;			// ...and one watching that spot for them
 	float	flAssaultDeadline;
 	float	flNextAssault;
+	// A3d-2 - the clearing drill: a pair stacks at the way in, then goes in together while the
+	// rest of the squad watches the house.
+	int		nClear;				// CLEAR_NONE / CLEAR_STACKING / CLEAR_ENTERING
+	EHANDLE	hClear[2];
+	float	flClearUntil;
 	EHANDLE	hLeader;			// A3d: the man who leads the squad (Gruppenfuehrer)
 	bool	bHadLeader;
 	float	flLeaderlessUntil;	// leader just fell: nobody gives orders for a moment
@@ -1696,7 +1709,8 @@ static GermanSquadState_t *GetGermanSquad( string_t iszSquad )
 	return &s_GermanSquads[i];
 }
 
-static const char *s_pszSquadOrder[] = { "none", "bound forward", "flank left", "flank right", "fall back", "go after you where you were last seen", "watch where you were last seen" };
+static const char *s_pszSquadOrder[] = { "none", "bound forward", "flank left", "flank right", "fall back", "go after you where you were last seen", "watch where you were last seen",
+										 "stack up at the way in", "go in and clear toward where you were" };
 
 bool CNPC_GermanSoldier::IsSquadSuppressor( void )
 {
@@ -1753,6 +1767,69 @@ bool CNPC_GermanSoldier::CanSuppressEnemy( const Vector &vecTarget )
 	if ( tr.fraction >= 1.0f )
 		return true;
 	return ( tr.endpos - vecAim ).Length() < 128.0f && ( tr.endpos - vecFrom ).Length2D() > m_flCoverMaxGap + 16.0f;
+}
+
+enum { CLEAR_NONE, CLEAR_STACKING, CLEAR_ENTERING };
+
+// The way in (A3d-2): walk his route to where the enemy was; the first point from which that
+// spot can be seen is the threshold (the doorway, the corner). He stacks at the last point
+// before it (out of sight); his partner at another hidden spot close by - the other side of
+// the door where there is one. False if there's no hidden approach (he'd be seen all the way).
+bool CNPC_GermanSoldier::FindEntry( const Vector &vecTarget, Vector &vecStack1, Vector &vecStack2, Vector &vecEntry )
+{
+	AI_Waypoint_t *pRoute = GetPathfinder()->BuildRoute( GetAbsOrigin(), vecTarget, NULL, 32.0f, NAV_GROUND );
+	if ( !pRoute )
+		return false;
+	CTraceFilterSkipTwoEntities filter( this, GetEnemy(), COLLISION_GROUP_NONE );
+	Vector vecEye = vecTarget + Vector( 0, 0, 60 );
+	Vector vecPrev = GetAbsOrigin(), vecPrev2 = GetAbsOrigin();
+	bool bFound = false, bFirst = true;
+	for ( AI_Waypoint_t *pWay = pRoute; pWay; pWay = pWay->GetNext() )
+	{
+		Vector vecPos = pWay->GetPos();
+		trace_t tr;
+		UTIL_TraceLine( vecPos + Vector( 0, 0, 60 ), vecEye, COVER_MASK, &filter, &tr );
+		if ( tr.fraction >= 1.0f )
+		{
+			if ( !bFirst && ( vecPrev - vecTarget ).Length() < 900.0f )
+			{
+				vecStack1 = vecPrev;
+				vecEntry = vecPos;
+				vecStack2 = vecPrev2;
+				bFound = true;
+			}
+			break;
+		}
+		vecPrev2 = vecPrev;
+		vecPrev = vecPos;
+		bFirst = false;
+	}
+	DeleteAll( pRoute );
+	if ( !bFound )
+		return false;
+	// the partner: a hidden node close to the stack, nearest the way in (often the door's other side)
+	float flBest = FLT_MAX;
+	for ( int i = 0; g_pBigAINet && i < g_pBigAINet->NumNodes(); i++ )
+	{
+		CAI_Node *pNode = g_pBigAINet->GetNode( i, false );
+		if ( !pNode || pNode->GetType() != NODE_GROUND )
+			continue;
+		Vector vecPos = pNode->GetPosition( GetHullType() );
+		float flFromStack = ( vecPos - vecStack1 ).Length();
+		if ( flFromStack < 40.0f || flFromStack > 160.0f )
+			continue;
+		trace_t tr;
+		UTIL_TraceLine( vecPos + Vector( 0, 0, 60 ), vecEye, COVER_MASK, &filter, &tr );
+		if ( tr.fraction >= 1.0f )
+			continue;		// he'd be seen there
+		float flToEntry = ( vecPos - vecEntry ).Length();
+		if ( flToEntry < flBest )
+		{
+			flBest = flToEntry;
+			vecStack2 = vecPos;
+		}
+	}
+	return true;
 }
 
 bool CNPC_GermanSoldier::IsSquadLeader( void )
@@ -1960,6 +2037,64 @@ void CNPC_GermanSoldier::SquadTick( void )
 		 !( pWatch->IsCurSchedule( SCHED_GERMAN_MOVE_TO_COVER, false ) && pWatch->m_eMoveKind == MOVE_OVERWATCH ) ) ) )
 		sq.hOverwatch = NULL;
 
+	// A3d-2 - the clearing drill.
+	if ( sq.nClear != CLEAR_NONE )
+	{
+		CNPC_GermanSoldier *pA = static_cast<CNPC_GermanSoldier *>( sq.hClear[0].Get() );
+		CNPC_GermanSoldier *pB = static_cast<CNPC_GermanSoldier *>( sq.hClear[1].Get() );
+		if ( pA && !pA->IsAlive() ) pA = NULL;
+		if ( pB && !pB->IsAlive() ) pB = NULL;
+		const char *pszEnd = NULL;
+		if ( !pA && !pB )
+			pszEnd = "the clearing pair is down";
+		else if ( now - sq.flLastSeen < 0.5f )
+			pszEnd = "you showed yourself - they fight";
+		else if ( sq.nClear == CLEAR_STACKING )
+		{
+			bool bAStacked = !pA || pA->IsCurSchedule( SCHED_GERMAN_STACK, false );
+			bool bBStacked = !pB || pB->IsCurSchedule( SCHED_GERMAN_STACK, false );
+			bool bAOrdered = pA && ( pA->m_eSquadOrder == ORDER_STACK || pA->IsCurSchedule( SCHED_GERMAN_MOVE_TO_COVER, false ) || bAStacked );
+			bool bBOrdered = pB && ( pB->m_eSquadOrder == ORDER_STACK || pB->IsCurSchedule( SCHED_GERMAN_MOVE_TO_COVER, false ) || bBStacked );
+			if ( !bAOrdered && !bBOrdered )
+				pszEnd = "nobody got to the way in";
+			else if ( ( bAStacked && bBStacked ) || now > sq.flClearUntil )
+			{
+				// Both at the door (or long enough): in. First man, then his partner a moment after.
+				Vector vecTo = vec3_origin;
+				if ( pA ) pA->GiveSquadOrder( ORDER_CLEAR, 0.3f, vecTo );
+				if ( pB ) pB->GiveSquadOrder( ORDER_CLEAR, pA ? 1.6f : 0.3f, vecTo );
+				CNPC_GermanSoldier *pCaller = SquadLeader() ? SquadLeader() : ( pA ? pA : pB );
+				pCaller->m_Chatter.Request( CHAT_ORDER_FORWARD, NULL, pA ? pA : pB );
+				sq.nClear = CLEAR_ENTERING;
+				sq.flClearUntil = now + 30.0f;
+				if ( npc_german_debug.GetBool() )
+					Msg( "[%.2f] npc_german_soldier %d: squad - %s at the way in: going in\n", now, entindex(), bAStacked && bBStacked ? "both" : "waited long enough" );
+			}
+		}
+		else if ( sq.nClear == CLEAR_ENTERING )
+		{
+			bool bAIn = pA && ( pA->m_eSquadOrder == ORDER_CLEAR || pA->IsCurSchedule( SCHED_GERMAN_CLEAR, false ) );
+			bool bBIn = pB && ( pB->m_eSquadOrder == ORDER_CLEAR || pB->IsCurSchedule( SCHED_GERMAN_CLEAR, false ) );
+			if ( !bAIn && !bBIn )
+				pszEnd = "they went through to where you were";
+			else if ( now > sq.flClearUntil )
+			{
+				( pA ? pA : pB )->Invariant( INV_CLEAR_TIMEOUT, "still clearing 30 s after going in - calling it off" );
+				pszEnd = "took too long";
+			}
+		}
+		if ( pszEnd )
+		{
+			if ( npc_german_debug.GetBool() )
+				Msg( "[%.2f] npc_german_soldier %d: squad - clearing drill over: %s\n", now, entindex(), pszEnd );
+			if ( pA ) pA->m_bInDrill = false;
+			if ( pB ) pB->m_bInDrill = false;
+			sq.nClear = CLEAR_NONE;
+			sq.hClear[0] = sq.hClear[1] = NULL;
+			sq.flNextAssault = now + 10.0f / m_flSquadAggression;
+		}
+	}
+
 	if ( now < sq.flLeaderlessUntil )
 		return;		// the leader just fell: a moment before anyone gives orders
 	CBaseEntity *pEnemy = sq.hEnemy.Get();
@@ -1972,9 +2107,65 @@ void CNPC_GermanSoldier::SquadTick( void )
 	// takes cover watching that spot. ("Vorwaerts!")
 	if ( now - sq.flLastSeen > m_flAssaultAfter / flAggr )
 	{
-		if ( !bAssaultActive && nAlive >= 2 && now >= sq.flNextAssault )
+		if ( !bAssaultActive && sq.nClear == CLEAR_NONE && nAlive >= 2 && now >= sq.flNextAssault )
 		{
 			sq.flNextAssault = now + 20.0f / flAggr;
+			// A3d-2: the nearest man and his partner stack at the way in to where you were, and go
+			// in together; everyone else free watches the house (two pairs at most).
+			CNPC_GermanSoldier *pFirst = NULL;
+			float flNear = FLT_MAX;
+			for ( int i = 0; i < nAlive; i++ )
+			{
+				CNPC_GermanSoldier *pG = apMembers[i];
+				float flDist = ( pG->GetAbsOrigin() - sq.vecLKP ).Length2D();
+				if ( pG->CanTakeSquadOrder() && pG->GetEnemy() && flDist < flNear )
+				{
+					flNear = flDist;
+					pFirst = pG;
+				}
+			}
+			CNPC_GermanSoldier *pSecond = pFirst ? pFirst->Partner() : NULL;
+			if ( pSecond && !pSecond->CanTakeSquadOrder() )
+				pSecond = NULL;
+			Vector vecStack1, vecStack2, vecEntry;
+			if ( pFirst && pFirst->FindEntry( sq.vecLKP, vecStack1, vecStack2, vecEntry ) )
+			{
+				Vector vecTo = pFirst->GetAbsOrigin() - sq.vecLKP;
+				vecTo.z = 0.0f;
+				VectorNormalize( vecTo );
+				pFirst->m_vecOrderPos = vecStack1;
+				pFirst->m_bInDrill = true;
+				pFirst->GiveSquadOrder( ORDER_STACK, 0.3f, vecTo );
+				if ( pSecond )
+				{
+					pSecond->m_vecOrderPos = vecStack2;
+					pSecond->m_bInDrill = true;
+					pSecond->GiveSquadOrder( ORDER_STACK, 1.0f, vecTo );
+				}
+				sq.nClear = CLEAR_STACKING;
+				sq.hClear[0] = pFirst;
+				sq.hClear[1] = pSecond;
+				sq.flClearUntil = now + 15.0f;
+				int nWatch = 0;
+				for ( int i = 0; i < nAlive && nWatch < 4; i++ )
+				{
+					CNPC_GermanSoldier *pG = apMembers[i];
+					if ( pG == pFirst || pG == pSecond || !pG->CanTakeSquadOrder() )
+						continue;
+					Vector vecW = pG->GetAbsOrigin() - sq.vecLKP;
+					vecW.z = 0.0f;
+					VectorNormalize( vecW );
+					pG->GiveSquadOrder( ORDER_OVERWATCH, 0.2f + 0.5f * nWatch, vecW );
+					nWatch++;
+				}
+				if ( npc_german_debug.GetBool() )
+				{
+					Msg( "[%.2f] npc_german_soldier %d: squad - lost you %.0f s ago: clearing drill - %d and %d stack up at the way in, %d watch the house\n",
+						 now, entindex(), now - sq.flLastSeen, pFirst->entindex(), pSecond ? pSecond->entindex() : -1, nWatch );
+					NDebugOverlay::Box( vecEntry, Vector( -10, -10, 0 ), Vector( 10, 10, 72 ), 255, 255, 0, 80, 8.0f );
+				}
+				return;
+			}
 			// A3d: a pair goes in - the man nearest to where he was, and his partner.
 			int nGot = 0;
 			for ( int k = 0; k < 2; k++ )
@@ -3607,8 +3798,10 @@ Activity CNPC_GermanSoldier::TranslateToDoD( Activity eNewActivity )
 void CNPC_GermanSoldier::OnChangeActivity( Activity eNewActivity )
 {
 	BaseClass::OnChangeActivity( eNewActivity );	// stands him for ACT_RUN / ACT_RUN_AIM / ACT_WALK
-	if ( ( eNewActivity == ACT_RUN || eNewActivity == ACT_RUN_AIM || eNewActivity == ACT_WALK ) && m_eStance != STANCE_STAND )
+	if ( ( eNewActivity == ACT_RUN || eNewActivity == ACT_RUN_AIM || eNewActivity == ACT_WALK || eNewActivity == ACT_WALK_AIM ) && m_eStance != STANCE_STAND )
 	{
+		if ( eNewActivity == ACT_WALK_AIM )
+			Stand();		// the engine only stands run / walk; walking in with the rifle up is standing too
 		m_eStance = STANCE_STAND;
 		m_flStanceSince = gpGlobals->curtime;
 		m_pszStanceWhy = "moving (engine stands movers)";
@@ -3859,6 +4052,34 @@ void CNPC_GermanSoldier::StartTask( const Task_t *pTask )
 		}
 		break;
 
+	case TASK_GERMAN_CLEAR_PATH:
+		{
+			// In at a walk, rifle up (DoD walk-aim), along his route to where you were last seen.
+			if ( !GetEnemy() )
+			{
+				TaskFail( "nobody to clear toward" );
+				break;
+			}
+			AI_NavGoal_t goal( GetEnemyLKP(), ACT_WALK_AIM, 48.0f );
+			if ( !GetNavigator()->SetGoal( goal ) )
+			{
+				TaskFail( "no way in" );
+				break;
+			}
+			SetStance( STANCE_STAND, "going in - rifle up" );
+			if ( npc_german_debug.GetBool() )
+				Msg( "[%.2f] npc_german_soldier %d: clearing - in at a walk, rifle up\n", gpGlobals->curtime, entindex() );
+			TaskComplete();
+		}
+		break;
+
+	case TASK_GERMAN_CLEAR_DONE:
+		m_bInDrill = false;
+		if ( npc_german_debug.GetBool() )
+			Msg( "[%.2f] npc_german_soldier %d: clearing - reached where you were: clear\n", gpGlobals->curtime, entindex() );
+		TaskComplete();
+		break;
+
 	case TASK_GERMAN_STACK:
 		SetStance( STANCE_CROUCH, "stacked up, waiting for you" );
 		SetIdealActivity( ACT_IDLE_ANGRY );
@@ -4011,7 +4232,19 @@ void CNPC_GermanSoldier::RunTask( const Task_t *pTask )
 	case TASK_GERMAN_STACK:
 		if ( GetEnemy() )
 			GetMotor()->SetIdealYawToTargetAndUpdate( GetEnemyLKP(), AI_KEEP_YAW_SPEED );
-		if ( gpGlobals->curtime >= m_flStackUntil )
+		if ( m_bInDrill )
+		{
+			// one of the clearing pair: the squad says when (both at the door) - not his own timer
+			if ( m_eSquadOrder == ORDER_CLEAR && gpGlobals->curtime >= m_flSquadOrderAt )
+				TaskComplete();
+			else if ( gpGlobals->curtime >= m_flStackUntil + 15.0f )
+			{
+				m_bInDrill = false;			// the drill fell apart: on his own again
+				m_bPushPending = true;
+				TaskComplete();
+			}
+		}
+		else if ( gpGlobals->curtime >= m_flStackUntil )
 		{
 			m_bPushPending = true;		// nothing came out: in after him
 			TaskComplete();
@@ -4688,8 +4921,20 @@ int CNPC_GermanSoldier::SelectCombatSchedule( void )
 	{
 		SquadOrder_t eOrder = m_eSquadOrder;
 		m_eSquadOrder = ORDER_NONE;
-		static const int s_nMode[NUM_ORDERS] = { SEARCH_COVER, SEARCH_ADVANCE, SEARCH_FLANK_LEFT, SEARCH_FLANK_RIGHT, SEARCH_RETREAT, SEARCH_ASSAULT, SEARCH_COVER };
-		static const MoveKind_t s_eKind[NUM_ORDERS] = { MOVE_COVER, MOVE_BOUND, MOVE_FLANK_LEFT, MOVE_FLANK_RIGHT, MOVE_FALLBACK, MOVE_ASSAULT, MOVE_OVERWATCH };
+		if ( eOrder == ORDER_STACK )
+		{
+			// the squad worked out the exact spot (the way in): no search
+			m_vecCoverSpot = m_vecOrderPos;
+			m_bHasCoverSpot = true;
+			m_ePendingSpotKind = SPOT_STACK;
+			m_PendingCorner.bValid = false;
+			m_eMoveKind = MOVE_ASSAULT;
+			return Decide( SCHED_GERMAN_MOVE_TO_COVER, "squad: stack up at the way in" );
+		}
+		if ( eOrder == ORDER_CLEAR )
+			return Decide( SCHED_GERMAN_CLEAR, "squad: in through the way in, clearing toward where you were" );
+		static const int s_nMode[NUM_ORDERS] = { SEARCH_COVER, SEARCH_ADVANCE, SEARCH_FLANK_LEFT, SEARCH_FLANK_RIGHT, SEARCH_RETREAT, SEARCH_ASSAULT, SEARCH_COVER, SEARCH_COVER, SEARCH_COVER };
+		static const MoveKind_t s_eKind[NUM_ORDERS] = { MOVE_COVER, MOVE_BOUND, MOVE_FLANK_LEFT, MOVE_FLANK_RIGHT, MOVE_FALLBACK, MOVE_ASSAULT, MOVE_OVERWATCH, MOVE_ASSAULT, MOVE_ASSAULT };
 		// going after him / watching for him: against where he was last seen, not where he is
 		Vector vecLastEye = GetEnemyLKP() + Vector( 0, 0, 64 );
 		bool bByLKP = eOrder == ORDER_ASSAULT || eOrder == ORDER_OVERWATCH;
@@ -4703,7 +4948,7 @@ int CNPC_GermanSoldier::SelectCombatSchedule( void )
 					pSq->flFlankDeadline = now + clamp( m_flLastSearchRun / 150.0f * 2.0f + 6.0f, 10.0f, 40.0f );
 			}
 			static const char *s_pszWhy[NUM_ORDERS] = { "", "squad: bound forward", "squad: flank left", "squad: flank right", "squad: fall back",
-														"squad: go after him where he was last seen", "squad: watch where he was last seen" };
+														"squad: go after him where he was last seen", "squad: watch where he was last seen", "", "" };
 			return Decide( SCHED_GERMAN_MOVE_TO_COVER, s_pszWhy[eOrder] );
 		}
 		SquadOrderFailed( eOrder );
@@ -5169,6 +5414,8 @@ AI_BEGIN_CUSTOM_NPC( npc_german_soldier, CNPC_GermanSoldier )
 	DECLARE_TASK( TASK_GERMAN_WATCH )
 	DECLARE_TASK( TASK_GERMAN_OPEN_LOOP )
 	DECLARE_TASK( TASK_GERMAN_STACK )
+	DECLARE_TASK( TASK_GERMAN_CLEAR_PATH )
+	DECLARE_TASK( TASK_GERMAN_CLEAR_DONE )
 	DECLARE_SQUADSLOT( SQUAD_SLOT_GERMAN_FIRE1 )
 	DECLARE_SQUADSLOT( SQUAD_SLOT_GERMAN_FIRE2 )
 	DECLARE_SQUADSLOT( SQUAD_SLOT_GERMAN_FIRE3 )
@@ -5263,6 +5510,29 @@ AI_BEGIN_CUSTOM_NPC( npc_german_soldier, CNPC_GermanSoldier )
 		"	Tasks"
 		"		TASK_STOP_MOVING			0"
 		"		TASK_GERMAN_STACK			0"
+		""
+		"	Interrupts"
+		"		COND_SEE_ENEMY"
+		"		COND_NEW_ENEMY"
+		"		COND_ENEMY_DEAD"
+		"		COND_LIGHT_DAMAGE"
+		"		COND_HEAVY_DAMAGE"
+		"		COND_HEAR_DANGER"
+	)
+
+	//=========================================================
+	// SCHED_GERMAN_CLEAR (A3d-2): the clearing pair goes in - at a walk, rifle up, along the
+	// route to where the enemy was last seen. Seeing him (or being hit) stops it: the brain
+	// fights him from wherever he is.
+	//=========================================================
+	DEFINE_SCHEDULE
+	(
+		SCHED_GERMAN_CLEAR,
+
+		"	Tasks"
+		"		TASK_GERMAN_CLEAR_PATH		0"
+		"		TASK_WAIT_FOR_MOVEMENT		0"
+		"		TASK_GERMAN_CLEAR_DONE		0"
 		""
 		"	Interrupts"
 		"		COND_SEE_ENEMY"
