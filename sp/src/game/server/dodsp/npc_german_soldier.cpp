@@ -339,7 +339,7 @@ private:
 	// Every state takes time; he leaves only when flanked, bored, or interrupted.
 	//-------------------------------------------------------------------------
 	enum CoverState_t { CS_HIDE, CS_RISE, CS_SHOOT, CS_LOOK, CS_DUCK, CS_RELOAD };
-	enum CoverExit_t { CEXIT_NONE, CEXIT_FLANKED, CEXIT_BORED, CEXIT_FOUND_COVER, CEXIT_ORDER };
+	enum CoverExit_t { CEXIT_NONE, CEXIT_FLANKED, CEXIT_BORED, CEXIT_FOUND_COVER, CEXIT_ORDER, CEXIT_SHIFT };
 
 	//-------------------------------------------------------------------------
 	// The open-ground loop (R4): no cover he can reach. Stance chosen once (crouched far off or
@@ -370,7 +370,7 @@ private:
 	//-------------------------------------------------------------------------
 public:
 	enum SquadOrder_t { ORDER_NONE, ORDER_BOUND, ORDER_FLANK_LEFT, ORDER_FLANK_RIGHT, ORDER_FALLBACK, ORDER_ASSAULT, ORDER_OVERWATCH, ORDER_STACK, ORDER_CLEAR, NUM_ORDERS };
-	enum MoveKind_t { MOVE_COVER, MOVE_BOUND, MOVE_FLANK_LEFT, MOVE_FLANK_RIGHT, MOVE_FALLBACK, MOVE_ASSAULT, MOVE_OVERWATCH };
+	enum MoveKind_t { MOVE_COVER, MOVE_BOUND, MOVE_FLANK_LEFT, MOVE_FLANK_RIGHT, MOVE_FALLBACK, MOVE_ASSAULT, MOVE_OVERWATCH, MOVE_SHIFT };
 	void		SquadTick( void );
 	void		GiveSquadOrder( SquadOrder_t eOrder, float flDelay, const Vector &vecEnemyToSquad );
 	Vector		m_vecOrderPos;			// ORDER_STACK: the exact spot (worked out by the squad)
@@ -422,6 +422,7 @@ public:
 	SpotKind_t	m_ePendingSpotKind;		// the spot he's running to
 	SpotKind_t	m_eArrivedKind;			// just got to a non-cover spot (the brain acts on it once)
 	float		m_flArrivedAt;
+	MoveKind_t	m_eArrivedMove;			// A4a-2: what that move was (an assault / flank arrival is committed)
 	bool		m_bPushPending;			// stacked, nothing came: push through next decision
 	float		m_flStackUntil;
 private:
@@ -445,7 +446,7 @@ private:
 	enum { COVER_EXPOSED = -1, COVER_FULL = 0, COVER_CROUCH = 1, COVER_STAND = 2, COVER_CORNER = 3 };
 	int			LowCoverAgainst( CBaseEntity *pEnemy );	// COVER_*: > 0 means low cover he can fire from
 	int			CoverAt( const Vector &vecPos, CBaseEntity *pEnemy, trace_t *pHideTrace = NULL, const Vector *pvecEye = NULL );	// same test at any spot (pvecEye: against where his eyes were)
-	enum SearchMode_t { SEARCH_COVER, SEARCH_ADVANCE, SEARCH_FLANK_LEFT, SEARCH_FLANK_RIGHT, SEARCH_RETREAT, SEARCH_ASSAULT, SEARCH_SPREAD, SEARCH_WATCH };
+	enum SearchMode_t { SEARCH_COVER, SEARCH_ADVANCE, SEARCH_FLANK_LEFT, SEARCH_FLANK_RIGHT, SEARCH_RETREAT, SEARCH_ASSAULT, SEARCH_SPREAD, SEARCH_WATCH, SEARCH_SHIFT };
 	// best-scoring cover for this kind of move; pvecThreatEye: against where the enemy was last
 	// seen (his eyes there) instead of where he is - for a squad that has lost sight of him
 	bool		FindCoverSpot( CBaseEntity *pEnemy, int nMode = SEARCH_COVER, const Vector *pvecThreatEye = NULL );
@@ -469,6 +470,11 @@ private:
 	Activity	PickRunGait( void );
 	bool		OnBeginMoveAndShoot( void );
 	void		RunOpenPinned( void );
+	bool		IsCommitted( void );	// A4a-2: on a rush (the drill, an assault or flank just arrived): pinning doesn't stop him
+	float		PinResolve( void );		// A4a-2: 1..2 - the squad's odds make him harder to pin
+	bool		m_bShiftAfterPin;		// A4a-2: pinned at his cover - once it eases, move along to a new firing spot
+	float		m_flHunkerEnded;
+	float		m_flPinnedRunCheck;
 	float		m_flPinned;				// 0..2
 	bool		m_bPinned;
 	float		m_flPinnedSince;
@@ -749,6 +755,9 @@ CNPC_GermanSoldier::CNPC_GermanSoldier() : m_AnimMap( DefLessFunc( int ) )
 	m_nDrillRetries = 0;
 	m_ePendingSpotKind = m_eArrivedKind = SPOT_COVER;
 	m_flArrivedAt = m_flStackUntil = 0.0f;
+	m_eArrivedMove = MOVE_COVER;
+	m_bShiftAfterPin = false;
+	m_flHunkerEnded = m_flPinnedRunCheck = 0.0f;
 	m_bPushPending = false;
 	m_flAssaultAfter = 6.0f;
 	m_flFlankRadius = 1200.0f;
@@ -3008,9 +3017,25 @@ void CNPC_GermanSoldier::RunOpenLoop( void )
 
 	// A4a: pinned in the open (no cover he could reach): head down, arms over it, no shooting.
 	// Rounds close by but not pinned yet: a flinch between bursts.
-	if ( m_eOpenState != OS_RELOAD && m_eOpenState != OS_PINNED && m_eStance == STANCE_CROUCH && !IsInStanceTransition() )
+	// A4a-2: a man on a rush doesn't stop for it. Anyone else runs for cover first - back the way
+	// he came if that's where it is - and only hunkers if there's truly nowhere, briefly.
+	bool bCommitted = IsCommitted();
+	if ( m_bPinned && !bCommitted && m_eOpenState != OS_RELOAD && !( m_eOpenState == OS_PINNED && m_nHunkerPhase != 1 ) && now >= m_flPinnedRunCheck )
 	{
-		if ( m_bPinned && m_actHunkerIn[0] != ACT_INVALID )
+		m_flPinnedRunCheck = now + 2.0f;
+		if ( FindCoverSpot( pEnemy, SEARCH_COVER ) || FindCoverSpot( pEnemy, SEARCH_RETREAT ) )
+		{
+			VacateStrategySlot();
+			m_eCoverExit = CEXIT_FOUND_COVER;
+			if ( npc_german_debug.GetBool() )
+				Msg( "[%.2f] npc_german_soldier %d: pinned in the open - runs for cover\n", now, entindex() );
+			TaskComplete();
+			return;
+		}
+	}
+	if ( m_eOpenState != OS_RELOAD && m_eOpenState != OS_PINNED && m_eStance == STANCE_CROUCH && !IsInStanceTransition() && !bCommitted )
+	{
+		if ( m_bPinned && m_actHunkerIn[0] != ACT_INVALID && now - m_flHunkerEnded > 5.0f )
 		{
 			m_nHunkerPhase = 0;
 			m_nHunkerSide = random->RandomInt( 0, 1 );
@@ -3546,6 +3571,20 @@ void CNPC_GermanSoldier::CoverDecideWhileHidden( void )
 		}
 		return;
 	}
+	// A4a-2: fire and move - he was pinned here, you know where he is: once it eases he moves
+	// along the cover to a new firing spot instead of coming up where you're waiting for him.
+	if ( m_bShiftAfterPin )
+	{
+		m_bShiftAfterPin = false;
+		if ( !m_bInDrill && FindCoverSpot( GetEnemy(), SEARCH_SHIFT ) )
+		{
+			m_bSuppressing = false;
+			m_eCoverExit = CEXIT_SHIFT;
+			VacateStrategySlot();
+			TaskComplete();
+			return;
+		}
+	}
 	if ( nClip <= 0 )
 	{
 		SetCoverState( CS_RELOAD, "clip empty" );
@@ -3833,10 +3872,11 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, int nMode, const Ve
 	bool bOrdinary = nMode == SEARCH_COVER || bSpread;		// (watching is not ordinary: the covering group moves up to the house)
 	bool bAssault = nMode == SEARCH_ASSAULT;
 	bool bWatch = nMode == SEARCH_WATCH;	// watching where he was last seen (the covering group)
+	bool bShift = nMode == SEARCH_SHIFT;	// A4a-2 fire and move: along his cover to another firing spot, out of sight
 	// One rule for every move order (A3d): cover is best, but an open spot he can see the enemy
 	// (or where he was) from will do - an angle. Only falling back insists on cover.
 	bool bAnglesOk = bAssault || bFlank || bSpread || bAdvance || bWatch;
-	float flRadius = bFlank || bAssault ? m_flFlankRadius : bWatch ? 2000.0f : m_flCoverSearchRadius;
+	float flRadius = bFlank || bAssault ? m_flFlankRadius : bWatch ? 2000.0f : bShift ? 512.0f : m_flCoverSearchRadius;
 	// One owner for "where the threat is" in this search: his eyes now, or where he was last seen.
 	Vector vecThreatEye = pvecThreatEye ? *pvecThreatEye : pEnemy->EyePosition();
 	Vector vecMe = GetAbsOrigin(), vecFoe = pvecThreatEye ? *pvecThreatEye - Vector( 0, 0, 64 ) : pEnemy->GetAbsOrigin();
@@ -3882,7 +3922,8 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, int nMode, const Ve
 		if ( ( bAdvance && flFoe > flMyFoe - 128.0f ) ||		// bounding forward: only cover that actually gains ground
 			 ( bRetreat && flFoe < flMyFoe + 192.0f ) ||		// falling back: only cover that gives ground
 			 ( bAssault && ( flFoe > 450.0f || ( flFoe > flMyFoe - 64.0f && flMyFoe > 600.0f ) ) ) ||	// going after him: next to where he was (closer, unless he's already near)
-			 ( bWatch && flFoe > 800.0f ) )		// covering the house: within 800 of it, however far that is from where he stands
+			 ( bWatch && flFoe > 800.0f ) ||		// covering the house: within 800 of it, however far that is from where he stands
+			 ( bShift && ( flDist < 96.0f || fabsf( flFoe - flMyFoe ) > 256.0f ) ) )	// fire and move: a real move, same fighting distance
 		{
 			DrawSearchNode( vecPos, 50, 50, 50 );
 			continue;
@@ -4041,7 +4082,7 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, int nMode, const Ve
 			flLen += ( pWp->GetPos() - vecPrev ).Length();
 			vecPrev = pWp->GetPos();
 		}
-		if ( flLen > ( bWatch ? 2400.0f : flRadius * 1.5f ) || ( bAdvance && flLen > MAX( m_flBoundMax, ( c.pos - vecMe ).Length() * 1.6f ) ) )
+		if ( flLen > ( bWatch ? 2400.0f : bShift ? 640.0f : flRadius * 1.5f ) || ( bAdvance && flLen > MAX( m_flBoundMax, ( c.pos - vecMe ).Length() * 1.6f ) ) )
 		{
 			DeleteAll( pRoute );
 			continue;	// reachable, but only the long way round (a bound is a short dash)
@@ -4049,7 +4090,9 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, int nMode, const Ve
 		// Killzone / TLOU: the run itself matters - every unit of it in your line of fire costs.
 		float flExposed = RouteExposure( vecMe, pRoute, pEnemy, &vecThreatEye );
 		DeleteAll( pRoute );
-		float flScore = c.cover - flLen * 0.08f - flExposed * ( bFlank || bAssault ? 0.25f : 0.1f );	// a flank / an assault must stay out of his sight
+		float flScore = c.cover - flLen * 0.08f - flExposed * ( bFlank || bAssault ? 0.25f : bShift ? 0.4f : 0.1f );	// a flank / an assault / a shift must stay out of his sight
+		if ( bShift && flExposed > 96.0f )
+			continue;	// fire and move along the cover: not across your sights
 		if ( flScore > flBest )
 		{
 			flBest = flScore;
@@ -4064,7 +4107,7 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, int nMode, const Ve
 		Msg( "[%.2f] npc_german_soldier %d: %s - %d spots tested, %d usable (%d corners, %d angles, %d stacks), %d had no route: %s%s (run %.0f, %.0f of it in your line of fire)\n",
 			 gpGlobals->curtime, entindex(), bAdvance ? "advance search (closer cover)" : bFlank ? ( nMode == SEARCH_FLANK_LEFT ? "flank search (left)" : "flank search (right)" ) :
 			 bRetreat ? "fall-back search" : bAssault ? "assault search (next to where you were)" : bSpread ? "spread search (too bunched up)" :
-			 bWatch ? "watch search (your last position)" : "cover search",
+			 bWatch ? "watch search (your last position)" : bShift ? "shift search (fire and move)" : "cover search",
 			 nTested, nCands, nCorners, nAngles, nStacks, nNoRoute,
 			 flBest > -FLT_MAX ? "going" : "nothing usable",
 			 flBest == -FLT_MAX ? "" : kindBest == SPOT_STACK ? " to stack up beside where you were" : kindBest == SPOT_ANGLE ? " to get an angle on you" :
@@ -4095,8 +4138,24 @@ void CNPC_GermanSoldier::NoteNearMiss( CBaseEntity *pShooter, float flDist )
 
 void CNPC_GermanSoldier::AddPinned( float flAmount )
 {
-	m_flPinned = MIN( 2.0f, m_flPinned + flAmount );
+	m_flPinned = MIN( 2.0f, m_flPinned + flAmount / PinResolve() );
 	UpdatePinned();
+}
+
+// The odds as the squad reads them (A3e): 10 against 1, a man takes twice the fire to pin; it
+// gets easier as the squad loses men. On his own: as the script says.
+float CNPC_GermanSoldier::PinResolve( void )
+{
+	GermanSquadState_t *pSq = m_pSquad ? GetGermanSquad( m_SquadName ) : NULL;
+	return pSq ? clamp( pSq->flConfidence, 1.0f, 2.0f ) : 1.0f;
+}
+
+bool CNPC_GermanSoldier::IsCommitted( void )
+{
+	if ( m_bInDrill || IsCurSchedule( SCHED_GERMAN_CLEAR, false ) )
+		return true;
+	bool bRush = m_eArrivedMove == MOVE_ASSAULT || m_eArrivedMove == MOVE_FLANK_LEFT || m_eArrivedMove == MOVE_FLANK_RIGHT;
+	return bRush && gpGlobals->curtime - m_flArrivedAt < 8.0f;
 }
 
 void CNPC_GermanSoldier::UpdatePinned( void )
@@ -4118,9 +4177,12 @@ void CNPC_GermanSoldier::UpdatePinned( void )
 	{
 		m_bPinned = true;
 		m_flPinnedSince = now;
-		m_flOpenNextCoverCheck = 0.0f;		// in the open: look for cover right now
+		m_flOpenNextCoverCheck = m_flPinnedRunCheck = 0.0f;		// in the open: look for cover right now
+		if ( IsInCoverLoop() && !m_bInDrill )
+			m_bShiftAfterPin = true;		// he had you on him there: once it eases, fire and move
 		if ( npc_german_debug.GetBool() )
-			Msg( "[%.2f] npc_german_soldier %d: pinned down (%.2f)\n", now, entindex(), m_flPinned );
+			Msg( "[%.2f] npc_german_soldier %d: pinned down (%.2f, odds make him x%.1f harder to pin)%s\n", now, entindex(), m_flPinned, PinResolve(),
+				 IsCommitted() ? " - committed: keeps going" : "" );
 	}
 	else if ( m_bPinned && m_flPinned <= 0.5f )
 	{
@@ -4158,6 +4220,8 @@ Activity CNPC_GermanSoldier::PickRunGait( void )
 	float now = gpGlobals->curtime;
 	if ( ( m_bPinned || now - m_flLastSuppressed < 2.0f ) && m_actRunHelmet != ACT_INVALID )
 		return m_actRunHelmet;		// under fire: one hand on his helmet, head down
+	if ( IsCurSchedule( SCHED_GERMAN_MOVE_TO_COVER, false ) && m_eMoveKind == MOVE_SHIFT && m_actRunCrouch != ACT_INVALID )
+		return m_actRunCrouch;		// fire and move: hunched along the cover
 	if ( IsCurSchedule( SCHED_GERMAN_MOVE_TO_COVER, false ) && m_bHasCoverSpot && m_actRunCrouch != ACT_INVALID && GetNavigator()->IsGoalActive() )
 	{
 		float flRoute = GetNavigator()->GetPathDistanceToGoal();
@@ -4193,13 +4257,18 @@ void CNPC_GermanSoldier::RunOpenPinned( void )
 			m_flHunkerPhaseStart = now;
 		}
 		break;
-	case 1:		// down: until the fire eases (or he's been down long and it's quietened)
-		if ( !m_bPinned || ( now - m_flHunkerPhaseStart > 10.0f && now - m_flLastSuppressed > 3.0f ) )
+	case 1:		// down (A4a-2: briefly - 2.5 s, up to 5 while rounds keep coming right at him)
 		{
-			m_nHunkerPhase = 2;
-			m_flHunkerPhaseStart = now;
-			if ( npc_german_debug.GetBool() )
-				Msg( "[%.2f] npc_german_soldier %d: open pinned -> coming up (%s)\n", now, entindex(), m_bPinned ? "it's quietened" : "the fire's eased off" );
+			float flDown = now - m_flHunkerPhaseStart;
+			bool bHeavy = m_flPinned >= 1.6f && now - m_flLastSuppressed < 1.0f;
+			if ( !m_bPinned || ( flDown > 2.5f && !bHeavy ) || flDown > 5.0f )
+			{
+				m_nHunkerPhase = 2;
+				m_flHunkerPhaseStart = now;
+				m_flHunkerEnded = now;
+				if ( npc_german_debug.GetBool() )
+					Msg( "[%.2f] npc_german_soldier %d: open pinned -> coming up (%s)\n", now, entindex(), m_bPinned ? "can't stay down out here" : "the fire's eased off" );
+			}
 		}
 		break;
 	case 2:		// coming up
@@ -4661,6 +4730,7 @@ void CNPC_GermanSoldier::StartTask( const Task_t *pTask )
 
 	case TASK_GERMAN_PATH_TO_COVER:
 		{
+			m_bShiftAfterPin = false;		// a new spot: whatever pinned him at the old one doesn't follow him
 			AI_NavGoal_t goal( m_vecCoverSpot, ACT_RUN, 16.0f );
 			if ( !m_bHasCoverSpot || !GetNavigator()->SetGoal( goal ) )
 			{
@@ -4758,6 +4828,7 @@ void CNPC_GermanSoldier::StartTask( const Task_t *pTask )
 			m_eArrivedKind = m_ePendingSpotKind;
 			m_ePendingSpotKind = SPOT_COVER;
 			m_flArrivedAt = gpGlobals->curtime;
+			m_eArrivedMove = m_eMoveKind;
 			if ( npc_german_debug.GetBool() )
 				Msg( "[%.2f] npc_german_soldier %d: arrived - %s\n", gpGlobals->curtime, entindex(), s_pszArrived[m_eArrivedKind] );
 			TaskComplete();
@@ -5665,6 +5736,13 @@ int CNPC_GermanSoldier::SelectCombatSchedule( void )
 			m_eMoveKind = MOVE_ASSAULT;
 			return Decide( SCHED_GERMAN_MOVE_TO_COVER, "nothing came out - pushing through to where you were" );
 		}
+	}
+
+	// 2d. A4a-2: fire and move - pinned at his cover, it's eased: along the cover to a new firing spot.
+	if ( eExit == CEXIT_SHIFT && m_bHasCoverSpot )
+	{
+		m_eMoveKind = MOVE_SHIFT;
+		return Decide( SCHED_GERMAN_MOVE_TO_COVER, "fire and move - you had him pinned there: shifts along the cover" );
 	}
 
 	// 3. In low cover (and not just flanked out of it): the cover loop. A man on his own who left it
