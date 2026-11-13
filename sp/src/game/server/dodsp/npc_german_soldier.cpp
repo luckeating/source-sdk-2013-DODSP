@@ -4017,7 +4017,7 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, int nMode, const Ve
 			 ( bAssault && ( flFoe > 450.0f || ( flFoe > flMyFoe - 64.0f && flMyFoe > 600.0f ) ) ) ||	// going after him: next to where he was (closer, unless he's already near)
 			 ( bWatch && flFoe > 800.0f ) ||		// covering the house: within 800 of it, however far that is from where he stands
 			 ( bShift && ( flDist < 96.0f || fabsf( flFoe - flMyFoe ) > 256.0f ) ) ||	// fire and move: a real move, same fighting distance
-			 ( bMG && flFoe < 500.0f ) )		// an MG wants room: not on top of you
+			 ( bMG && flFoe < 300.0f ) )		// an MG wants room: not on top of you
 		{
 			DrawSearchNode( vecPos, 50, 50, 50 );
 			continue;
@@ -4070,8 +4070,10 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, int nMode, const Ve
 				continue;
 			}
 			c.kind = SPOT_MG;
-			float flOut = flFoe < 700.0f ? 700.0f - flFoe : flFoe > 1400.0f ? flFoe - 1400.0f : 0.0f;
-			flBase = ( c.mgKind == MGD_WALL ? 100.0f : 45.0f ) - flOut * 0.08f + clamp( ( vecPos.z - vecFoe.z ) * 0.08f, 0.0f, 25.0f );
+			// (A4b-1c: a town fight is close - 350-1400 is fine, and an upstairs window is worth a
+			// lot: up to +40 for being 400 units above you)
+			float flOut = flFoe < 350.0f ? 350.0f - flFoe : flFoe > 1400.0f ? flFoe - 1400.0f : 0.0f;
+			flBase = ( c.mgKind == MGD_WALL ? 100.0f : 45.0f ) - flOut * 0.06f + clamp( ( vecPos.z - vecFoe.z ) * 0.1f, 0.0f, 40.0f );
 			DrawSearchNode( vecPos, 255, 255, 0 );
 		}
 		else if ( nCover == COVER_FULL && CornerFitAt( vecPos, pEnemy, c.fit, &vecThreatEye ) )
@@ -4202,9 +4204,13 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, int nMode, const Ve
 		// Killzone / TLOU: the run itself matters - every unit of it in your line of fire costs.
 		float flExposed = RouteExposure( vecMe, pRoute, pEnemy, &vecThreatEye );
 		DeleteAll( pRoute );
-		float flScore = c.cover - flLen * ( bMG ? 0.03f : 0.08f ) - flExposed * ( bFlank || bAssault ? 0.25f : bShift ? 0.4f : bMG ? 0.15f : 0.1f );	// a flank / an assault / a shift must stay out of his sight
+		float flScore = c.cover - flLen * ( bMG ? 0.06f : 0.08f ) - flExposed * ( bFlank || bAssault ? 0.25f : bShift ? 0.4f : bMG ? 0.15f : 0.1f );	// a flank / an assault / a shift must stay out of his sight
 		if ( bShift && flExposed > 96.0f )
 			continue;	// fire and move along the cover: not across your sights
+		if ( bMG && npc_german_debug.GetBool() )
+			Msg( "    MG spot %s%.0f at (%.0f %.0f %.0f): %.0f from you, %.0f above you, run %.0f (%.0f exposed) -> %.1f\n",
+				 c.mgKind == MGD_WALL ? "wall, top " : "prone ", c.mgKind == MGD_WALL ? c.mgHeight : 0.0f, c.pos.x, c.pos.y, c.pos.z,
+				 c.foe, c.pos.z - vecFoe.z, flLen, flExposed, flScore );
 		if ( flScore > flBest )
 		{
 			flBest = flScore;
