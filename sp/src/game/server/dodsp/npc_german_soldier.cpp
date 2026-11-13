@@ -142,6 +142,7 @@ public:
 		SCHED_GERMAN_OPEN,									// no cover he can reach: the open-ground loop owns him
 		SCHED_GERMAN_STACK,									// A3c: hidden right beside where the enemy was, waiting for him; then pushes through
 		SCHED_GERMAN_CLEAR,									// A3d-2: in through the way in, at a walk with the rifle up, toward where he was
+		SCHED_GERMAN_DRILL_STACK,							// A3e: at the door for the drill - fires from it if he shows; only the squad's go moves him
 		NEXT_SCHEDULE
 	};
 	enum
@@ -374,6 +375,8 @@ public:
 	void		GiveSquadOrder( SquadOrder_t eOrder, float flDelay, const Vector &vecEnemyToSquad );
 	Vector		m_vecOrderPos;			// ORDER_STACK: the exact spot (worked out by the squad)
 	bool		m_bInDrill;				// A3d-2: one of the clearing pair - waits at his stack for the squad's go
+	bool		m_bClearRush;			// A3e: first man in with the odds well in the squad's favour - runs in, gun up
+	void		JoinSquadFight( void );	// A3e: takes the squad's enemy (and where he was seen) if he has fallen out of the fight
 	bool		FindEntry( const Vector &vecTarget, Vector &vecStack1, Vector &vecStack2, Vector &vecEntry );
 	// another way in: a threshold on a different side of where he was (a back door, a window)
 	bool		FindOtherEntry( const Vector &vecTarget, const Vector &vecAvoid, Vector &vecStack1, Vector &vecStack2, Vector &vecEntry );
@@ -699,6 +702,7 @@ CNPC_GermanSoldier::CNPC_GermanSoldier() : m_AnimMap( DefLessFunc( int ) )
 	m_flPairApartSince = 0.0f;
 	m_vecOrderPos = vec3_origin;
 	m_bInDrill = false;
+	m_bClearRush = false;
 	m_ePendingSpotKind = m_eArrivedKind = SPOT_COVER;
 	m_flArrivedAt = m_flStackUntil = 0.0f;
 	m_bPushPending = false;
@@ -1682,6 +1686,14 @@ struct GermanSquadState_t
 	int		nClear;				// CLEAR_NONE / CLEAR_STACKING / CLEAR_ENTERING
 	EHANDLE	hClear[4];			// up to two teams: [0,1] the first pair, [2,3] a second pair at another way in
 	float	flClearUntil;
+	Vector	vecClearTarget;		// where he was when the drill started: the room they're clearing
+	// A3e - initiative. The squad's one owner of "when do we go in". flPush builds while they
+	// aren't winning the exchange (he's out of sight, or holed up close and only peeking out),
+	// faster the better the odds; at assault_after it sends the drill (or the assault). Odds are
+	// read by the leader: men standing vs enemies known (one for now - A6 counts them), less
+	// for the squad's losses. 10 against 1: they go in fast and run through the door.
+	float	flPush;
+	float	flConfidence;		// 0.4 (cautious, outnumbered or bled) .. 3 (overwhelming odds), x aggression
 	EHANDLE	hLeader;			// A3d: the man who leads the squad (Gruppenfuehrer)
 	bool	bHadLeader;
 	float	flLeaderlessUntil;	// leader just fell: nobody gives orders for a moment
@@ -1737,6 +1749,21 @@ void CNPC_GermanSoldier::GiveSquadOrder( SquadOrder_t eOrder, float flDelay, con
 	m_vecFlankFrom = vecEnemyToSquad;
 	if ( npc_german_debug.GetBool() )
 		Msg( "[%.2f] npc_german_soldier %d: squad orders him to %s\n", gpGlobals->curtime, entindex(), s_pszSquadOrder[eOrder] );
+	if ( GetState() != NPC_STATE_COMBAT || !GetEnemy() )
+		JoinSquadFight();	// an order is a fight order: one man at alert would sit it out (ORDER_STUCK)
+}
+
+// One owner for "back into the squad's fight": the squad's enemy, where he was last seen, and
+// the new-enemy condition that breaks an alert hold and puts him in combat.
+void CNPC_GermanSoldier::JoinSquadFight( void )
+{
+	GermanSquadState_t *pSq = m_pSquad ? GetGermanSquad( m_SquadName ) : NULL;
+	CBaseEntity *pEnemy = pSq ? pSq->hEnemy.Get() : NULL;
+	if ( !pEnemy || !pEnemy->IsAlive() || IsInAScript() || GetState() == NPC_STATE_SCRIPT )
+		return;
+	UpdateEnemyMemory( pEnemy, pSq->vecLKP, this );
+	SetEnemy( pEnemy );
+	SetCondition( COND_NEW_ENEMY );
 }
 
 void CNPC_GermanSoldier::SquadOrderFailed( SquadOrder_t eOrder )
@@ -2093,6 +2120,33 @@ void CNPC_GermanSoldier::SquadTick( void )
 		sq.flStillSince = now;
 	}
 
+	// A3e - the odds, as the leader reads them, and the initiative clock (see GermanSquadState_t).
+	{
+		const int nEnemies = 1;		// A6: count the enemies the squad knows about
+		float flOdds = (float)nAlive / nEnemies;
+		float flBled = sq.nMaxAlive > 0 ? (float)nAlive / sq.nMaxAlive : 1.0f;
+		sq.flConfidence = clamp( flOdds / 3.0f * ( 0.5f + 0.5f * flBled ), 0.4f, 3.0f ) * m_flSquadAggression;
+		CBaseEntity *pKnown = sq.hEnemy.Get();
+		bool bKnown = pKnown && pKnown->IsAlive() && now - sq.flLastSeen < 45.0f;
+		bool bSeen = now - sq.flLastSeen < 0.6f;
+		float flNearest = FLT_MAX;
+		for ( int i = 0; i < nAlive; i++ )
+			flNearest = MIN( flNearest, ( apMembers[i]->GetAbsOrigin() - sq.vecLKP ).Length() );
+		// holed up close by (a room in the same house) and we have the numbers: peeking out at us
+		// doesn't win him the time to sit there
+		bool bHoledUp = bSeen && flNearest < 768.0f && sq.flConfidence >= 1.0f;
+		if ( !bKnown )
+			sq.flPush = 0.0f;
+		else if ( !bSeen )
+			sq.flPush += 0.5f * sq.flConfidence;
+		else if ( bHoledUp )
+			sq.flPush += 0.25f * sq.flConfidence;
+		else
+			sq.flPush = MAX( 0.0f, sq.flPush - 0.5f );
+		if ( sq.nClear != CLEAR_NONE )
+			sq.flPush = 0.0f;		// the drill is the push
+	}
+
 	// Watchdog + upkeep: orders nobody took, and roles whose holder is gone or done.
 	for ( int i = 0; i < nAlive; i++ )
 	{
@@ -2172,7 +2226,7 @@ void CNPC_GermanSoldier::SquadTick( void )
 				continue;
 			CNPC_GermanSoldier *pC = apC[k];
 			nLive++;
-			bool bStacked = pC->IsCurSchedule( SCHED_GERMAN_STACK, false );
+			bool bStacked = pC->IsCurSchedule( SCHED_GERMAN_STACK, false ) || pC->IsCurSchedule( SCHED_GERMAN_DRILL_STACK, false );
 			nStacked += bStacked ? 1 : 0;
 			nOrdered += ( pC->m_eSquadOrder == ORDER_STACK || pC->IsCurSchedule( SCHED_GERMAN_MOVE_TO_COVER, false ) || bStacked ) ? 1 : 0;
 			nIn += ( pC->m_eSquadOrder == ORDER_CLEAR || pC->IsCurSchedule( SCHED_GERMAN_CLEAR, false ) ) ? 1 : 0;
@@ -2180,8 +2234,10 @@ void CNPC_GermanSoldier::SquadTick( void )
 		const char *pszEnd = NULL;
 		if ( !nLive )
 			pszEnd = "the clearing team is down";
-		else if ( now - sq.flLastSeen < 0.5f )
-			pszEnd = "you showed yourself - they fight";
+		// Seeing him doesn't call it off: the men at the door fire from it and the men going in
+		// shoot as they go (A3e). Only his breaking out somewhere else does.
+		else if ( now - sq.flLastSeen < 0.5f && ( sq.vecLKP - sq.vecClearTarget ).Length2D() > 384.0f )
+			pszEnd = "you broke out of there - they fight";
 		else if ( sq.nClear == CLEAR_STACKING )
 		{
 			if ( !nOrdered )
@@ -2193,7 +2249,12 @@ void CNPC_GermanSoldier::SquadTick( void )
 				Vector vecTo = vec3_origin;
 				for ( int k = 0; k < 4; k++ )
 					if ( apC[k] )
-						apC[k]->GiveSquadOrder( ORDER_CLEAR, ( k & 1 ) && apC[k - 1] ? 0.8f : 0.3f, vecTo );
+					{
+						// with the odds well on their side the first man runs in, his partner on his heels
+						bool bFirst = !( k & 1 ) || !apC[k - 1];
+						apC[k]->m_bClearRush = bFirst && sq.flConfidence >= 2.0f;
+						apC[k]->GiveSquadOrder( ORDER_CLEAR, bFirst ? 0.3f : ( apC[k]->m_bClearRush || sq.flConfidence >= 2.0f ? 0.5f : 0.8f ), vecTo );
+					}
 				CNPC_GermanSoldier *pFirstIn = apC[0] ? apC[0] : apC[1] ? apC[1] : apC[2] ? apC[2] : apC[3];
 				CNPC_GermanSoldier *pCaller = SquadLeader() ? SquadLeader() : pFirstIn;
 				pCaller->m_Chatter.Request( CHAT_ORDER_FORWARD, NULL, pFirstIn );
@@ -2231,6 +2292,12 @@ void CNPC_GermanSoldier::SquadTick( void )
 			}
 			sq.nClear = CLEAR_NONE;
 			sq.flNextAssault = now + 10.0f / m_flSquadAggression;
+			if ( !nLive && now - sq.flLastSeen < 45.0f )
+			{
+				// the team went down at the door: with men to spare the next wave follows them in
+				sq.flPush = sq.flConfidence >= 1.0f ? m_flAssaultAfter : 0.0f;
+				sq.flNextAssault = now + 4.0f / MAX( sq.flConfidence, 0.1f );
+			}
 		}
 	}
 
@@ -2244,17 +2311,16 @@ void CNPC_GermanSoldier::SquadTick( void )
 	// A3d - the squad fights as one. A man who hasn't seen the enemy himself (round a corner,
 	// at the back, still idling where he was posted) is told: contact. Without this he stays
 	// idle where he spawned, takes no orders, and his partner fights alone.
-	if ( now - sq.flLastSeen < 10.0f )
+	// A3e: for as long as the squad knows where he is (not just 10 s after the last sighting) -
+	// a man who dropped back to alert at his cover sat out every order and every drill.
 	{
 		int nRoused = 0;
 		for ( int i = 0; i < nAlive; i++ )
 		{
 			CNPC_GermanSoldier *pG = apMembers[i];
-			if ( pG->GetState() == NPC_STATE_COMBAT || pG->IsInAScript() || pG->GetState() == NPC_STATE_SCRIPT )
+			if ( ( pG->GetState() == NPC_STATE_COMBAT && pG->GetEnemy() ) || pG->IsInAScript() || pG->GetState() == NPC_STATE_SCRIPT )
 				continue;
-			pG->UpdateEnemyMemory( pEnemy, sq.vecLKP, this );
-			pG->SetEnemy( pEnemy );
-			pG->SetCondition( COND_NEW_ENEMY );
+			pG->JoinSquadFight();
 			nRoused++;
 		}
 		if ( nRoused && npc_german_debug.GetBool() )
@@ -2264,11 +2330,15 @@ void CNPC_GermanSoldier::SquadTick( void )
 	// A3c - he's out of sight (in a house, round a corner): don't wait for him. Up to two men work
 	// their way to cover next to where he was last seen, by routes he can't see; one other man
 	// takes cover watching that spot. ("Vorwaerts!")
-	if ( now - sq.flLastSeen > m_flAssaultAfter / flAggr )
+	// A3e: when is the initiative clock's call (out of sight, or holed up close and peeking).
+	bool bSeenNow = now - sq.flLastSeen < 0.6f;
+	if ( sq.flPush >= m_flAssaultAfter || ( !bSeenNow && sq.nClear != CLEAR_NONE ) )
 	{
-		if ( !bAssaultActive && sq.nClear == CLEAR_NONE && nAlive >= 2 && now >= sq.flNextAssault )
+		if ( sq.flPush >= m_flAssaultAfter && !bAssaultActive && sq.nClear == CLEAR_NONE && nAlive >= 2 && now >= sq.flNextAssault )
 		{
-			sq.flNextAssault = now + 20.0f / flAggr;
+			sq.flNextAssault = now + 20.0f / MAX( sq.flConfidence, 0.1f );
+			float flPushWas = sq.flPush;
+			sq.flPush = 0.0f;
 			// A3d-2: the nearest man and his partner stack at the way in to where you were, and go
 			// in together; everyone else free watches the house (two pairs at most).
 			CNPC_GermanSoldier *pFirst = NULL;
@@ -2316,6 +2386,7 @@ void CNPC_GermanSoldier::SquadTick( void )
 					pSecond->GiveSquadOrder( ORDER_STACK, 1.0f, vecTo );
 				}
 				sq.nClear = CLEAR_STACKING;
+				sq.vecClearTarget = sq.vecLKP;
 				sq.hClear[0] = pFirst;
 				sq.hClear[1] = pSecond;
 				sq.hClear[2] = sq.hClear[3] = NULL;
@@ -2374,8 +2445,9 @@ void CNPC_GermanSoldier::SquadTick( void )
 				}
 				if ( npc_german_debug.GetBool() )
 				{
-					Msg( "[%.2f] npc_german_soldier %d: squad - lost you %.0f s ago: clearing drill - %d and %d stack up at the way in%s, %d watch the house\n",
-						 now, entindex(), now - sq.flLastSeen, pFirst->entindex(), pSecond ? pSecond->entindex() : -1,
+					Msg( "[%.2f] npc_german_soldier %d: squad - %s (odds x%.1f, push %.1f): clearing drill - %d and %d stack up at the way in%s, %d watch the house\n",
+						 now, entindex(), bSeenNow ? "you're holed up close by" : "lost you", sq.flConfidence, flPushWas,
+						 pFirst->entindex(), pSecond ? pSecond->entindex() : -1,
 						 pThird ? "; a second team at another way in" : "", nWatch );
 					NDebugOverlay::Box( vecEntry, Vector( -10, -10, 0 ), Vector( 10, 10, 72 ), 255, 255, 0, 80, 8.0f );
 					if ( pThird )
@@ -2440,12 +2512,15 @@ void CNPC_GermanSoldier::SquadTick( void )
 					}
 				}
 				if ( npc_german_debug.GetBool() )
-					Msg( "[%.2f] npc_german_soldier %d: squad - lost you %.0f s ago: %d going after you, %s watching\n", now, entindex(),
-						 now - sq.flLastSeen, nGot, sq.hOverwatch.Get() ? "one" : "nobody" );
+					Msg( "[%.2f] npc_german_soldier %d: squad - %s (odds x%.1f): %d going after you, %s watching\n", now, entindex(),
+						 bSeenNow ? "you're holed up close by" : "lost you", sq.flConfidence, nGot, sq.hOverwatch.Get() ? "one" : "nobody" );
 			}
 		}
-		return;		// the rest needs him in sight
+		if ( !bSeenNow )
+			return;		// the rest needs him in sight
 	}
+	if ( sq.nClear != CLEAR_NONE )
+		return;		// the drill owns the squad's move: no bounds or flanks pulling men off the house
 	if ( now - sq.flLastSeen > 10.0f )
 		return;		// nothing fresh to coordinate against
 	Vector vecFromEnemy = vecCentroid - sq.vecLKP;
@@ -4280,7 +4355,7 @@ void CNPC_GermanSoldier::StartTask( const Task_t *pTask )
 				TaskFail( "nobody to clear toward" );
 				break;
 			}
-			AI_NavGoal_t goal( GetEnemyLKP(), ACT_WALK_AIM, 48.0f );
+			AI_NavGoal_t goal( GetEnemyLKP(), m_bClearRush ? ACT_RUN_AIM : ACT_WALK_AIM, 48.0f );
 			if ( !GetNavigator()->SetGoal( goal ) )
 			{
 				TaskFail( "no way in" );
@@ -4288,19 +4363,23 @@ void CNPC_GermanSoldier::StartTask( const Task_t *pTask )
 			}
 			SetStance( STANCE_STAND, "going in - rifle up" );
 			if ( npc_german_debug.GetBool() )
-				Msg( "[%.2f] npc_german_soldier %d: clearing - in at a walk, rifle up\n", gpGlobals->curtime, entindex() );
+				Msg( "[%.2f] npc_german_soldier %d: clearing - %s\n", gpGlobals->curtime, entindex(), m_bClearRush ? "rushes in, gun up" : "in at a walk, rifle up" );
 			TaskComplete();
 		}
 		break;
 
 	case TASK_GERMAN_CLEAR_DONE:
 		m_bInDrill = false;
+		m_bClearRush = false;
 		if ( npc_german_debug.GetBool() )
 			Msg( "[%.2f] npc_german_soldier %d: clearing - reached where you were: clear\n", gpGlobals->curtime, entindex() );
 		TaskComplete();
 		break;
 
 	case TASK_GERMAN_STACK:
+		if ( m_flReloadDoneTime < gpGlobals->curtime )
+			m_flReloadDoneTime = 0.0f;		// no reload under way (a stale time would refill his clip)
+		m_nShotsLeft = MAX( m_nShotsLeft, 1 );
 		SetStance( STANCE_CROUCH, "stacked up, waiting for you" );
 		SetIdealActivity( ACT_IDLE_ANGRY );
 		m_flStackUntil = gpGlobals->curtime + random->RandomFloat( 3.0f, 7.0f ) / m_flSquadAggression;
@@ -4409,6 +4488,22 @@ void CNPC_GermanSoldier::StartTask( const Task_t *pTask )
 
 void CNPC_GermanSoldier::RunTask( const Task_t *pTask )
 {
+	// A3e: clearing - he's in sight in there: keep the route on him as he moves, and once he's
+	// within a few steps stop and fight him in the room (no walking into him).
+	if ( pTask->iTask == TASK_WAIT_FOR_MOVEMENT && IsCurSchedule( SCHED_GERMAN_CLEAR, false ) && GetEnemy() && HasCondition( COND_SEE_ENEMY ) )
+	{
+		float flDist = ( GetEnemy()->GetAbsOrigin() - GetAbsOrigin() ).Length();
+		if ( flDist < 160.0f )
+		{
+			GetNavigator()->StopMoving();
+			if ( npc_german_debug.GetBool() )
+				Msg( "[%.2f] npc_german_soldier %d: clearing - on you in the room (%.0f units): fights you here\n", gpGlobals->curtime, entindex(), flDist );
+			TaskComplete();
+			return;
+		}
+		if ( GetNavigator()->IsGoalActive() && ( GetNavigator()->GetGoalPos() - GetEnemy()->GetAbsOrigin() ).Length2D() > 96.0f )
+			GetNavigator()->UpdateGoalPos( GetEnemy()->GetAbsOrigin() );
+	}
 	switch ( pTask->iTask )
 	{
 	case TASK_WAIT_FOR_MOVEMENT:
@@ -4454,6 +4549,34 @@ void CNPC_GermanSoldier::RunTask( const Task_t *pTask )
 			GetMotor()->SetIdealYawToTargetAndUpdate( GetEnemyLKP(), AI_KEEP_YAW_SPEED );
 		if ( m_bInDrill )
 		{
+			// A3e: he shows himself in there - fire on him from the door, don't leave it
+			float now = gpGlobals->curtime;
+			if ( m_flReloadDoneTime > 0.0f && now >= m_flReloadDoneTime )
+			{
+				FinishReload();
+				m_flReloadDoneTime = 0.0f;
+			}
+			CBaseCombatWeapon *pWeapon = GetActiveWeapon();
+			if ( pWeapon && pWeapon->UsesClipsForAmmo1() && pWeapon->Clip1() <= 0 && m_flReloadDoneTime == 0.0f && !IsUpperBodyBusy() )
+			{
+				Activity gesture = m_actReloadCrouchGesture != ACT_INVALID ? m_actReloadCrouchGesture : m_actReloadGesture;
+				float flDuration = 1.5f;
+				if ( gesture != ACT_INVALID )
+				{
+					RestartGesture( gesture );
+					int iSeq = SelectWeightedSequence( gesture );
+					if ( iSeq != ACTIVITY_NOT_AVAILABLE )
+						flDuration = SequenceDuration( iSeq );
+				}
+				m_flReloadDoneTime = now + flDuration * 0.85f;
+			}
+			else if ( m_flReloadDoneTime == 0.0f && HasCondition( COND_SEE_ENEMY ) && HasCondition( COND_CAN_RANGE_ATTACK1 ) && TryFireShot() &&
+					  m_nShotsLeft <= 0 )
+			{
+				// bursts, not a hose: a short pause, then the next burst
+				m_nShotsLeft = pWeapon ? MAX( 1, pWeapon->GetRandomBurst() ) : 1;
+				m_flNextShotTime = MAX( m_flNextShotTime, now + random->RandomFloat( 0.4f, 0.9f ) );
+			}
 			// one of the clearing pair: the squad says when (both at the door) - not his own timer
 			if ( m_eSquadOrder == ORDER_CLEAR && gpGlobals->curtime >= m_flSquadOrderAt )
 				TaskComplete();
@@ -5063,7 +5186,11 @@ int CNPC_GermanSoldier::SelectScheduleInner( void )
 	}
 	m_iForceFlinchSeq = -1;		// a test pain that never started (or was cut short) is over
 
-	if ( IsAlive() && GetState() == NPC_STATE_COMBAT && GetEnemy() )
+	// A3e: an order waiting for him (or a drill he's part of) is a fight, whatever the engine's
+	// state says - alert men held their cover and let every order time out.
+	if ( IsAlive() && GetState() != NPC_STATE_COMBAT && ( m_eSquadOrder != ORDER_NONE || m_bInDrill ) && !IsInAScript() )
+		JoinSquadFight();
+	if ( IsAlive() && GetEnemy() && ( GetState() == NPC_STATE_COMBAT || ( ( m_eSquadOrder != ORDER_NONE || m_bInDrill ) && !IsInAScript() ) ) )
 	{
 		m_flLastCombatTime = gpGlobals->curtime;
 		return SelectCombatSchedule();
@@ -5182,7 +5309,8 @@ int CNPC_GermanSoldier::SelectCombatSchedule( void )
 		if ( now - m_flArrivedAt < 2.0f )
 		{
 			if ( eKind == SPOT_STACK )
-				return Decide( SCHED_GERMAN_STACK, "stacked up beside where you were - waiting for you" );
+				return m_bInDrill ? Decide( SCHED_GERMAN_DRILL_STACK, "at the way in - waiting for the squad's go" )
+								  : Decide( SCHED_GERMAN_STACK, "stacked up beside where you were - waiting for you" );
 			return Decide( SCHED_GERMAN_OPEN, eKind == SPOT_PUSH ? "pushed through to where you were - fights from there" : "has an angle on you - fights from there" );
 		}
 	}
@@ -5741,9 +5869,29 @@ AI_BEGIN_CUSTOM_NPC( npc_german_soldier, CNPC_GermanSoldier )
 	)
 
 	//=========================================================
-	// SCHED_GERMAN_CLEAR (A3d-2): the clearing pair goes in - at a walk, rifle up, along the
-	// route to where the enemy was last seen. Seeing him (or being hit) stops it: the brain
-	// fights him from wherever he is.
+	// SCHED_GERMAN_DRILL_STACK (A3e): one of the drill's men at the door. Seeing him doesn't move
+	// him (TASK_GERMAN_STACK fires from the door); a light hit doesn't either. The squad's go does.
+	//=========================================================
+	DEFINE_SCHEDULE
+	(
+		SCHED_GERMAN_DRILL_STACK,
+
+		"	Tasks"
+		"		TASK_STOP_MOVING			0"
+		"		TASK_GERMAN_STACK			0"
+		""
+		"	Interrupts"
+		"		COND_NEW_ENEMY"
+		"		COND_ENEMY_DEAD"
+		"		COND_HEAVY_DAMAGE"
+		"		COND_HEAR_DANGER"
+	)
+
+	//=========================================================
+	// SCHED_GERMAN_CLEAR (A3d-2, A3e): the clearing pair goes in - at a walk, rifle up (or at a
+	// run, with the odds well on their side), along the route to where the enemy was last seen.
+	// Seeing him doesn't stop it: he shoots on the move (move-and-shoot) and closes; within
+	// arm's reach with a sight of him he stops and the brain fights him there, in the room.
 	//=========================================================
 	DEFINE_SCHEDULE
 	(
@@ -5755,10 +5903,8 @@ AI_BEGIN_CUSTOM_NPC( npc_german_soldier, CNPC_GermanSoldier )
 		"		TASK_GERMAN_CLEAR_DONE		0"
 		""
 		"	Interrupts"
-		"		COND_SEE_ENEMY"
 		"		COND_NEW_ENEMY"
 		"		COND_ENEMY_DEAD"
-		"		COND_LIGHT_DAMAGE"
 		"		COND_HEAVY_DAMAGE"
 		"		COND_HEAR_DANGER"
 	)
