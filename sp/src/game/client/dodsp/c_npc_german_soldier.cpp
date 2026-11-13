@@ -125,6 +125,8 @@ private:
 	void	RotateSubtreeTo( CStudioHdr *pStudioHdr, int iBone, const Vector &vecFrom, const Vector &vecTo, int iSkip );
 	void	ApplyHitKick( CStudioHdr *pStudioHdr );
 	void	SupportHandIK( CStudioHdr *pStudioHdr );
+	void	SteadyRifleThroughBlends( CStudioHdr *pStudioHdr );
+	bool	IsBlending( void );
 	bool	IsCoDSequence( CStudioHdr *pStudioHdr, int iSeq );
 	float	CoDWeight( CStudioHdr *pStudioHdr );
 	int		Bone( CStudioHdr *pStudioHdr, const char *pszName ) { return Studio_BoneIndexByName( pStudioHdr, pszName ); }
@@ -137,6 +139,10 @@ private:
 	CUtlVector<signed char>	m_SeqIsCoD;		// per sequence: -1 unknown, 0 DoD, 1 CoD pack
 	float	m_flLHandWeight;				// smoothed share of CoD animation in the pose
 	float	m_flLHandTime;
+	matrix3x4_t	m_matRifleInRHand;			// K98 relative to the right hand, as last held steady
+	bool	m_bRifleHeld;
+	bool	m_bRifleCatchingUp;
+	float	m_flRifleTime;
 
 	C_NPC_GermanSoldier( const C_NPC_GermanSoldier & );
 };
@@ -156,6 +162,9 @@ C_NPC_GermanSoldier::C_NPC_GermanSoldier()
 	m_flHitStrength = 0.0f;
 	m_flLHandWeight = 0.0f;
 	m_flLHandTime = 0.0f;
+	SetIdentityMatrix( m_matRifleInRHand );
+	m_bRifleHeld = m_bRifleCatchingUp = false;
+	m_flRifleTime = 0.0f;
 }
 
 C_ClientRagdoll *C_NPC_GermanSoldier::CreateClientRagdoll( bool bRestoring )
@@ -240,6 +249,7 @@ void C_NPC_GermanSoldier::BuildTransformations( CStudioHdr *pStudioHdr, Vector *
 		return;
 
 	ApplyHitKick( pStudioHdr );		// moves the torso; arms and gun ride along
+	SteadyRifleThroughBlends( pStudioHdr );	// the K98 stays in the right hand while poses cross-fade
 	SupportHandIK( pStudioHdr );	// then the support hand onto the gun
 }
 
@@ -381,6 +391,84 @@ void C_NPC_GermanSoldier::SupportHandIK( CStudioHdr *pStudioHdr )
 		VectorNormalize( vecAxis );
 		RotateSubtree( pStudioHdr, iHand, vecAxis, flDeg, iGun );
 	}
+}
+
+// Is the pose a cross-fade right now: the previous sequence still fading out, or an overlay
+// (a pain) fading in or out?
+bool C_NPC_GermanSoldier::IsBlending( void )
+{
+	const CUtlVector< CAnimationLayer > &q = m_SequenceTransitioner.m_animationQueue;
+	for ( int i = 0; i < q.Count() - 1; i++ )		// all but the newest entry are fading out
+		if ( q[i].m_flWeight > 0.001f )
+			return true;
+	for ( int i = 0; i < m_AnimOverlay.Count(); i++ )
+	{
+		float w = m_AnimOverlay[i].m_flWeight;
+		if ( w > 0.01f && w < 0.99f )
+			return true;
+	}
+	return false;
+}
+
+//-----------------------------------------------------------------------------
+// The K98 hangs off the LEFT hand in DoD's skeleton (the MP40 off the right). Blends mix each
+// bone's track in its parent's space, so a cross-fade between two poses where the left hand is
+// in different places relative to the rifle (on the fore-end -> on his helmet, on the ground in
+// a hunker, round a corner) swings the rifle through the air even though it's in the right hand
+// at both ends. While the pose is a blend, the rifle is held where it was in the right hand and
+// moves to the new grip at a limited rate; once the blend's over it catches up and follows the
+// animation again. Real hand-overs inside one animation (no blend) are untouched.
+//-----------------------------------------------------------------------------
+#define RIFLE_CATCHUP_UNITS		60.0f	// per second
+#define RIFLE_CATCHUP_DEG		300.0f	// per second
+
+void C_NPC_GermanSoldier::SteadyRifleThroughBlends( CStudioHdr *pStudioHdr )
+{
+	C_BaseCombatWeapon *pWeapon = GetActiveWeapon();
+	CStudioHdr *pWeaponHdr = pWeapon ? pWeapon->GetModelPtr() : NULL;
+	if ( !pWeaponHdr || Studio_BoneIndexByName( pWeaponHdr, "ValveBiped.weapon_bone_left" ) < 0 )
+	{
+		m_bRifleHeld = false;
+		return;		// the MP40 (and anything else) hangs off the right hand already
+	}
+	const int iHand = Bone( pStudioHdr, "ValveBiped.Bip01_R_Hand" );
+	const int iGun = Bone( pStudioHdr, "ValveBiped.weapon_bone_left" );
+	if ( iHand < 0 || iGun < 0 )
+		return;
+
+	float dt = clamp( gpGlobals->curtime - m_flRifleTime, 0.0f, 0.1f );
+	m_flRifleTime = gpGlobals->curtime;
+
+	// where the animation (as blended) puts the rifle, relative to the right hand
+	matrix3x4_t matHandInv, matRaw;
+	MatrixInvert( GetBone( iHand ), matHandInv );
+	ConcatTransforms( matHandInv, GetBone( iGun ), matRaw );
+
+	bool bBlending = IsBlending();
+	if ( !m_bRifleHeld || ( !bBlending && !m_bRifleCatchingUp ) )
+	{
+		MatrixCopy( matRaw, m_matRifleInRHand );
+		m_bRifleHeld = true;
+		return;
+	}
+
+	// approach the animation's grip at a limited rate
+	Quaternion qHeld, qRaw, qNew;
+	Vector vecHeld, vecRaw;
+	MatrixAngles( m_matRifleInRHand, qHeld, vecHeld );
+	MatrixAngles( matRaw, qRaw, vecRaw );
+	float flDeg = QuaternionAngleDiff( qHeld, qRaw );
+	float flDist = ( vecRaw - vecHeld ).Length();
+	float flRot = flDeg > 0.01f ? MIN( 1.0f, RIFLE_CATCHUP_DEG * dt / flDeg ) : 1.0f;
+	float flMove = flDist > 0.01f ? MIN( 1.0f, RIFLE_CATCHUP_UNITS * dt / flDist ) : 1.0f;
+	QuaternionSlerp( qHeld, qRaw, flRot, qNew );
+	Vector vecNew = vecHeld + ( vecRaw - vecHeld ) * flMove;
+	QuaternionMatrix( qNew, vecNew, m_matRifleInRHand );
+	m_bRifleCatchingUp = !( flRot >= 1.0f && flMove >= 1.0f ) || bBlending;
+
+	matrix3x4_t matGun;
+	ConcatTransforms( GetBone( iHand ), m_matRifleInRHand, matGun );
+	MatrixCopy( matGun, GetBoneForWrite( iGun ) );
 }
 
 void C_NPC_GermanSoldier::ApplyHitKick( CStudioHdr *pStudioHdr )
