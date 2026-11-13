@@ -386,6 +386,17 @@ public:
 	float		m_flSquadAggression;	// script: 0.5 cautious defenders .. 2 assault troops (A3c)
 	float		m_flAssaultAfter;		// script: seconds the squad has lost you before it comes after you
 	int			SquadCrowding( const Vector &vecPos, float flRadius = 128.0f );	// squadmates already at / heading for a spot this close
+	// A3d: pairs. Nobody fights alone: every man has a partner (a trio's third man follows the
+	// leader's pair). Kept by the squad coordinator; searches pull a man toward his partner.
+	EHANDLE		m_hPartner;
+	float		m_flPairApartSince;		// watchdog
+	CNPC_GermanSoldier *Partner( void ) const
+	{
+		CNPC_GermanSoldier *p = static_cast<CNPC_GermanSoldier *>( m_hPartner.Get() );
+		return p && p->IsAlive() ? p : NULL;
+	}
+	bool		IsSquadLeader( void );
+	CNPC_GermanSoldier *SquadLeader( void );
 	// What a chosen spot is for (A3c). One owner: set when a spot is chosen, read on arrival.
 	//   COVER  cover he fights from (low wall, corner)       -> the cover loop
 	//   ANGLE  open, but he can see where you are/were from  -> the open-ground loop (he's "got an angle")
@@ -410,7 +421,7 @@ private:
 	//-------------------------------------------------------------------------
 	// Watchdog (R1): passive. Prints INVARIANT lines when a rule is broken; changes nothing.
 	//-------------------------------------------------------------------------
-	enum Invariant_t { INV_STANCE_FLIPS, INV_STANCE_OWNER, INV_SCHED_CHURN, INV_DECISION_CHURN, INV_COVER_CHURN, INV_POSE_FLIPS, INV_ANIM_STUCK, INV_COVER_STANCE, INV_ORDER_STUCK, INV_FLANK_TIMEOUT, INV_CORNER_YAW, INV_ASSAULT_TIMEOUT, NUM_INVARIANTS };
+	enum Invariant_t { INV_STANCE_FLIPS, INV_STANCE_OWNER, INV_SCHED_CHURN, INV_DECISION_CHURN, INV_COVER_CHURN, INV_POSE_FLIPS, INV_ANIM_STUCK, INV_COVER_STANCE, INV_ORDER_STUCK, INV_FLANK_TIMEOUT, INV_CORNER_YAW, INV_ASSAULT_TIMEOUT, INV_PAIR_SPLIT, NUM_INVARIANTS };
 	void		WatchdogPose( void );		// what the body actually plays: down / crouched / standing flips
 	bool		IsClipEmpty( void );		// one owner for "he has no rounds in the gun"
 	void		Invariant( Invariant_t eWhich, const char *pszFormat, ... );
@@ -673,6 +684,8 @@ CNPC_GermanSoldier::CNPC_GermanSoldier() : m_AnimMap( DefLessFunc( int ) )
 	m_bSuppressing = false;
 	m_flSquadTempo = 1.0f;
 	m_flSquadAggression = 1.0f;
+	m_hPartner = NULL;
+	m_flPairApartSince = 0.0f;
 	m_ePendingSpotKind = m_eArrivedKind = SPOT_COVER;
 	m_flArrivedAt = m_flStackUntil = 0.0f;
 	m_bPushPending = false;
@@ -1450,7 +1463,7 @@ void CNPC_GermanSoldier::Invariant( Invariant_t eWhich, const char *pszFormat, .
 	if ( gpGlobals->curtime < m_flInvariantNext[eWhich] )
 		return;
 	m_flInvariantNext[eWhich] = gpGlobals->curtime + 2.0f;
-	static const char *s_pszNames[] = { "STANCE_FLIPS", "STANCE_OWNER", "SCHED_CHURN", "DECISION_CHURN", "COVER_CHURN", "POSE_FLIPS", "ANIM_STUCK", "COVER_STANCE", "ORDER_STUCK", "FLANK_TIMEOUT", "CORNER_YAW", "ASSAULT_TIMEOUT" };
+	static const char *s_pszNames[] = { "STANCE_FLIPS", "STANCE_OWNER", "SCHED_CHURN", "DECISION_CHURN", "COVER_CHURN", "POSE_FLIPS", "ANIM_STUCK", "COVER_STANCE", "ORDER_STUCK", "FLANK_TIMEOUT", "CORNER_YAW", "ASSAULT_TIMEOUT", "PAIR_SPLIT" };
 	char sz[512];
 	va_list ap;
 	va_start( ap, pszFormat );
@@ -1651,6 +1664,9 @@ struct GermanSquadState_t
 	EHANDLE	hOverwatch;			// ...and one watching that spot for them
 	float	flAssaultDeadline;
 	float	flNextAssault;
+	EHANDLE	hLeader;			// A3d: the man who leads the squad (Gruppenfuehrer)
+	bool	bHadLeader;
+	float	flLeaderlessUntil;	// leader just fell: nobody gives orders for a moment
 };
 static CUtlDict<GermanSquadState_t, int>	s_GermanSquads;
 static float								s_flGermanSquadsTime = 0.0f;
@@ -1671,6 +1687,7 @@ static GermanSquadState_t *GetGermanSquad( string_t iszSquad )
 		sq.hEnemy = NULL;
 		sq.hSuppressor = sq.hBounder = sq.hFlanker = NULL;
 		sq.hAssault[0] = sq.hAssault[1] = sq.hOverwatch = NULL;
+		sq.hLeader = NULL;
 		sq.flLastFlank = now;
 		sq.flNextBound = now + 6.0f;
 		sq.flNextFlank = now + 10.0f;
@@ -1738,6 +1755,19 @@ bool CNPC_GermanSoldier::CanSuppressEnemy( const Vector &vecTarget )
 	return ( tr.endpos - vecAim ).Length() < 128.0f && ( tr.endpos - vecFrom ).Length2D() > m_flCoverMaxGap + 16.0f;
 }
 
+bool CNPC_GermanSoldier::IsSquadLeader( void )
+{
+	GermanSquadState_t *pSq = m_pSquad ? GetGermanSquad( m_SquadName ) : NULL;
+	return pSq && pSq->hLeader.Get() == this;
+}
+
+CNPC_GermanSoldier *CNPC_GermanSoldier::SquadLeader( void )
+{
+	GermanSquadState_t *pSq = m_pSquad ? GetGermanSquad( m_SquadName ) : NULL;
+	CNPC_GermanSoldier *p = pSq ? static_cast<CNPC_GermanSoldier *>( pSq->hLeader.Get() ) : NULL;
+	return p && p->IsAlive() ? p : NULL;
+}
+
 void CNPC_GermanSoldier::SquadTick( void )
 {
 	GermanSquadState_t *pSq = m_pSquad ? GetGermanSquad( m_SquadName ) : NULL;
@@ -1769,6 +1799,95 @@ void CNPC_GermanSoldier::SquadTick( void )
 	if ( nAlive == 0 )
 		return;
 	vecCentroid /= nAlive;
+
+	// A3d - the leader. Prefers the man with the machine pistol (a German squad leader carried
+	// the MP); if he falls, the next man takes over after a moment's confusion.
+	CNPC_GermanSoldier *pLeader = static_cast<CNPC_GermanSoldier *>( sq.hLeader.Get() );
+	if ( !pLeader || !pLeader->IsAlive() )
+	{
+		CNPC_GermanSoldier *pNew = apMembers[0];
+		for ( int i = 0; i < nAlive; i++ )
+			if ( !apMembers[i]->m_bCoverFireSemi )
+			{
+				pNew = apMembers[i];
+				break;
+			}
+		if ( sq.bHadLeader )
+			sq.flLeaderlessUntil = now + 3.0f;
+		if ( npc_german_debug.GetBool() )
+			Msg( "[%.2f] npc_german_soldier %d: squad - %s\n", now, pNew->entindex(), sq.bHadLeader ? "the leader is down - takes command" : "leads the squad" );
+		sq.hLeader = pNew;
+		sq.bHadLeader = true;
+		pLeader = pNew;
+	}
+	// A3d - pairs: anyone without a living partner -> pair everybody again, nearest to nearest,
+	// starting with the leader. An odd man out follows the leader's pair.
+	bool bRepair = false;
+	for ( int i = 0; i < nAlive && !bRepair; i++ )
+		bRepair = nAlive > 1 && !apMembers[i]->Partner();
+	if ( bRepair )
+	{
+		bool bPaired[16] = { false };
+		for ( int i = 0; i < nAlive; i++ )
+			apMembers[i]->m_hPartner = NULL;
+		int iLeader = 0;
+		for ( int i = 0; i < nAlive; i++ )
+			if ( apMembers[i] == pLeader )
+				iLeader = i;
+		for ( int pass = 0; pass < nAlive; pass++ )
+		{
+			int a = pass == 0 ? iLeader : -1;
+			for ( int i = 0; a < 0 && i < nAlive; i++ )
+				if ( !bPaired[i] )
+					a = i;
+			if ( a < 0 || bPaired[a] )
+				continue;
+			int b = -1;
+			float flBest = FLT_MAX;
+			for ( int i = 0; i < nAlive; i++ )
+			{
+				if ( i == a || bPaired[i] )
+					continue;
+				float d = ( apMembers[i]->GetAbsOrigin() - apMembers[a]->GetAbsOrigin() ).Length();
+				if ( d < flBest )
+				{
+					flBest = d;
+					b = i;
+				}
+			}
+			bPaired[a] = true;
+			if ( b >= 0 )
+			{
+				bPaired[b] = true;
+				apMembers[a]->m_hPartner = apMembers[b];
+				apMembers[b]->m_hPartner = apMembers[a];
+			}
+			else if ( nAlive > 1 )
+				apMembers[a]->m_hPartner = pLeader != apMembers[a] ? pLeader : apMembers[( a + 1 ) % nAlive];	// odd man: with the leader
+		}
+		if ( npc_german_debug.GetBool() )
+		{
+			for ( int i = 0; i < nAlive; i++ )
+				if ( apMembers[i]->Partner() )
+					Msg( "[%.2f] npc_german_soldier %d: squad - paired with %d%s\n", now, apMembers[i]->entindex(),
+						 apMembers[i]->Partner()->entindex(), apMembers[i] == pLeader ? " (leader)" : "" );
+		}
+	}
+	// Watchdog: partners far apart for 10 s while neither is under an order or on the move.
+	for ( int i = 0; i < nAlive; i++ )
+	{
+		CNPC_GermanSoldier *pG = apMembers[i];
+		CNPC_GermanSoldier *pMate = pG->Partner();
+		bool bBusy = pG->m_eSquadOrder != ORDER_NONE || pG->IsCurSchedule( SCHED_GERMAN_MOVE_TO_COVER, false ) ||
+					 ( pMate && ( pMate->m_eSquadOrder != ORDER_NONE || pMate->IsCurSchedule( SCHED_GERMAN_MOVE_TO_COVER, false ) ) );
+		if ( !pMate || bBusy || ( pMate->GetAbsOrigin() - pG->GetAbsOrigin() ).Length2D() < 900.0f )
+			pG->m_flPairApartSince = 0.0f;
+		else if ( pG->m_flPairApartSince == 0.0f )
+			pG->m_flPairApartSince = now;
+		else if ( now - pG->m_flPairApartSince > 10.0f )
+			pG->Invariant( INV_PAIR_SPLIT, "his partner %d has been %.0f units away for %.0f s", pMate->entindex(),
+						   ( pMate->GetAbsOrigin() - pG->GetAbsOrigin() ).Length2D(), now - pG->m_flPairApartSince );
+	}
 	sq.nMaxAlive = MAX( sq.nMaxAlive, nAlive );
 	if ( ( sq.vecLKP - sq.vecStillPos ).Length2D() > 128.0f )
 	{
@@ -1841,6 +1960,8 @@ void CNPC_GermanSoldier::SquadTick( void )
 		 !( pWatch->IsCurSchedule( SCHED_GERMAN_MOVE_TO_COVER, false ) && pWatch->m_eMoveKind == MOVE_OVERWATCH ) ) ) )
 		sq.hOverwatch = NULL;
 
+	if ( now < sq.flLeaderlessUntil )
+		return;		// the leader just fell: a moment before anyone gives orders
 	CBaseEntity *pEnemy = sq.hEnemy.Get();
 	if ( !pEnemy || !pEnemy->IsAlive() || now - sq.flLastSeen > 45.0f )
 		return;		// nobody knows where he is any more
@@ -1854,22 +1975,32 @@ void CNPC_GermanSoldier::SquadTick( void )
 		if ( !bAssaultActive && nAlive >= 2 && now >= sq.flNextAssault )
 		{
 			sq.flNextAssault = now + 20.0f / flAggr;
-			int nWant = nAlive >= 4 ? 2 : 1;
+			// A3d: a pair goes in - the man nearest to where he was, and his partner.
 			int nGot = 0;
-			for ( int k = 0; k < nWant; k++ )
+			for ( int k = 0; k < 2; k++ )
 			{
 				CNPC_GermanSoldier *pBest = NULL;
-				float flBest = FLT_MAX;
-				for ( int i = 0; i < nAlive; i++ )
+				if ( k == 1 )
 				{
-					CNPC_GermanSoldier *pG = apMembers[i];
-					if ( !pG->CanTakeSquadOrder() || pG == sq.hAssault[0].Get() || pG == sq.hOverwatch.Get() )
-						continue;
-					float flDist = ( pG->GetAbsOrigin() - sq.vecLKP ).Length2D();
-					if ( flDist < flBest )
+					CNPC_GermanSoldier *pFirst = static_cast<CNPC_GermanSoldier *>( sq.hAssault[0].Get() );
+					pBest = pFirst ? pFirst->Partner() : NULL;
+					if ( pBest && !pBest->CanTakeSquadOrder() )
+						pBest = NULL;
+				}
+				else
+				{
+					float flBest = FLT_MAX;
+					for ( int i = 0; i < nAlive; i++ )
 					{
-						flBest = flDist;
-						pBest = pG;
+						CNPC_GermanSoldier *pG = apMembers[i];
+						if ( !pG->CanTakeSquadOrder() || pG == sq.hOverwatch.Get() )
+							continue;
+						float flDist = ( pG->GetAbsOrigin() - sq.vecLKP ).Length2D();
+						if ( flDist < flBest )
+						{
+							flBest = flDist;
+							pBest = pG;
+						}
 					}
 				}
 				if ( !pBest )
@@ -1923,7 +2054,7 @@ void CNPC_GermanSoldier::SquadTick( void )
 		for ( int i = 0; i < nAlive; i++ )
 		{
 			CNPC_GermanSoldier *pG = apMembers[i];
-			if ( pG != pExclude && pG != sq.hFlanker.Get() && pG != sq.hBounder.Get() && pG->IsInCoverLoop() &&
+			if ( pG != pExclude && ( !pExclude || pG != pExclude->Partner() ) && pG != sq.hFlanker.Get() && pG != sq.hBounder.Get() && pG->IsInCoverLoop() &&
 				 pG->m_eSquadOrder == ORDER_NONE && pG->CanSuppressEnemy( sq.vecLKP ) )
 				return pG;
 		}
@@ -1986,6 +2117,9 @@ void CNPC_GermanSoldier::SquadTick( void )
 		{
 			bool bLeft = flSide > 0.0f || ( flSide == 0.0f && random->RandomInt( 0, 1 ) );
 			pBest->GiveSquadOrder( bLeft ? ORDER_FLANK_LEFT : ORDER_FLANK_RIGHT, 0.8f, vecFromEnemy );
+			CNPC_GermanSoldier *pMate = pBest->Partner();		// A3d: his partner goes with him
+			if ( pMate && pMate->CanTakeSquadOrder() && pMate != sq.hSuppressor.Get() )
+				pMate->GiveSquadOrder( bLeft ? ORDER_FLANK_LEFT : ORDER_FLANK_RIGHT, 1.8f, vecFromEnemy );
 			sq.hFlanker = pBest;
 			sq.flFlankDeadline = now + 30.0f;
 			sq.flNextFlank = now + 12.0f / flTempo;		// at least this between flanks
@@ -2018,6 +2152,9 @@ void CNPC_GermanSoldier::SquadTick( void )
 			AssignSuppressor( pBest, 5.0f );
 			pBest->GiveSquadOrder( ORDER_BOUND, sq.hSuppressor.Get() ? 1.2f : 0.3f, vecFromEnemy );
 			sq.hBounder = pBest;
+			CNPC_GermanSoldier *pMate = pBest->Partner();		// A3d: the pair bounds together
+			if ( pMate && pMate->CanTakeSquadOrder() && pMate != sq.hSuppressor.Get() )
+				pMate->GiveSquadOrder( ORDER_BOUND, sq.hSuppressor.Get() ? 2.0f : 1.1f, vecFromEnemy );
 		}
 	}
 }
@@ -2052,7 +2189,10 @@ void CNPC_GermanSoldier::ChatterOrderCoverMove( void )
 {
 	if ( m_eMoveKind == MOVE_COVER && ( m_vecCoverSpot - GetAbsOrigin() ).Length2D() < 250.0f )
 		return;
-	CNPC_GermanSoldier *pMate = NearestSquadmate( 800.0f );
+	// A3d: the squad leader calls it if he's in earshot, else the nearest man
+	CNPC_GermanSoldier *pMate = SquadLeader();
+	if ( !pMate || pMate == this || ( pMate->GetAbsOrigin() - GetAbsOrigin() ).Length() > 1200.0f )
+		pMate = NearestSquadmate( 800.0f );
 	if ( !pMate )
 		return;
 	switch ( m_eMoveKind )
@@ -3021,6 +3161,11 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, int nMode, const Ve
 	Vector vecLeft( -vecFacing.y, vecFacing.x, 0.0f );
 
 	struct Cand_t { Vector pos; float cover; float foe; float score; CornerFit_t fit; SpotKind_t kind; };
+	// A3d: where his partner is (or is going), and the leader's leash for ordinary moves
+	CNPC_GermanSoldier *pPartner = Partner();
+	Vector vecPartner = pPartner ? ( pPartner->m_bHasCoverSpot ? pPartner->m_vecCoverSpot : pPartner->GetAbsOrigin() ) : vec3_origin;
+	CNPC_GermanSoldier *pLeader = SquadLeader();
+	bool bLeash = pLeader && pLeader != this && ( bOrdinary || bAdvance );
 	const int MAX_CANDS = 6;
 	Cand_t cands[MAX_CANDS];
 	int nCands = 0, nTested = 0;
@@ -3043,7 +3188,8 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, int nMode, const Ve
 		float flFoe = ( vecPos - vecFoe ).Length2D();
 		// not in his face - except stacking up right beside where he was, which is the point of it
 		if ( flFoe < ( bAssault ? 64.0f : 192.0f ) || IsSpotBad( vecPos ) || IsCoverSpotTaken( vecPos ) ||
-			 ( bSpread && SquadCrowding( vecPos ) > 0 ) )
+			 ( bSpread && SquadCrowding( vecPos ) > 0 ) ||
+			 ( bLeash && ( vecPos - pLeader->GetAbsOrigin() ).Length2D() > 800.0f ) )	// A3d: stays with the squad
 		{
 			DrawSearchNode( vecPos, 120, 120, 120 );
 			continue;
@@ -3147,6 +3293,12 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, int nMode, const Ve
 		if ( bAssault )
 			c.cover += ( 450.0f - flFoe ) * 0.08f;		// the closer to where he was, the better
 		c.cover -= 40.0f * SquadCrowding( vecPos );		// spread out: not onto a squadmate's wall
+		// A3d: ...but close to his partner (128-300 units: near, not on top of him)
+		if ( pPartner )
+		{
+			float flMate = ( vecPos - vecPartner ).Length2D();
+			c.cover += flMate < 300.0f ? 15.0f : -MIN( 40.0f, ( flMate - 300.0f ) * 0.05f );
+		}
 		c.score = c.cover - flDist * 0.08f;		// straight-line estimate (a route is never shorter)
 		// keep the best MAX_CANDS by estimate
 		int iSlot = nCands < MAX_CANDS ? nCands++ : -1;
@@ -3315,6 +3467,15 @@ void CNPC_GermanSoldier::DrawDebugOverlay( void )
 		Q_snprintf( sz, sizeof( sz ), "corner: %s, %s%s", m_Cover.corner.iSide == 0 ? "on his right" : "on his left",
 					m_Cover.corner.iStance == 0 ? "standing" : "crouched", m_poseCornerYaw >= 0 ? "" : "  (no corner_yaw pose param!)" );
 		NDebugOverlay::EntityText( entindex(), line++, sz, 0.12f );
+	}
+	if ( m_pSquad )
+	{
+		Q_snprintf( sz, sizeof( sz ), "squad: %s%s", IsSquadLeader() ? "LEADER, " : "", Partner() ? "" : "no partner" );
+		if ( Partner() )
+			Q_snprintf( sz + Q_strlen( sz ), sizeof( sz ) - Q_strlen( sz ), "partner %d", Partner()->entindex() );
+		NDebugOverlay::EntityText( entindex(), line++, sz, 0.12f );
+		if ( Partner() )
+			NDebugOverlay::Line( GetAbsOrigin() + Vector( 0, 0, 72 ), Partner()->GetAbsOrigin() + Vector( 0, 0, 72 ), 255, 255, 255, true, 0.12f );
 	}
 	Q_snprintf( sz, sizeof( sz ), "health %d/%d", GetHealth(), GetMaxHealth() );
 	NDebugOverlay::EntityText( entindex(), line++, sz, 0.12f );
