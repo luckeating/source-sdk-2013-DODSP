@@ -376,6 +376,8 @@ public:
 	Vector		m_vecOrderPos;			// ORDER_STACK: the exact spot (worked out by the squad)
 	bool		m_bInDrill;				// A3d-2: one of the clearing pair - waits at his stack for the squad's go
 	bool		m_bClearRush;			// A3e: first man in with the odds well in the squad's favour - runs in, gun up
+	int			m_nDrillRetries;		// A3e: his run to the door failed - one more try, then the drill goes without him
+	float		RouteLeft( void );		// how far he still has to go to his spot - along the route, not as the crow flies
 	void		JoinSquadFight( void );	// A3e: takes the squad's enemy (and where he was seen) if he has fallen out of the fight
 	bool		FindEntry( const Vector &vecTarget, Vector &vecStack1, Vector &vecStack2, Vector &vecEntry );
 	// another way in: a threshold on a different side of where he was (a back door, a window)
@@ -703,6 +705,7 @@ CNPC_GermanSoldier::CNPC_GermanSoldier() : m_AnimMap( DefLessFunc( int ) )
 	m_vecOrderPos = vec3_origin;
 	m_bInDrill = false;
 	m_bClearRush = false;
+	m_nDrillRetries = 0;
 	m_ePendingSpotKind = m_eArrivedKind = SPOT_COVER;
 	m_flArrivedAt = m_flStackUntil = 0.0f;
 	m_bPushPending = false;
@@ -1753,6 +1756,17 @@ void CNPC_GermanSoldier::GiveSquadOrder( SquadOrder_t eOrder, float flDelay, con
 		JoinSquadFight();	// an order is a fight order: one man at alert would sit it out (ORDER_STUCK)
 }
 
+float CNPC_GermanSoldier::RouteLeft( void )
+{
+	if ( GetNavigator()->IsGoalActive() )
+	{
+		float flRoute = GetNavigator()->GetPathDistanceToGoal();
+		if ( flRoute > 0.0f )
+			return flRoute;
+	}
+	return ( m_vecCoverSpot - GetAbsOrigin() ).Length2D();
+}
+
 // One owner for "back into the squad's fight": the squad's enemy, where he was last seen, and
 // the new-enemy condition that breaks an alert hold and puts him in combat.
 void CNPC_GermanSoldier::JoinSquadFight( void )
@@ -2216,24 +2230,53 @@ void CNPC_GermanSoldier::SquadTick( void )
 	if ( sq.nClear != CLEAR_NONE )
 	{
 		CNPC_GermanSoldier *apC[4];
-		int nLive = 0, nStacked = 0, nOrdered = 0, nIn = 0;
+		int nLive = 0, nStacked = 0, nOrdered = 0, nIn = 0, nDead = 0, nDropped = 0;
 		for ( int k = 0; k < 4; k++ )
 		{
 			apC[k] = static_cast<CNPC_GermanSoldier *>( sq.hClear[k].Get() );
-			if ( apC[k] && !apC[k]->IsAlive() )
+			if ( sq.hClear[k].Get() && !apC[k]->IsAlive() )
+			{
+				nDead++;
 				apC[k] = NULL;
+				sq.hClear[k] = NULL;
+			}
 			if ( !apC[k] )
 				continue;
 			CNPC_GermanSoldier *pC = apC[k];
-			nLive++;
 			bool bStacked = pC->IsCurSchedule( SCHED_GERMAN_STACK, false ) || pC->IsCurSchedule( SCHED_GERMAN_DRILL_STACK, false );
+			bool bTrying = pC->m_eSquadOrder == ORDER_STACK || pC->IsCurSchedule( SCHED_GERMAN_MOVE_TO_COVER, false ) || bStacked;
+			if ( sq.nClear == CLEAR_STACKING && !bTrying )
+			{
+				// A3e: his run to the door failed (stuck, no route): one more go at the same door,
+				// then the drill goes without him - it never waits out the clock on a man who isn't coming.
+				if ( pC->m_nDrillRetries < 1 )
+				{
+					pC->m_nDrillRetries++;
+					Vector vecTo = pC->GetAbsOrigin() - sq.vecClearTarget;
+					vecTo.z = 0.0f;
+					VectorNormalize( vecTo );
+					pC->GiveSquadOrder( ORDER_STACK, 0.2f, vecTo );
+					bTrying = true;
+				}
+				else
+				{
+					if ( npc_german_debug.GetBool() )
+						Msg( "[%.2f] npc_german_soldier %d: squad - can't get to the way in - the drill goes without him\n", now, pC->entindex() );
+					pC->m_bInDrill = false;
+					sq.hClear[k] = NULL;
+					apC[k] = NULL;
+					nDropped++;
+					continue;
+				}
+			}
+			nLive++;
 			nStacked += bStacked ? 1 : 0;
-			nOrdered += ( pC->m_eSquadOrder == ORDER_STACK || pC->IsCurSchedule( SCHED_GERMAN_MOVE_TO_COVER, false ) || bStacked ) ? 1 : 0;
+			nOrdered += bTrying ? 1 : 0;
 			nIn += ( pC->m_eSquadOrder == ORDER_CLEAR || pC->IsCurSchedule( SCHED_GERMAN_CLEAR, false ) ) ? 1 : 0;
 		}
 		const char *pszEnd = NULL;
 		if ( !nLive )
-			pszEnd = "the clearing team is down";
+			pszEnd = nDead ? "the clearing team is down" : "nobody could get to the way in";
 		// Seeing him doesn't call it off: the men at the door fire from it and the men going in
 		// shoot as they go (A3e). Only his breaking out somewhere else does.
 		else if ( now - sq.flLastSeen < 0.5f && ( sq.vecLKP - sq.vecClearTarget ).Length2D() > 384.0f )
@@ -2292,7 +2335,7 @@ void CNPC_GermanSoldier::SquadTick( void )
 			}
 			sq.nClear = CLEAR_NONE;
 			sq.flNextAssault = now + 10.0f / m_flSquadAggression;
-			if ( !nLive && now - sq.flLastSeen < 45.0f )
+			if ( !nLive && nDead && now - sq.flLastSeen < 45.0f )
 			{
 				// the team went down at the door: with men to spare the next wave follows them in
 				sq.flPush = sq.flConfidence >= 1.0f ? m_flAssaultAfter : 0.0f;
@@ -2371,18 +2414,21 @@ void CNPC_GermanSoldier::SquadTick( void )
 				}
 			}
 			Vector vecStack1, vecStack2, vecEntry;
-			if ( pFirst && pFirst->FindEntry( sq.vecLKP, vecStack1, vecStack2, vecEntry ) )
+			// doctrine: nobody goes through a door alone - no partner free, no drill (the pair assault below)
+			if ( pFirst && pSecond && pFirst->FindEntry( sq.vecLKP, vecStack1, vecStack2, vecEntry ) )
 			{
 				Vector vecTo = pFirst->GetAbsOrigin() - sq.vecLKP;
 				vecTo.z = 0.0f;
 				VectorNormalize( vecTo );
 				pFirst->m_vecOrderPos = vecStack1;
 				pFirst->m_bInDrill = true;
+				pFirst->m_nDrillRetries = 0;
 				pFirst->GiveSquadOrder( ORDER_STACK, 0.3f, vecTo );
 				if ( pSecond )
 				{
 					pSecond->m_vecOrderPos = vecStack2;
 					pSecond->m_bInDrill = true;
+					pSecond->m_nDrillRetries = 0;
 					pSecond->GiveSquadOrder( ORDER_STACK, 1.0f, vecTo );
 				}
 				sq.nClear = CLEAR_STACKING;
@@ -2410,25 +2456,45 @@ void CNPC_GermanSoldier::SquadTick( void )
 						}
 					}
 					Vector vecS1, vecS2;
-					if ( pThird && pThird->FindOtherEntry( sq.vecLKP, vecEntry, vecS1, vecS2, vecEntry2 ) )
+					if ( pThird )
 					{
 						pFourth = pThird->Partner();
 						if ( pFourth && ( pFourth == pFirst || pFourth == pSecond || !pFourth->CanTakeSquadOrder() ) )
 							pFourth = NULL;
+						if ( !pFourth )
+						{
+							// his partner's busy: the nearest other free man goes with him
+							float flMate = FLT_MAX;
+							for ( int i = 0; i < nAlive; i++ )
+							{
+								CNPC_GermanSoldier *pG = apMembers[i];
+								float d = ( pG->GetAbsOrigin() - pThird->GetAbsOrigin() ).Length();
+								if ( pG != pFirst && pG != pSecond && pG != pThird && pG->CanTakeSquadOrder() && d < flMate )
+								{
+									flMate = d;
+									pFourth = pG;
+								}
+							}
+						}
+					}
+					if ( pThird && pFourth && pThird->FindOtherEntry( sq.vecLKP, vecEntry, vecS1, vecS2, vecEntry2 ) )
+					{
 						pThird->m_vecOrderPos = vecS1;
 						pThird->m_bInDrill = true;
+						pThird->m_nDrillRetries = 0;
 						pThird->GiveSquadOrder( ORDER_STACK, 0.6f, vecTo );
 						if ( pFourth )
 						{
 							pFourth->m_vecOrderPos = vecS2;
 							pFourth->m_bInDrill = true;
+							pFourth->m_nDrillRetries = 0;
 							pFourth->GiveSquadOrder( ORDER_STACK, 1.3f, vecTo );
 						}
 						sq.hClear[2] = pThird;
 						sq.hClear[3] = pFourth;
 					}
 					else
-						pThird = NULL;
+						pThird = pFourth = NULL;
 				}
 				// The covering group is everyone else: the squad comes up to the house.
 				int nWatch = 0;
@@ -4342,7 +4408,7 @@ void CNPC_GermanSoldier::StartTask( const Task_t *pTask )
 			SetStance( STANCE_STAND, "running to cover", true );
 			ChatterOrderCoverMove();
 			m_flProgressCheck = gpGlobals->curtime + 1.5f;
-			m_flProgressDist = ( m_vecCoverSpot - GetAbsOrigin() ).Length2D();
+			m_flProgressDist = RouteLeft();
 			TaskComplete();
 		}
 		break;
@@ -4507,15 +4573,18 @@ void CNPC_GermanSoldier::RunTask( const Task_t *pTask )
 	switch ( pTask->iTask )
 	{
 	case TASK_WAIT_FOR_MOVEMENT:
-		// Stuck guard on the run to cover: every 1.5 s he must have closed 24 units, or the
-		// spot goes on his refusal list and he re-decides (no humping walls).
+		// Stuck guard on the run to cover: every 1.5 s he must have closed 24 units of his ROUTE,
+		// or the spot goes on his refusal list and he re-decides (no humping walls). Measured
+		// along the route (A3e): straight-line distance doesn't shrink while the way in goes round
+		// the house or up the stairs, and that gave up perfectly good runs.
 		if ( IsCurSchedule( SCHED_GERMAN_MOVE_TO_COVER, false ) && m_bHasCoverSpot && gpGlobals->curtime >= m_flProgressCheck )
 		{
-			float flDist = ( m_vecCoverSpot - GetAbsOrigin() ).Length2D();
+			float flDist = RouteLeft();
 			if ( flDist > m_flProgressDist - 24.0f && flDist > 32.0f )
 			{
 				if ( npc_german_debug.GetBool() )
-					Msg( "npc_german_soldier %d: stuck on the way to cover (%.0f units left) - giving up on that spot\n", entindex(), flDist );
+					Msg( "npc_german_soldier %d: stuck on the way to cover (%.0f units of route left, %.0f straight) - giving up on that spot\n",
+						 entindex(), flDist, ( m_vecCoverSpot - GetAbsOrigin() ).Length2D() );
 				MarkSpotBad( m_vecCoverSpot );
 				m_bHasCoverSpot = false;
 				GetNavigator()->StopMoving();
