@@ -190,6 +190,7 @@ public:
 	void		MarkSpotBad( const Vector &vecPos );		// unreachable / got stuck: skip it for a while
 	bool		IsSpotBad( const Vector &vecPos ) const;
 	void		DrawDebugOverlay( void );
+	void		NPCThink( void );		// keeps the debug overlay up while the AI is paused (ai_disable)
 
 	// Death animations
 	void		Event_Killed( const CTakeDamageInfo &info );
@@ -345,7 +346,7 @@ private:
 	bool		TryFireShot( void );			// one owner for pulling the trigger (both loops)
 	bool		ClaimFiringSlot( void );
 	bool		ClaimBoundSlot( void );
-	float		RouteExposure( const Vector &vecStart, AI_Waypoint_t *pRoute, CBaseEntity *pEnemy );
+	float		RouteExposure( const Vector &vecStart, AI_Waypoint_t *pRoute, CBaseEntity *pEnemy, const Vector *pvecEye = NULL );
 
 	//-------------------------------------------------------------------------
 	// Battle chatter (A3a): the component owns who talks when; these are the moments.
@@ -361,8 +362,8 @@ private:
 	// search) and reports back if he can't.
 	//-------------------------------------------------------------------------
 public:
-	enum SquadOrder_t { ORDER_NONE, ORDER_BOUND, ORDER_FLANK_LEFT, ORDER_FLANK_RIGHT, ORDER_FALLBACK };
-	enum MoveKind_t { MOVE_COVER, MOVE_BOUND, MOVE_FLANK_LEFT, MOVE_FLANK_RIGHT, MOVE_FALLBACK };
+	enum SquadOrder_t { ORDER_NONE, ORDER_BOUND, ORDER_FLANK_LEFT, ORDER_FLANK_RIGHT, ORDER_FALLBACK, ORDER_ASSAULT, ORDER_OVERWATCH, NUM_ORDERS };
+	enum MoveKind_t { MOVE_COVER, MOVE_BOUND, MOVE_FLANK_LEFT, MOVE_FLANK_RIGHT, MOVE_FALLBACK, MOVE_ASSAULT, MOVE_OVERWATCH };
 	void		SquadTick( void );
 	void		GiveSquadOrder( SquadOrder_t eOrder, float flDelay, const Vector &vecEnemyToSquad );
 	bool		CanTakeSquadOrder( void );
@@ -380,6 +381,9 @@ public:
 	bool		m_bSuppressing;			// cover loop: up firing at the enemy's position for the squad
 	float		m_flSquadTempo;			// script: how often the squad bounds / flanks
 	float		m_flFlankRadius;		// script
+	float		m_flSquadAggression;	// script: 0.5 cautious defenders .. 2 assault troops (A3c)
+	float		m_flAssaultAfter;		// script: seconds the squad has lost you before it comes after you
+	int			SquadCrowding( const Vector &vecPos );	// squadmates already at / heading for a spot this close
 private:
 	void		SquadOrderFailed( SquadOrder_t eOrder );
 	void		ChatterOrderCoverMove( void );		// a squadmate calls out his run to cover
@@ -393,7 +397,7 @@ private:
 	//-------------------------------------------------------------------------
 	// Watchdog (R1): passive. Prints INVARIANT lines when a rule is broken; changes nothing.
 	//-------------------------------------------------------------------------
-	enum Invariant_t { INV_STANCE_FLIPS, INV_STANCE_OWNER, INV_SCHED_CHURN, INV_DECISION_CHURN, INV_COVER_CHURN, INV_POSE_FLIPS, INV_ANIM_STUCK, INV_COVER_STANCE, INV_ORDER_STUCK, INV_FLANK_TIMEOUT, INV_CORNER_YAW, NUM_INVARIANTS };
+	enum Invariant_t { INV_STANCE_FLIPS, INV_STANCE_OWNER, INV_SCHED_CHURN, INV_DECISION_CHURN, INV_COVER_CHURN, INV_POSE_FLIPS, INV_ANIM_STUCK, INV_COVER_STANCE, INV_ORDER_STUCK, INV_FLANK_TIMEOUT, INV_CORNER_YAW, INV_ASSAULT_TIMEOUT, NUM_INVARIANTS };
 	void		WatchdogPose( void );		// what the body actually plays: down / crouched / standing flips
 	bool		IsClipEmpty( void );		// one owner for "he has no rounds in the gun"
 	void		Invariant( Invariant_t eWhich, const char *pszFormat, ... );
@@ -401,8 +405,10 @@ private:
 	enum { COVER_EXPOSED = -1, COVER_FULL = 0, COVER_CROUCH = 1, COVER_STAND = 2, COVER_CORNER = 3 };
 	int			LowCoverAgainst( CBaseEntity *pEnemy );	// COVER_*: > 0 means low cover he can fire from
 	int			CoverAt( const Vector &vecPos, CBaseEntity *pEnemy, trace_t *pHideTrace = NULL, const Vector *pvecEye = NULL );	// same test at any spot (pvecEye: against where his eyes were)
-	enum SearchMode_t { SEARCH_COVER, SEARCH_ADVANCE, SEARCH_FLANK_LEFT, SEARCH_FLANK_RIGHT, SEARCH_RETREAT };
-	bool		FindCoverSpot( CBaseEntity *pEnemy, int nMode = SEARCH_COVER );	// best-scoring low cover for this kind of move
+	enum SearchMode_t { SEARCH_COVER, SEARCH_ADVANCE, SEARCH_FLANK_LEFT, SEARCH_FLANK_RIGHT, SEARCH_RETREAT, SEARCH_ASSAULT };
+	// best-scoring cover for this kind of move; pvecThreatEye: against where the enemy was last
+	// seen (his eyes there) instead of where he is - for a squad that has lost sight of him
+	bool		FindCoverSpot( CBaseEntity *pEnemy, int nMode = SEARCH_COVER, const Vector *pvecThreatEye = NULL );
 	bool		IsAtCoverSpot( void ) const { return m_bHasCoverSpot && ( m_vecCoverSpot - GetAbsOrigin() ).Length2D() < 48.0f; }
 	bool		IsCoverSpotTaken( const Vector &vecPos );
 	bool		IsWounded( void ) const { return GetMaxHealth() > 0 && GetHealth() < GetMaxHealth() * m_flWoundedHealth; }
@@ -653,6 +659,8 @@ CNPC_GermanSoldier::CNPC_GermanSoldier() : m_AnimMap( DefLessFunc( int ) )
 	m_flLastSearchRun = 0.0f;
 	m_bSuppressing = false;
 	m_flSquadTempo = 1.0f;
+	m_flSquadAggression = 1.0f;
+	m_flAssaultAfter = 6.0f;
 	m_flFlankRadius = 1200.0f;
 	m_flChatterSawEnemy = -100.0f;
 	for ( int i = 0; i < NUM_INVARIANTS; i++ )
@@ -1100,6 +1108,8 @@ void CNPC_GermanSoldier::BuildAnimMap( void )
 	m_flBoundMax = clamp( pScript->GetFloat( "bound_max", 700.0f ), 128.0f, 4096.0f );
 	m_flSquadTempo = clamp( pScript->GetFloat( "squad_tempo", 1.0f ), 0.1f, 10.0f );
 	m_flFlankRadius = clamp( pScript->GetFloat( "flank_radius", 1200.0f ), 256.0f, 4096.0f );
+	m_flSquadAggression = clamp( pScript->GetFloat( "squad_aggression", 1.0f ), 0.25f, 4.0f );
+	m_flAssaultAfter = clamp( pScript->GetFloat( "assault_after", 6.0f ), 1.0f, 60.0f );
 	m_flUnderFireHide = MAX( 0.0f, pScript->GetFloat( "under_fire_hide", 2.5f ) );
 	m_flWoundedHealth = clamp( pScript->GetFloat( "wounded_health", 0.5f ), 0.0f, 1.0f );
 	m_flWoundedHideScale = MAX( 1.0f, pScript->GetFloat( "wounded_hide_scale", 1.75f ) );
@@ -1424,7 +1434,7 @@ void CNPC_GermanSoldier::Invariant( Invariant_t eWhich, const char *pszFormat, .
 	if ( gpGlobals->curtime < m_flInvariantNext[eWhich] )
 		return;
 	m_flInvariantNext[eWhich] = gpGlobals->curtime + 2.0f;
-	static const char *s_pszNames[] = { "STANCE_FLIPS", "STANCE_OWNER", "SCHED_CHURN", "DECISION_CHURN", "COVER_CHURN", "POSE_FLIPS", "ANIM_STUCK", "COVER_STANCE", "ORDER_STUCK", "FLANK_TIMEOUT", "CORNER_YAW" };
+	static const char *s_pszNames[] = { "STANCE_FLIPS", "STANCE_OWNER", "SCHED_CHURN", "DECISION_CHURN", "COVER_CHURN", "POSE_FLIPS", "ANIM_STUCK", "COVER_STANCE", "ORDER_STUCK", "FLANK_TIMEOUT", "CORNER_YAW", "ASSAULT_TIMEOUT" };
 	char sz[512];
 	va_list ap;
 	va_start( ap, pszFormat );
@@ -1529,12 +1539,12 @@ bool CNPC_GermanSoldier::IsClipEmpty( void )
 
 // How much of a route the enemy can see: sample every 48 units at chest height (a running
 // man) and trace from the enemy's eyes. Returns the exposed length in units.
-float CNPC_GermanSoldier::RouteExposure( const Vector &vecStart, AI_Waypoint_t *pRoute, CBaseEntity *pEnemy )
+float CNPC_GermanSoldier::RouteExposure( const Vector &vecStart, AI_Waypoint_t *pRoute, CBaseEntity *pEnemy, const Vector *pvecEye )
 {
 	if ( !pEnemy )
 		return 0.0f;
 	CTraceFilterSkipTwoEntities filter( this, pEnemy, COLLISION_GROUP_NONE );
-	Vector vecEye = pEnemy->EyePosition();
+	Vector vecEye = pvecEye ? *pvecEye : pEnemy->EyePosition();
 	const float STEP = 48.0f;
 	float flExposed = 0.0f, flCarry = 0.0f;
 	int nTraces = 0;
@@ -1620,6 +1630,11 @@ struct GermanSquadState_t
 	float	flNextBound;
 	float	flNextFlank;
 	float	flNextFallback;
+	float	flLastFlank;		// A3c: when the last flank went out (flanks come on tempo, not only when you sit still)
+	EHANDLE	hAssault[2];		// A3c: up to two men coming after you where they lost you...
+	EHANDLE	hOverwatch;			// ...and one watching that spot for them
+	float	flAssaultDeadline;
+	float	flNextAssault;
 };
 static CUtlDict<GermanSquadState_t, int>	s_GermanSquads;
 static float								s_flGermanSquadsTime = 0.0f;
@@ -1639,6 +1654,8 @@ static GermanSquadState_t *GetGermanSquad( string_t iszSquad )
 		memset( &sq, 0, sizeof( sq ) );
 		sq.hEnemy = NULL;
 		sq.hSuppressor = sq.hBounder = sq.hFlanker = NULL;
+		sq.hAssault[0] = sq.hAssault[1] = sq.hOverwatch = NULL;
+		sq.flLastFlank = now;
 		sq.flNextBound = now + 6.0f;
 		sq.flNextFlank = now + 10.0f;
 		i = s_GermanSquads.Insert( STRING( iszSquad ), sq );
@@ -1646,7 +1663,7 @@ static GermanSquadState_t *GetGermanSquad( string_t iszSquad )
 	return &s_GermanSquads[i];
 }
 
-static const char *s_pszSquadOrder[] = { "none", "bound forward", "flank left", "flank right", "fall back" };
+static const char *s_pszSquadOrder[] = { "none", "bound forward", "flank left", "flank right", "fall back", "go after you where you were last seen", "watch where you were last seen" };
 
 bool CNPC_GermanSoldier::IsSquadSuppressor( void )
 {
@@ -1657,7 +1674,7 @@ bool CNPC_GermanSoldier::IsSquadSuppressor( void )
 bool CNPC_GermanSoldier::CanTakeSquadOrder( void )
 {
 	return IsAlive() && m_eSquadOrder == ORDER_NONE && gpGlobals->curtime >= m_flOrderRefusedUntil &&
-		   ( IsInCoverLoop() || IsInOpenLoop() );
+		   ( IsInCoverLoop() || IsInOpenLoop() || IsCurSchedule( SCHED_GERMAN_HOLD_COVER, false ) );
 }
 
 void CNPC_GermanSoldier::GiveSquadOrder( SquadOrder_t eOrder, float flDelay, const Vector &vecEnemyToSquad )
@@ -1680,6 +1697,11 @@ void CNPC_GermanSoldier::SquadOrderFailed( SquadOrder_t eOrder )
 			pSq->hBounder = NULL;
 		if ( pSq->hFlanker.Get() == this )
 			pSq->hFlanker = NULL;
+		for ( int k = 0; k < 2; k++ )
+			if ( pSq->hAssault[k].Get() == this )
+				pSq->hAssault[k] = NULL;
+		if ( pSq->hOverwatch.Get() == this )
+			pSq->hOverwatch = NULL;
 	}
 	if ( npc_german_debug.GetBool() )
 		Msg( "[%.2f] npc_german_soldier %d: can't %s - no spot for it; the squad will ask someone else\n", gpGlobals->curtime, entindex(), s_pszSquadOrder[eOrder] );
@@ -1775,8 +1797,101 @@ void CNPC_GermanSoldier::SquadTick( void )
 		}
 	}
 
+	// Assault roles: done when the man has arrived (or given up); too slow -> give up on it.
+	bool bAssaultActive = false;
+	for ( int k = 0; k < 2; k++ )
+	{
+		CNPC_GermanSoldier *pA = static_cast<CNPC_GermanSoldier *>( sq.hAssault[k].Get() );
+		if ( !pA )
+			continue;
+		bool bMoving = pA->IsCurSchedule( SCHED_GERMAN_MOVE_TO_COVER, false ) && pA->m_eMoveKind == MOVE_ASSAULT;
+		bool bPending = pA->m_eSquadOrder == ORDER_ASSAULT;
+		if ( !pA->IsAlive() || ( !bMoving && !bPending ) )
+			sq.hAssault[k] = NULL;
+		else if ( now > sq.flAssaultDeadline )
+		{
+			pA->Invariant( INV_ASSAULT_TIMEOUT, "still not at his assault spot after the deadline - giving up on it" );
+			pA->MarkSpotBad( pA->m_vecCoverSpot );
+			pA->m_eSquadOrder = ORDER_NONE;
+			if ( bMoving )
+				pA->ClearSchedule( "assault took too long" );
+			sq.hAssault[k] = NULL;
+		}
+		else
+			bAssaultActive = true;
+	}
+	CNPC_GermanSoldier *pWatch = static_cast<CNPC_GermanSoldier *>( sq.hOverwatch.Get() );
+	if ( pWatch && ( !pWatch->IsAlive() || ( pWatch->m_eSquadOrder != ORDER_OVERWATCH &&
+		 !( pWatch->IsCurSchedule( SCHED_GERMAN_MOVE_TO_COVER, false ) && pWatch->m_eMoveKind == MOVE_OVERWATCH ) ) ) )
+		sq.hOverwatch = NULL;
+
 	CBaseEntity *pEnemy = sq.hEnemy.Get();
-	if ( !pEnemy || !pEnemy->IsAlive() || now - sq.flLastSeen > 10.0f )
+	if ( !pEnemy || !pEnemy->IsAlive() || now - sq.flLastSeen > 45.0f )
+		return;		// nobody knows where he is any more
+	float flAggr = m_flSquadAggression;
+
+	// A3c - he's out of sight (in a house, round a corner): don't wait for him. Up to two men work
+	// their way to cover next to where he was last seen, by routes he can't see; one other man
+	// takes cover watching that spot. ("Vorwaerts!")
+	if ( now - sq.flLastSeen > m_flAssaultAfter / flAggr )
+	{
+		if ( !bAssaultActive && nAlive >= 2 && now >= sq.flNextAssault )
+		{
+			sq.flNextAssault = now + 20.0f / flAggr;
+			int nWant = nAlive >= 4 ? 2 : 1;
+			int nGot = 0;
+			for ( int k = 0; k < nWant; k++ )
+			{
+				CNPC_GermanSoldier *pBest = NULL;
+				float flBest = FLT_MAX;
+				for ( int i = 0; i < nAlive; i++ )
+				{
+					CNPC_GermanSoldier *pG = apMembers[i];
+					if ( !pG->CanTakeSquadOrder() || pG == sq.hAssault[0].Get() || pG == sq.hOverwatch.Get() )
+						continue;
+					float flDist = ( pG->GetAbsOrigin() - sq.vecLKP ).Length2D();
+					if ( flDist < flBest )
+					{
+						flBest = flDist;
+						pBest = pG;
+					}
+				}
+				if ( !pBest )
+					break;
+				Vector vecTo = pBest->GetAbsOrigin() - sq.vecLKP;
+				vecTo.z = 0.0f;
+				VectorNormalize( vecTo );
+				pBest->GiveSquadOrder( ORDER_ASSAULT, 0.4f + 0.8f * k, vecTo );
+				sq.hAssault[k] = pBest;
+				nGot++;
+			}
+			if ( nGot )
+			{
+				sq.flAssaultDeadline = now + 25.0f;
+				if ( !sq.hOverwatch.Get() )
+				{
+					for ( int i = 0; i < nAlive; i++ )
+					{
+						CNPC_GermanSoldier *pG = apMembers[i];
+						if ( pG->CanTakeSquadOrder() && pG != sq.hAssault[0].Get() && pG != sq.hAssault[1].Get() )
+						{
+							Vector vecTo = pG->GetAbsOrigin() - sq.vecLKP;
+							vecTo.z = 0.0f;
+							VectorNormalize( vecTo );
+							pG->GiveSquadOrder( ORDER_OVERWATCH, 0.2f, vecTo );
+							sq.hOverwatch = pG;
+							break;
+						}
+					}
+				}
+				if ( npc_german_debug.GetBool() )
+					Msg( "[%.2f] npc_german_soldier %d: squad - lost you %.0f s ago: %d going after you, %s watching\n", now, entindex(),
+						 now - sq.flLastSeen, nGot, sq.hOverwatch.Get() ? "one" : "nobody" );
+			}
+		}
+		return;		// the rest needs him in sight
+	}
+	if ( now - sq.flLastSeen > 10.0f )
 		return;		// nothing fresh to coordinate against
 	Vector vecFromEnemy = vecCentroid - sq.vecLKP;
 	vecFromEnemy.z = 0.0f;
@@ -1830,8 +1945,10 @@ void CNPC_GermanSoldier::SquadTick( void )
 			return;
 	}
 
-	// 2. Flank: he's stayed put 8 s and there are three or more of us.
-	if ( nAlive >= 3 && !sq.hFlanker.Get() && now >= sq.flNextFlank && now - sq.flStillSince > 8.0f / flTempo )
+	// 2. Flank: three or more of us, and either he's stayed put 8 s, or it's simply time (A3c: a squad
+	//    works round your side every so often whatever you do - squad_tempo x squad_aggression).
+	bool bFlankTime = now - sq.flStillSince > 8.0f / flTempo || now - sq.flLastFlank > 20.0f / ( flTempo * flAggr );
+	if ( nAlive >= 3 && !sq.hFlanker.Get() && now >= sq.flNextFlank && bFlankTime )
 	{
 		CNPC_GermanSoldier *pBest = NULL;
 		float flBestSide = -1.0f, flSide = 0.0f;
@@ -1855,7 +1972,8 @@ void CNPC_GermanSoldier::SquadTick( void )
 			pBest->GiveSquadOrder( bLeft ? ORDER_FLANK_LEFT : ORDER_FLANK_RIGHT, 0.8f, vecFromEnemy );
 			sq.hFlanker = pBest;
 			sq.flFlankDeadline = now + 30.0f;
-			sq.flNextFlank = now + 25.0f / flTempo;
+			sq.flNextFlank = now + 12.0f / flTempo;		// at least this between flanks
+			sq.flLastFlank = now;
 			AssignSuppressor( pBest, 7.0f );
 			return;
 		}
@@ -1923,7 +2041,8 @@ void CNPC_GermanSoldier::ChatterOrderCoverMove( void )
 		return;
 	switch ( m_eMoveKind )
 	{
-	case MOVE_BOUND:		pMate->m_Chatter.Request( CHAT_ORDER_FORWARD, NULL, this ); break;
+	case MOVE_BOUND:
+	case MOVE_ASSAULT:		pMate->m_Chatter.Request( CHAT_ORDER_FORWARD, NULL, this ); break;
 	case MOVE_FLANK_LEFT:	pMate->m_Chatter.Request( CHAT_ORDER_FLANK_LEFT, NULL, this ); break;
 	case MOVE_FLANK_RIGHT:	pMate->m_Chatter.Request( CHAT_ORDER_FLANK_RIGHT, NULL, this ); break;
 	case MOVE_FALLBACK:		pMate->m_Chatter.Request( CHAT_ORDER_BACK, NULL, this ); break;
@@ -2809,6 +2928,26 @@ bool CNPC_GermanSoldier::IsCoverSpotTaken( const Vector &vecPos )
 // Position evaluation (Killzone-style): score every ground node within reach by the cover it
 // gives against this enemy, how far he has to run, and how close it puts him to the enemy.
 // Squadmates' spots are skipped. Picks the best; the move schedule finds the path.
+// How many squadmates are already at, or heading for, a spot within 96 units of this one.
+// (Searches score against it: a squad spreads out instead of piling onto one wall.)
+int CNPC_GermanSoldier::SquadCrowding( const Vector &vecPos )
+{
+	if ( !m_pSquad )
+		return 0;
+	int n = 0;
+	AISquadIter_t iter;
+	for ( CAI_BaseNPC *pMember = m_pSquad->GetFirstMember( &iter ); pMember; pMember = m_pSquad->GetNextMember( &iter ) )
+	{
+		if ( pMember == this || !pMember->IsAlive() || !FClassnameIs( pMember, "npc_german_soldier" ) )
+			continue;
+		CNPC_GermanSoldier *pG = static_cast<CNPC_GermanSoldier *>( pMember );
+		Vector vecTheirs = pG->m_bHasCoverSpot ? pG->m_vecCoverSpot : pG->GetAbsOrigin();
+		if ( ( vecTheirs - vecPos ).Length2D() < 96.0f )
+			n++;
+	}
+	return n;
+}
+
 void CNPC_GermanSoldier::MarkSpotBad( const Vector &vecPos )
 {
 	m_vecBadSpot[m_iNextBadSpot] = vecPos;
@@ -2842,7 +2981,7 @@ static void DrawSearchNode( const Vector &vecPos, int r, int g, int b )
 		NDebugOverlay::Box( vecPos, Vector( -6, -6, 0 ), Vector( 6, 6, 12 ), r, g, b, 160, 4.0f );
 }
 
-bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, int nMode )
+bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, int nMode, const Vector *pvecThreatEye )
 {
 	if ( !pEnemy || !g_pBigAINet )
 		return false;
@@ -2850,8 +2989,11 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, int nMode )
 	bool bFlank = nMode == SEARCH_FLANK_LEFT || nMode == SEARCH_FLANK_RIGHT;
 	bool bRetreat = nMode == SEARCH_RETREAT;
 	bool bOrdinary = nMode == SEARCH_COVER;
-	float flRadius = bFlank ? m_flFlankRadius : m_flCoverSearchRadius;
-	Vector vecMe = GetAbsOrigin(), vecFoe = pEnemy->GetAbsOrigin();
+	bool bAssault = nMode == SEARCH_ASSAULT;
+	float flRadius = bFlank || bAssault ? m_flFlankRadius : m_flCoverSearchRadius;
+	// One owner for "where the threat is" in this search: his eyes now, or where he was last seen.
+	Vector vecThreatEye = pvecThreatEye ? *pvecThreatEye : pEnemy->EyePosition();
+	Vector vecMe = GetAbsOrigin(), vecFoe = pvecThreatEye ? *pvecThreatEye - Vector( 0, 0, 64 ) : pEnemy->GetAbsOrigin();
 	float flMyFoe = ( vecMe - vecFoe ).Length2D();
 	// flank geometry: the squad faces the enemy along -m_vecFlankFrom; its left is that turned 90 degrees
 	Vector vecFacing = -m_vecFlankFrom;
@@ -2882,7 +3024,8 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, int nMode )
 			continue;
 		}
 		if ( ( bAdvance && flFoe > flMyFoe - 128.0f ) ||		// bounding forward: only cover that actually gains ground
-			 ( bRetreat && flFoe < flMyFoe + 192.0f ) )		// falling back: only cover that gives ground
+			 ( bRetreat && flFoe < flMyFoe + 192.0f ) ||		// falling back: only cover that gives ground
+			 ( bAssault && ( flFoe > 450.0f || flFoe > flMyFoe - 64.0f ) ) )	// going after him: next to where he was, and closer
 		{
 			DrawSearchNode( vecPos, 50, 50, 50 );
 			continue;
@@ -2910,16 +3053,16 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, int nMode )
 			flFlankDeg = RAD2DEG( acosf( clamp( flCos, -1.0f, 1.0f ) ) );
 		}
 		float flCloser = flMyFoe - flFoe;	// how much ground toward the enemy this spot takes
-		if ( bOrdinary && flCloser > 256.0f )
+		if ( bOrdinary && flCloser > 256.0f * m_flSquadAggression )
 		{
 			DrawSearchNode( vecPos, 50, 50, 50 );
 			continue;	// taking cover is not attacking: ground is only taken by bounding / flanking
 		}
 		nTested++;
-		int nCover = CoverAt( vecPos, pEnemy );
+		int nCover = CoverAt( vecPos, pEnemy, NULL, &vecThreatEye );
 		Cand_t c;
 		c.fit.bValid = false;
-		if ( nCover == COVER_FULL && CornerFitAt( vecPos, pEnemy, c.fit ) )
+		if ( nCover == COVER_FULL && CornerFitAt( vecPos, pEnemy, c.fit, &vecThreatEye ) )
 		{
 			nCover = COVER_CORNER;		// hidden here, and a corner set can step out and shoot from it
 			DrawSearchNode( vecPos, 0, 220, 255 );
@@ -2944,6 +3087,9 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, int nMode )
 			c.cover += flFlankDeg * 0.5f;		// the further round his side, the better
 		if ( bRetreat )
 			c.cover += ( flFoe - flMyFoe ) * 0.05f;
+		if ( bAssault )
+			c.cover += ( 450.0f - flFoe ) * 0.08f;		// the closer to where he was, the better
+		c.cover -= 25.0f * SquadCrowding( vecPos );		// spread out: not onto a squadmate's wall
 		c.score = c.cover - flDist * 0.08f;		// straight-line estimate (a route is never shorter)
 		// keep the best MAX_CANDS by estimate
 		int iSlot = nCands < MAX_CANDS ? nCands++ : -1;
@@ -2999,9 +3145,9 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, int nMode )
 			continue;	// reachable, but only the long way round (a bound is a short dash)
 		}
 		// Killzone / TLOU: the run itself matters - every unit of it in your line of fire costs.
-		float flExposed = RouteExposure( vecMe, pRoute, pEnemy );
+		float flExposed = RouteExposure( vecMe, pRoute, pEnemy, &vecThreatEye );
 		DeleteAll( pRoute );
-		float flScore = c.cover - flLen * 0.08f - flExposed * ( bFlank ? 0.25f : 0.1f );	// a flank must stay out of his sight
+		float flScore = c.cover - flLen * 0.08f - flExposed * ( bFlank || bAssault ? 0.25f : 0.1f );	// a flank / an assault must stay out of his sight
 		if ( flScore > flBest )
 		{
 			flBest = flScore;
@@ -3014,7 +3160,7 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, int nMode )
 	if ( npc_german_debug.GetBool() )
 		Msg( "[%.2f] npc_german_soldier %d: %s - %d spots tested, %d gave cover (%d corners), %d had no route: %s%s (run %.0f, %.0f of it in your line of fire)\n",
 			 gpGlobals->curtime, entindex(), bAdvance ? "advance search (closer cover)" : bFlank ? ( nMode == SEARCH_FLANK_LEFT ? "flank search (left)" : "flank search (right)" ) :
-			 bRetreat ? "fall-back search" : "cover search", nTested, nCands, nCorners, nNoRoute,
+			 bRetreat ? "fall-back search" : bAssault ? "assault search (next to where you were)" : pvecThreatEye ? "watch search (your last position)" : "cover search", nTested, nCands, nCorners, nNoRoute,
 			 flBest > -FLT_MAX ? "going" : "nothing usable", flBest > -FLT_MAX && fitBest.bValid ? " to a corner" : "", flBestLen, flBestExposed );
 	if ( flBest == -FLT_MAX )
 		return false;
@@ -3022,10 +3168,10 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, int nMode )
 		NDebugOverlay::Box( vecBest, Vector( -8, -8, 0 ), Vector( 8, 8, 24 ), 0, 80, 255, 200, 4.0f );
 	m_vecCoverSpot = vecBest;
 	m_PendingCorner = fitBest;
-	m_vecCoverSearchEye = pEnemy->EyePosition();
+	m_vecCoverSearchEye = vecThreatEye;
 	m_bHasCoverSpot = true;
 	m_flLastSearchRun = flBestLen;
-	const char *pszLandmark = GermanChatter_LandmarkAt( vecBest, pEnemy->EyePosition(), this, pEnemy );
+	const char *pszLandmark = GermanChatter_LandmarkAt( vecBest, vecThreatEye, this, pEnemy );
 	Q_strncpy( m_szCoverLandmark, pszLandmark ? pszLandmark : "", sizeof( m_szCoverLandmark ) );
 	return true;
 }
@@ -3349,6 +3495,15 @@ void CNPC_GermanSoldier::UpdateMovingReload( void )
 		FinishReload();
 		m_flGestureReloadDone = -1.0f;
 	}
+}
+
+// ai_disable stops PrescheduleThink (where the overlay is drawn) but not the think itself:
+// keep the overlay up while paused, so a paused fight can be looked at.
+void CNPC_GermanSoldier::NPCThink( void )
+{
+	BaseClass::NPCThink();
+	if ( ( CAI_BaseNPC::m_nDebugBits & bits_debugDisableAI ) && npc_german_debug.GetInt() >= 2 && IsAlive() )
+		DrawDebugOverlay();
 }
 
 void CNPC_GermanSoldier::PrescheduleThink( void )
@@ -4272,9 +4427,12 @@ int CNPC_GermanSoldier::SelectCombatSchedule( void )
 	{
 		SquadOrder_t eOrder = m_eSquadOrder;
 		m_eSquadOrder = ORDER_NONE;
-		static const int s_nMode[] = { SEARCH_COVER, SEARCH_ADVANCE, SEARCH_FLANK_LEFT, SEARCH_FLANK_RIGHT, SEARCH_RETREAT };
-		static const MoveKind_t s_eKind[] = { MOVE_COVER, MOVE_BOUND, MOVE_FLANK_LEFT, MOVE_FLANK_RIGHT, MOVE_FALLBACK };
-		if ( FindCoverSpot( GetEnemy(), s_nMode[eOrder] ) )
+		static const int s_nMode[NUM_ORDERS] = { SEARCH_COVER, SEARCH_ADVANCE, SEARCH_FLANK_LEFT, SEARCH_FLANK_RIGHT, SEARCH_RETREAT, SEARCH_ASSAULT, SEARCH_COVER };
+		static const MoveKind_t s_eKind[NUM_ORDERS] = { MOVE_COVER, MOVE_BOUND, MOVE_FLANK_LEFT, MOVE_FLANK_RIGHT, MOVE_FALLBACK, MOVE_ASSAULT, MOVE_OVERWATCH };
+		// going after him / watching for him: against where he was last seen, not where he is
+		Vector vecLastEye = GetEnemyLKP() + Vector( 0, 0, 64 );
+		bool bByLKP = eOrder == ORDER_ASSAULT || eOrder == ORDER_OVERWATCH;
+		if ( FindCoverSpot( GetEnemy(), s_nMode[eOrder], bByLKP ? &vecLastEye : NULL ) )
 		{
 			m_eMoveKind = s_eKind[eOrder];
 			if ( eOrder == ORDER_FLANK_LEFT || eOrder == ORDER_FLANK_RIGHT )
@@ -4283,7 +4441,8 @@ int CNPC_GermanSoldier::SelectCombatSchedule( void )
 				if ( pSq && pSq->hFlanker.Get() == this )	// deadline from the actual run: twice a jog, plus 6 s
 					pSq->flFlankDeadline = now + clamp( m_flLastSearchRun / 150.0f * 2.0f + 6.0f, 10.0f, 40.0f );
 			}
-			static const char *s_pszWhy[] = { "", "squad: bound forward", "squad: flank left", "squad: flank right", "squad: fall back" };
+			static const char *s_pszWhy[NUM_ORDERS] = { "", "squad: bound forward", "squad: flank left", "squad: flank right", "squad: fall back",
+														"squad: go after him where he was last seen", "squad: watch where he was last seen" };
 			return Decide( SCHED_GERMAN_MOVE_TO_COVER, s_pszWhy[eOrder] );
 		}
 		SquadOrderFailed( eOrder );
