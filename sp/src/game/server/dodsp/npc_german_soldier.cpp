@@ -3151,6 +3151,10 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, int nMode, const Ve
 	bool bSpread = nMode == SEARCH_SPREAD;			// too bunched up: somewhere apart from the squad (cover, or an angle)
 	bool bOrdinary = nMode == SEARCH_COVER || bSpread;
 	bool bAssault = nMode == SEARCH_ASSAULT;
+	bool bWatch = nMode == SEARCH_COVER && pvecThreatEye;	// watching where he was last seen (overwatch)
+	// One rule for every move order (A3d): cover is best, but an open spot he can see the enemy
+	// (or where he was) from will do - an angle. Only falling back insists on cover.
+	bool bAnglesOk = bAssault || bFlank || bSpread || bAdvance || bWatch;
 	float flRadius = bFlank || bAssault ? m_flFlankRadius : m_flCoverSearchRadius;
 	// One owner for "where the threat is" in this search: his eyes now, or where he was last seen.
 	Vector vecThreatEye = pvecThreatEye ? *pvecThreatEye : pEnemy->EyePosition();
@@ -3252,7 +3256,7 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, int nMode, const Ve
 			//   right beside where you were, out of your sight - he stacks up there (a doorway, your wall)
 			//   anywhere he can see where you are/were from - he's got an angle on you
 			bool bAngle = false;
-			if ( ( bAssault || bFlank || bSpread ) && nCover == COVER_EXPOSED )
+			if ( bAnglesOk && nCover == COVER_EXPOSED )
 			{
 				trace_t trAngle;
 				CTraceFilterSkipTwoEntities filterAngle( this, pEnemy, COLLISION_GROUP_NONE );
@@ -3353,7 +3357,7 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, int nMode, const Ve
 			flLen += ( pWp->GetPos() - vecPrev ).Length();
 			vecPrev = pWp->GetPos();
 		}
-		if ( flLen > flRadius * 1.5f || ( bAdvance && flLen > m_flBoundMax ) )
+		if ( flLen > flRadius * 1.5f || ( bAdvance && flLen > MAX( m_flBoundMax, ( c.pos - vecMe ).Length() * 1.6f ) ) )
 		{
 			DeleteAll( pRoute );
 			continue;	// reachable, but only the long way round (a bound is a short dash)
