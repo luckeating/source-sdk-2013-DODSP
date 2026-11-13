@@ -509,7 +509,7 @@ private:
 	float		m_flNextMGSearch;
 	Activity	m_actMGDeployStand, m_actMGDeployProne, m_actMGFire, m_actMGFireProne, m_actMGReload, m_actMGReloadProne;
 	int			m_poseBodyHeight;
-	bool		MGDeployAt( const Vector &vecPos, const Vector &vecThreatEye, CBaseEntity *pEnemy, MGDeploy_t &eKind, float &flHeight );
+	bool		MGDeployAt( const Vector &vecPos, const Vector &vecThreatEye, CBaseEntity *pEnemy, MGDeploy_t &eKind, float &flHeight, Vector *pvecDeploy = NULL );
 	bool		MGDeploy( void );
 	void		MGUndeploy( const char *pszWhy );
 	void		RunMGLoop( void );
@@ -3978,6 +3978,7 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, int nMode, const Ve
 	Vector vecLeft( -vecFacing.y, vecFacing.x, 0.0f );
 
 	struct Cand_t { Vector pos; float cover; float foe; float score; CornerFit_t fit; SpotKind_t kind; MGDeploy_t mgKind; float mgHeight; };
+	Vector vecMGDeploy;		// A4b: where he stands to rest the gun on the wall (up against it, not at the node)
 	// A3d: where his partner is (or is going), and the leader's leash for ordinary moves
 	CNPC_GermanSoldier *pPartner = Partner();
 	Vector vecPartner = pPartner ? ( pPartner->m_bHasCoverSpot ? pPartner->m_vecCoverSpot : pPartner->GetAbsOrigin() ) : vec3_origin;
@@ -4016,7 +4017,7 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, int nMode, const Ve
 			 ( bAssault && ( flFoe > 450.0f || ( flFoe > flMyFoe - 64.0f && flMyFoe > 600.0f ) ) ) ||	// going after him: next to where he was (closer, unless he's already near)
 			 ( bWatch && flFoe > 800.0f ) ||		// covering the house: within 800 of it, however far that is from where he stands
 			 ( bShift && ( flDist < 96.0f || fabsf( flFoe - flMyFoe ) > 256.0f ) ) ||	// fire and move: a real move, same fighting distance
-			 ( bMG && flFoe < 400.0f ) )		// an MG wants room: not on top of you
+			 ( bMG && flFoe < 500.0f ) )		// an MG wants room: not on top of you
 		{
 			DrawSearchNode( vecPos, 50, 50, 50 );
 			continue;
@@ -4061,14 +4062,16 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, int nMode, const Ve
 		{
 			// a wall top to rest the bipod on (best), or prone with a line at ground level; at
 			// 600-1400 from you, the higher the better
-			if ( !MGDeployAt( vecPos, vecThreatEye, pEnemy, c.mgKind, c.mgHeight ) )
+			// A4b-1b: walls and window sills first, by a wide margin - prone in the open only when
+			// there's no wall anywhere he could use. 700-1400 from you; height counts.
+			if ( !MGDeployAt( vecPos, vecThreatEye, pEnemy, c.mgKind, c.mgHeight, &vecMGDeploy ) )
 			{
 				DrawSearchNode( vecPos, 255, 0, 0 );
 				continue;
 			}
 			c.kind = SPOT_MG;
-			flBase = ( c.mgKind == MGD_WALL ? 100.0f : 70.0f ) - MAX( 0.0f, fabsf( flFoe - 1000.0f ) - 400.0f ) * 0.03f +
-					 clamp( ( vecPos.z - vecFoe.z ) * 0.05f, 0.0f, 20.0f );
+			float flOut = flFoe < 700.0f ? 700.0f - flFoe : flFoe > 1400.0f ? flFoe - 1400.0f : 0.0f;
+			flBase = ( c.mgKind == MGD_WALL ? 100.0f : 45.0f ) - flOut * 0.08f + clamp( ( vecPos.z - vecFoe.z ) * 0.08f, 0.0f, 25.0f );
 			DrawSearchNode( vecPos, 255, 255, 0 );
 		}
 		else if ( nCover == COVER_FULL && CornerFitAt( vecPos, pEnemy, c.fit, &vecThreatEye ) )
@@ -4116,7 +4119,7 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, int nMode, const Ve
 				continue;
 			}
 		}
-		c.pos = vecPos;
+		c.pos = bMG ? vecMGDeploy : vecPos;
 		c.cover = flBase
 				- ( flFoe < 400.0f ? ( 400.0f - flFoe ) * 0.1f : 0.0f );	// not right in his face
 		c.foe = flFoe;
@@ -4199,7 +4202,7 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, int nMode, const Ve
 		// Killzone / TLOU: the run itself matters - every unit of it in your line of fire costs.
 		float flExposed = RouteExposure( vecMe, pRoute, pEnemy, &vecThreatEye );
 		DeleteAll( pRoute );
-		float flScore = c.cover - flLen * 0.08f - flExposed * ( bFlank || bAssault ? 0.25f : bShift ? 0.4f : bMG ? 0.15f : 0.1f );	// a flank / an assault / a shift must stay out of his sight
+		float flScore = c.cover - flLen * ( bMG ? 0.03f : 0.08f ) - flExposed * ( bFlank || bAssault ? 0.25f : bShift ? 0.4f : bMG ? 0.15f : 0.1f );	// a flank / an assault / a shift must stay out of his sight
 		if ( bShift && flExposed > 96.0f )
 			continue;	// fire and move along the cover: not across your sights
 		if ( flScore > flBest )
@@ -4260,21 +4263,28 @@ void CNPC_GermanSoldier::AddPinned( float flAmount )
 // Can he get the MG down here, facing the threat? Wall: something in front of him (within 28
 // units) whose top is 28-58 above his feet - DoD's deploy heights - with a clear line from the
 // muzzle over it. Prone: room to lie down and a line from the muzzle at ground level.
-bool CNPC_GermanSoldier::MGDeployAt( const Vector &vecPos, const Vector &vecThreatEye, CBaseEntity *pEnemy, MGDeploy_t &eKind, float &flHeight )
+bool CNPC_GermanSoldier::MGDeployAt( const Vector &vecPos, const Vector &vecThreatEye, CBaseEntity *pEnemy, MGDeploy_t &eKind, float &flHeight, Vector *pvecDeploy )
 {
+	// Facing the threat from this node, is there a wall or sill within 64 units whose top is
+	// 28-58 above his feet (DoD's deploy heights)? He'll stand up against it (16 off its face)
+	// with the gun resting on top - so the node itself needn't be right at the wall, the way
+	// mappers place them. No wall at all: prone, with a line at ground level.
 	Vector vecDir = vecThreatEye - vecPos;
 	vecDir.z = 0.0f;
 	if ( VectorNormalize( vecDir ) < 1.0f )
 		return false;
 	CTraceFilterSkipTwoEntities filter( this, pEnemy, COLLISION_GROUP_NONE );
 	trace_t tr;
-	float flTop = -1.0f;
+	float flTop = -1.0f, flWall = FLT_MAX;
 	bool bBlocked = false;
-	for ( float h = 24.0f; h <= 62.0f; h += 4.0f )
+	for ( float h = 20.0f; h <= 62.0f; h += 4.0f )
 	{
-		UTIL_TraceLine( vecPos + Vector( 0, 0, h ), vecPos + vecDir * 28.0f + Vector( 0, 0, h ), COVER_MASK, &filter, &tr );
+		UTIL_TraceLine( vecPos + Vector( 0, 0, h ), vecPos + vecDir * 64.0f + Vector( 0, 0, h ), COVER_MASK, &filter, &tr );
 		if ( tr.fraction < 1.0f )
+		{
 			bBlocked = true;
+			flWall = MIN( flWall, tr.fraction * 64.0f );
+		}
 		else if ( bBlocked )
 		{
 			flTop = h - 2.0f;
@@ -4283,18 +4293,27 @@ bool CNPC_GermanSoldier::MGDeployAt( const Vector &vecPos, const Vector &vecThre
 	}
 	if ( flTop >= 28.0f && flTop <= 58.0f )
 	{
-		Vector vecMuzzle = vecPos + vecDir * 24.0f + Vector( 0, 0, flTop + 6.0f );
-		UTIL_TraceLine( vecMuzzle, vecThreatEye - Vector( 0, 0, 16 ), COVER_MASK, &filter, &tr );
-		if ( tr.fraction >= 1.0f )
+		// stand 16 off the wall's face (or where he is, if he's already that close)
+		Vector vecDeploy = vecPos + vecDir * MAX( 0.0f, flWall - 16.0f );
+		if ( flWall > 16.0f )
 		{
-			eKind = MGD_WALL;
-			flHeight = flTop;
-			return true;
+			UTIL_TraceHull( vecPos + Vector( 0, 0, 20 ), vecDeploy + Vector( 0, 0, 20 ), GetHullMins() * Vector( 1, 1, 0 ) + Vector( 0, 0, 0 ),
+							GetHullMaxs() - Vector( 0, 0, 20 ), MASK_NPCSOLID, &filter, &tr );
+			if ( tr.fraction < 1.0f || tr.startsolid )
+				return false;		// can't get up to it from here
 		}
-		return false;		// a wall in the way, and no line over it: not here
+		Vector vecMuzzle = vecDeploy + vecDir * 24.0f + Vector( 0, 0, flTop + 6.0f );
+		UTIL_TraceLine( vecMuzzle, vecThreatEye - Vector( 0, 0, 16 ), COVER_MASK, &filter, &tr );
+		if ( tr.fraction < 1.0f )
+			return false;		// a wall, but no line over it to you
+		eKind = MGD_WALL;
+		flHeight = flTop;
+		if ( pvecDeploy )
+			*pvecDeploy = vecDeploy;
+		return true;
 	}
 	if ( bBlocked )
-		return false;		// something in front, but not a wall he can rest it on
+		return false;		// something in front, but nothing he can rest the gun on
 	// prone: lying room behind him and a line at ground level
 	UTIL_TraceLine( vecPos + Vector( 0, 0, 12 ), vecPos - vecDir * 40.0f + Vector( 0, 0, 12 ), COVER_MASK, &filter, &tr );
 	if ( tr.fraction < 1.0f )
@@ -4305,6 +4324,8 @@ bool CNPC_GermanSoldier::MGDeployAt( const Vector &vecPos, const Vector &vecThre
 		return false;
 	eKind = MGD_PRONE;
 	flHeight = 14.0f;
+	if ( pvecDeploy )
+		*pvecDeploy = vecPos;
 	return true;
 }
 
@@ -4326,8 +4347,14 @@ bool CNPC_GermanSoldier::MGDeploy( void )
 {
 	MGDeploy_t eKind = m_eMGPending;
 	float flHeight = m_flMGPendingHeight;
-	if ( eKind == MGD_NONE && GetEnemy() && !MGDeployAt( GetAbsOrigin(), GetEnemyLKP() + Vector( 0, 0, 64 ), GetEnemy(), eKind, flHeight ) )
-		return false;
+	// where he actually stands now decides the height (he may have stopped a little short)
+	MGDeploy_t eHere;
+	float flHere;
+	if ( GetEnemy() && MGDeployAt( GetAbsOrigin(), GetEnemyLKP() + Vector( 0, 0, 64 ), GetEnemy(), eHere, flHere ) && ( eHere == MGD_WALL || eKind != MGD_WALL ) )
+	{
+		eKind = eHere;
+		flHeight = flHere;
+	}
 	if ( eKind == MGD_NONE )
 		return false;
 	m_eMGDeploy = eKind;
@@ -4418,17 +4445,21 @@ void CNPC_GermanSoldier::RunMGLoop( void )
 			return;
 		}
 	}
-	bool bSuppress = !bSee && now - flLastSeen < 12.0f && CanSuppressEnemy( GetEnemyLKP() );
-	if ( bSee || bSuppress )
+	// A4b-1b: an MG covers ground - he doesn't go hunting. While he can put rounds where you
+	// were last seen he stays on it (bursts for 12 s after you vanish, then watching). He only
+	// moves when you've turned up somewhere he can't cover from here, for 5 s.
+	bool bCovers = bSee || CanSuppressEnemy( GetEnemyLKP() );
+	bool bSuppress = !bSee && now - flLastSeen < 12.0f && bCovers;
+	if ( bCovers )
 		m_flMGNoTarget = 0.0f;
 	else if ( m_flMGNoTarget == 0.0f )
 		m_flMGNoTarget = now;
-	else if ( now - m_flMGNoTarget > 8.0f && m_eMGState != MGS_RELOAD )
+	else if ( now - m_flMGNoTarget > 5.0f && m_eMGState != MGS_RELOAD )
 	{
 		m_eCoverExit = CEXIT_RELOCATE;
 		m_flNextMGSearch = 0.0f;
 		if ( npc_german_debug.GetBool() )
-			Msg( "[%.2f] npc_german_soldier %d: MG - nothing to shoot from here for 8 s\n", now, entindex() );
+			Msg( "[%.2f] npc_german_soldier %d: MG - you're somewhere he can't cover from here (5 s)\n", now, entindex() );
 		TaskComplete();
 		return;
 	}
