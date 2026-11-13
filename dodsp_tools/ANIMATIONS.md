@@ -1,0 +1,151 @@
+# German soldier: animation inventory
+
+Written 2026-11-12. This lists every animation the soldier has, where it comes from, what the code uses today, and which
+roadmap stage will use the rest. Keep it current when a pack or a schedule changes.
+
+## Where animations come from
+
+| Source | Model / file | Sequences | Notes |
+|---|---|---|---|
+| DoD:S player set | `dod_player_shared` (via `$includemodel`) | full set | Locomotion, idles, aim, reloads, prone, zoom, deploy, plant/defuse, hand signal. Mapped through the `"activities"` block in `scripts/npc_german_soldier.txt`. |
+| CoD2 pack | `german/npc_ww2_anims.mdl`, built by `build_ww2_pack.py` | 138, prefix `ww2_` | Built from the CoD2 American Ranger SMDs (`Ranger.zip`, 338 files). List in `german_npc/ww2_anims/SEQUENCES.txt`. |
+| CoD1 pack | `german/npc_ww2_anims_cod1.mdl`, built by `build_cod1_pack.py` | 281, prefix `c1_` | Built from the CoD1 `Assault.zip` (640 SMDs). List in `german_npc/ww2_anims_cod1/SEQUENCES_COD1.txt`. |
+
+`npc_german_rifleman.qc` includes all three. **Animation events:** the CoD1 pack has only body-drop sounds on deaths.
+Neither pack has a melee-hit, grenade-release or muzzle event. Melee and grenades need those added in the pack builders,
+or a release frame timed in code.
+
+## Used in code today
+
+- **Locomotion, idle, aim, fire, reload** (stand, crouch, walk, run, sprint, crouch-walk): the DoD set through the
+  script map. That's 49 Combine activities mapped to `ACT_DOD_*`.
+- **Low and mid cover**: `ACT_WW2_COVER_LOW_HIDE/UP/DOWN/AUTO/SEMI/RELOAD` and `ACT_WW2_COVER_MID_UP/DOWN/AUTO/SEMI` (CoD2).
+- **Corners**: CoD1 `ACT_WW2_CN_<weapon><stance>_<side>_<act>`.
+  - Weapon is B (bolt rifle) or A (automatic). Stance is S or C. Side is L or R.
+  - Uses ALERT, OUT, IN, ENTER, SEMI, AUTO and RELOAD, plus `CN_DEATH_<stance>_<side>`.
+  - Aim angles are calibrated from the muzzle at load.
+- **Pains**: `ACT_WW2_UPPER_PAIN_HEAD/GUT/LARM/RARM/LSHOULDER/RSHOULDER/HUNCH` and `UPPER_CROUCH_PAIN` as gestures.
+  `ACT_WW2_CROUCH_PAIN` and `PAIN_FALLTOHAND` play as full-body pains, along with the stock `ACT_FLINCH_*`.
+- **Deaths**: `ACT_WW2_DEATH_RUN_*` (front, back, left, right, crumple, stumble, onfront, onleft),
+  `DEATH_CROUCH_*` (headshot, hands, flip, fetal), `CROUCH_DEATH(_HEAD)` and `DEATH_CROUCHRUN`.
+  The stock `ACT_DIE*` set (CoD2 standing deaths) also plays.
+
+## Built, not used yet, by roadmap stage
+
+### A4: suppression, grenades, wounded
+- **Grenades**
+  - Throws: `ACT_WW2_GRENADE` (CoD2 stand throw), CoD1 `GRENADE_THROW` and `CROUCH_GRENADE_THROW`.
+  - Corner throws: `CN_*_GRENADE`, 12 sets.
+  - Answering a grenade: `GRENADE_RETURN`, `CROUCH_GRENADE_RETURN`, `GRENADE_KICK`, and the dive-and-cover set
+    `GRENADEHIDE_LEFT/RIGHT` with `_IN` and `_OUT`.
+  - The header comment in `npc_german_soldier.cpp` that says grenades are off "until those animations exist" is out of
+    date. They exist; only the release event is missing.
+- **Prone (pinned)**
+  - Going down and up: `CROUCH2PRONE`, `CROUCHRUN2PRONE`, `PRONE2CROUCH`.
+  - Fighting prone: `PRONE_AIM`, `PRONE_SHOOT`, `PRONE_SHOOT_AUTO`, `PRONE_RELOAD`, `PRONE_RECHAMBER`.
+  - Hit or killed prone: `PRONE_PAIN`, `DEATH_PRONE`.
+  - Crawling is the DoD `ACT_DOD_PRONEWALK_*`, with DoD prone aim, reload and attack.
+- **Hiding and suppression**
+  - `HIDE_IDLE`, `HIDE_LOOK`, `HIDE_TWITCH`, `HIDE_RECHAMBER`, `HIDEA_IDLE`, `HIDEB_IDLE`, `HIDEB_TWITCH`.
+  - Transitions: `STAND2HIDE`, `CROUCH2HIDE`, `AIM2HIDE`, `HIDE2AIM`, `HIDE2STAND`, `HIDEA2CROUCH`.
+  - CoD2 `COVER_LOW_TWITCH`.
+- **Reacting to fire**: `DODGE_LEFT`, `DODGE_RIGHT`, `STUMBLE`.
+- **Wounded and rescue**
+  - Wounded: `WOUNDED_DOWN`, `WOUNDED_HOLD`, `WOUNDED_UP`.
+  - Downed: `DOWNED_FALL`, `DOWNED_IDLE`, `DOWNED_GETUP`, `DOWNED_DEATH`.
+  - Fallen: `FALLEN_IDLE`, `FALLEN_GETUP`, `FALLEN_PICKUP`, `FALLEN_DEATH`.
+  - Hurt movement: `RUN_HURT` (with `_LEFT` and `_RIGHT`) and `WALK_HURT`.
+  - Carry rescue: `RESCUE_PICKUP/WALK/PUTDOWN` for the carrier, `RESCUED_PICKUP/WALK/PUTDOWN` for the man carried,
+    and `RESCUE_DEATH` / `CARRIED_FALL` if it goes wrong.
+  - Drag rescue (CoD2): `DRAG_ER_START/CYCLE/END` for the dragger, `DRAG_ED_START/IDLE/CYCLE/END/ENDIDLE` for the dragged.
+  - Medic: `MEDIC_KNEEL`, `MEDIC_HEAL`, `MEDIC_HIDE`, `MEDIC_STAND`, `DEATH_MEDIC`.
+- **Explosion deaths**
+  - CoD1 `DEATH_EXPLODE_FORWARD/BACK/LEFT/RIGHT/UP`, and the CoD2 explosion deaths that come in as stock `ACT_DIE*`.
+  - `DEATH_LEGHIT` and the CoD2 `DEATH_CORNER_*` are also unused (the code uses the CoD1 corner deaths).
+
+### Movement stage: obstacle course
+- **Vaulting**
+  - CoD2: `JUMP_LOWWALL`.
+  - CoD1: `MANTLE_LOW`, `MANTLE_HIGH`, `TRAV_WALL`.
+- **Climbing**
+  - CoD2: `JUMP_FENCE`, `JUMP_WINDOW`.
+  - CoD1: `TRAV_FENCE`, `TRAV_WINDOW`, `TRAV_CLIMB`.
+- **Steps**: `TRAV_STEP_UP`, `TRAV_STEP_DOWN`.
+- **Jumping down**
+  - CoD2: `JUMP_DOWN40`, `JUMP_DOWN56`, `JUMP_DOWN96`.
+  - CoD1: `JUMP_DOWN_LOW`, `JUMP_DOWN_HIGH`.
+- **Crawl**: DoD prone-walk (see A4).
+- **Turning on the spot**: `ACT_WW2_TURN_LEFT` and `ACT_WW2_TURN_RIGHT` (60° aim turns). These aren't wired, so he
+  turns by yaw on the idle.
+
+### Squad leader and orders
+- Hand signals (CoD1): `WAVE_COMEON`, `WAVE_GO`, `WAVE_GOGO`, `WAVE_FLANK`, `WAVE_WHAT`, and the DoD `ACT_DOD_HS_*`.
+  - Today `ACT_SIGNAL_*` in the script map points at `STAND_AIM` as a placeholder.
+  - Leader orders (assault, flank, stack, clear) should play these as gestures.
+
+### Melee (stage 2e)
+- CoD2: `ACT_WW2_MELEE`, `MELEEB`, `MELEEC` (rifle-butt swings).
+- CoD1: `MELEE`, `MELEE_HIT`, `MELEE_CHARGE_HIT`, `CROUCH_MELEE`.
+- `MeleeAttack1Conditions` returns nothing because no swing has a hit event. Add the event in the pack builder and this
+  opens up.
+
+### Corners (polish)
+- CoD1 corners not wired: `LOOK` (peek without stepping out), `AIM`, `RECHAMBER` (bolt between shots), and the
+  pistol `P` sets.
+- Blind fire: `CN_RAMBO_READY/OUT/AUTO/SEMI/IN_L/R`. Good for suppression in A4.
+- The CoD2 corner set (`ACT_WW2_CORNR_*` / `CORNL_*`, with angle variants A/B/C) is unused. The CoD1 sets replaced it.
+- **Known issue**: in some corner sets the hands don't line up with the bonemerged rifle. Left for the
+  animation-polish pass.
+
+### MG team (with A6)
+- CoD2 MG42: `MG42_CARRY_RUN`, `MG42_SETUP_PRONE`, `MG42_SETUP_WALL`, `MG42_AIM`, `MG42_FIRE`, `MG42PRONE_AIM`,
+  `MG42PRONE_FIRE`.
+- CoD2 .30 cal: `30CAL_HIP_IDLE`, `30CAL_HIP_FIRE` (with `L` and `R`), `30CAL_AIM`, `30CAL_FIRE`.
+- Not built yet: the full aim/fire grids in `Ranger.zip`.
+  - `standmg42gunner_*`: 5 yaws by 3 pitches.
+  - `pronemg42gunner_*`: 5 by 3.
+  - `stand30calgunner_*`: 5 by 3.
+  - These would make a proper aim blend for an emplaced MG.
+
+### Other built-but-unused
+- `ACT_WW2_SURRENDER` (CoD2 loop): Germans giving up when broken (morale, A4).
+- Bomb planting: `ACT_WW2_PLANT` and `PLANT_START` (CoD2), `PLANT_BOMB` (CoD1). Also the DoD `ACT_DOD_PLANT*` and
+  `DEFUSE*`.
+- `ACT_WW2_ROCKET_FIRE` and `ROCKET_DROP`: Panzerschreck and Panzerfaust.
+
+## Source SMDs not built into any pack
+
+**From `Ranger.zip` (CoD2)**
+- MG aim/fire grids (see MG team above).
+- Mortar crew: `mortar_aimguy_*` and `mortar_loadguy_*` (fire, pickup, wait idle).
+- Flak 88 crew: aimer, ejecter, leader, loader and passer, each with idle, load-and-fire and twitch. Also the
+  Flakpanzer gunner and its loaders.
+- **Vehicle dismounts**: halftrack, German truck (8 seats), tank ride (jump into a combat run), Bren carrier,
+  Kübelwagen, wagon, jeep. Use these for reinforcements arriving by truck.
+- Shoot-while-moving
+  - `stand_shoot_walk_back/left/right`, `stand_shoot_run_forward/back/left/right`.
+  - Combat runs: `combatrun_*` and `crouchrun_loop_*` (forward, back, left, right), `crouchwalk_loop`,
+    `stand_walk_combat_loop_01`.
+  - DoD's walk-aim and run-aim cover most of this.
+- Idles and reloads: `stand_alert_1/2/3`, `crouch_alert_a/b`, `reload_stand/crouch_rifle`, `pistol_stand_reload`.
+- Car-chase seats: drive and get-out.
+
+**From `Assault.zip` (CoD1)**
+- LMG gunner: `lmg_fire`, `lmg_idle`, `lmg_prone`, `lmg_prone_idle`, `lmg_run`.
+- Emplaced MG blends: `mg42p`, `mg42s`, `b30s`.
+- Rocket: aim, cover, fire, reload. Also flamethrower.
+- Pistol: the `p_*` set.
+- **Unarmed**: the `ua_*` set, including cower and dazed. Use for prisoners and civilians.
+- Tank crew: climb out, jump off. Paratroopers: chute.
+- Ceremony: attention, present arms, an officer checking papers, binoculars. Use for officer and NCO scenes and
+  scripted sequences.
+- Extra deaths: more crouch deaths, `death_dropinplace`, `death_neck_thrash`.
+- Facial: `face_*` animations.
+- Locomotion and idles: DoD covers these, so they aren't needed.
+
+## To build a missing set
+
+1. Add the SMDs and their activity names to the right builder: `build_ww2_pack.py` (CoD2) or `build_cod1_pack.py` /
+   `cod1_map.py` (CoD1).
+2. Add any events the code needs, such as melee hit, grenade release or MG muzzle.
+3. Rebuild the pack, recompile `npc_german_rifleman.qc`, and regenerate the matching `SEQUENCES*.txt`.
