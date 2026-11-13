@@ -48,6 +48,7 @@
 #include "ai_squadslot.h"
 #include "soundent.h"
 #include "ai_network.h"
+#include "ai_link.h"
 #include "ai_node.h"
 #include "ai_navigator.h"
 #include "ai_senses.h"
@@ -374,6 +375,10 @@ public:
 	Vector		m_vecOrderPos;			// ORDER_STACK: the exact spot (worked out by the squad)
 	bool		m_bInDrill;				// A3d-2: one of the clearing pair - waits at his stack for the squad's go
 	bool		FindEntry( const Vector &vecTarget, Vector &vecStack1, Vector &vecStack2, Vector &vecEntry );
+	// another way in: a threshold on a different side of where he was (a back door, a window)
+	bool		FindOtherEntry( const Vector &vecTarget, const Vector &vecAvoid, Vector &vecStack1, Vector &vecStack2, Vector &vecEntry );
+	void		FindPartnerStack( const Vector &vecTarget, const Vector &vecStack1, const Vector &vecEntry, Vector &vecStack2 );
+	int			SquadSideCrowding( const Vector &vecPos, const Vector &vecCenter );	// squadmates watching from the same side
 	bool		CanTakeSquadOrder( void );
 	bool		CanSuppressEnemy( const Vector &vecTarget );
 	bool		IsInCoverLoop( void ) { return IsCurSchedule( SCHED_GERMAN_COVER, false ); }
@@ -1675,7 +1680,7 @@ struct GermanSquadState_t
 	// A3d-2 - the clearing drill: a pair stacks at the way in, then goes in together while the
 	// rest of the squad watches the house.
 	int		nClear;				// CLEAR_NONE / CLEAR_STACKING / CLEAR_ENTERING
-	EHANDLE	hClear[2];
+	EHANDLE	hClear[4];			// up to two teams: [0,1] the first pair, [2,3] a second pair at another way in
 	float	flClearUntil;
 	EHANDLE	hLeader;			// A3d: the man who leads the squad (Gruppenfuehrer)
 	bool	bHadLeader;
@@ -1807,7 +1812,16 @@ bool CNPC_GermanSoldier::FindEntry( const Vector &vecTarget, Vector &vecStack1, 
 	DeleteAll( pRoute );
 	if ( !bFound )
 		return false;
-	// the partner: a hidden node close to the stack, nearest the way in (often the door's other side)
+	FindPartnerStack( vecTarget, vecStack1, vecEntry, vecStack2 );
+	return true;
+}
+
+// The partner's stack: a hidden node close to the first man's, nearest the way in (often the
+// door's other side). Leaves vecStack2 alone if there's none.
+void CNPC_GermanSoldier::FindPartnerStack( const Vector &vecTarget, const Vector &vecStack1, const Vector &vecEntry, Vector &vecStack2 )
+{
+	CTraceFilterSkipTwoEntities filter( this, GetEnemy(), COLLISION_GROUP_NONE );
+	Vector vecEye = vecTarget + Vector( 0, 0, 60 );
 	float flBest = FLT_MAX;
 	for ( int i = 0; g_pBigAINet && i < g_pBigAINet->NumNodes(); i++ )
 	{
@@ -1829,7 +1843,114 @@ bool CNPC_GermanSoldier::FindEntry( const Vector &vecTarget, Vector &vecStack1, 
 			vecStack2 = vecPos;
 		}
 	}
-	return true;
+}
+
+// Another way in: every node within 700 of where he was that can see that spot, with a graph
+// link to a node that can't, is a threshold (doorway, window, corner); the hidden end is where
+// you'd stack. Picks the one most round the house from vecAvoid (the first team's way in) -
+// at least 192 units and 45 degrees away - that this man has a route to.
+bool CNPC_GermanSoldier::FindOtherEntry( const Vector &vecTarget, const Vector &vecAvoid, Vector &vecStack1, Vector &vecStack2, Vector &vecEntry )
+{
+	if ( !g_pBigAINet )
+		return false;
+	CTraceFilterSkipTwoEntities filter( this, GetEnemy(), COLLISION_GROUP_NONE );
+	Vector vecEye = vecTarget + Vector( 0, 0, 60 );
+	Vector vecAvoidDir = vecAvoid - vecTarget;
+	vecAvoidDir.z = 0.0f;
+	VectorNormalize( vecAvoidDir );
+	struct Door_t { Vector stack, entry; float score; };
+	Door_t doors[8];
+	int nDoors = 0;
+	for ( int i = 0; i < g_pBigAINet->NumNodes(); i++ )
+	{
+		CAI_Node *pNode = g_pBigAINet->GetNode( i, false );
+		if ( !pNode || pNode->GetType() != NODE_GROUND )
+			continue;
+		Vector vecIn = pNode->GetPosition( GetHullType() );
+		if ( ( vecIn - vecTarget ).Length() > 700.0f || ( vecIn - vecAvoid ).Length() < 192.0f )
+			continue;
+		Vector vecDir = vecIn - vecTarget;
+		vecDir.z = 0.0f;
+		if ( VectorNormalize( vecDir ) < 1.0f || DotProduct( vecDir, vecAvoidDir ) > 0.707f )
+			continue;		// same side as the first team
+		trace_t tr;
+		UTIL_TraceLine( vecIn + Vector( 0, 0, 60 ), vecEye, COVER_MASK, &filter, &tr );
+		if ( tr.fraction < 1.0f )
+			continue;		// can't see the spot from here: not a threshold
+		for ( int l = 0; l < pNode->NumLinks(); l++ )
+		{
+			CAI_Link *pLink = pNode->GetLinkByIndex( l );
+			if ( !pLink || !( pLink->m_iAcceptedMoveTypes[GetHullType()] & bits_CAP_MOVE_GROUND ) )
+				continue;
+			CAI_Node *pOut = g_pBigAINet->GetNode( pLink->DestNodeID( i ), false );
+			if ( !pOut )
+				continue;
+			Vector vecOut = pOut->GetPosition( GetHullType() );
+			UTIL_TraceLine( vecOut + Vector( 0, 0, 60 ), vecEye, COVER_MASK, &filter, &tr );
+			if ( tr.fraction >= 1.0f || IsSpotBad( vecOut ) )
+				continue;		// the outer end must be hidden
+			float flScore = 1.0f - DotProduct( vecDir, vecAvoidDir );	// the further round, the better
+			flScore -= ( vecOut - GetAbsOrigin() ).Length() * 0.0003f;	// ...and not miles away for him
+			if ( nDoors < 8 )
+				doors[nDoors++] = { vecOut, vecIn, flScore };
+			else
+			{
+				int iWorst = 0;
+				for ( int d = 1; d < 8; d++ )
+					if ( doors[d].score < doors[iWorst].score )
+						iWorst = d;
+				if ( flScore > doors[iWorst].score )
+					doors[iWorst] = { vecOut, vecIn, flScore };
+			}
+			break;
+		}
+	}
+	// best first, the first one he can actually get to
+	for ( int n = 0; n < nDoors; n++ )
+	{
+		int iBest = n;
+		for ( int d = n + 1; d < nDoors; d++ )
+			if ( doors[d].score > doors[iBest].score )
+				iBest = d;
+		Door_t tmp = doors[n];
+		doors[n] = doors[iBest];
+		doors[iBest] = tmp;
+		AI_Waypoint_t *pRoute = GetPathfinder()->BuildRoute( GetAbsOrigin(), doors[n].stack, NULL, 32.0f, NAV_GROUND );
+		if ( !pRoute )
+			continue;
+		DeleteAll( pRoute );
+		vecStack1 = doors[n].stack;
+		vecEntry = doors[n].entry;
+		vecStack2 = vecStack1;
+		FindPartnerStack( vecTarget, vecStack1, vecEntry, vecStack2 );
+		return true;
+	}
+	return false;
+}
+
+// How many squadmates already hold or are heading for a spot on the same side of vecCenter
+// (within 35 degrees round it) - the covering group spreads round the house to cut off exits.
+int CNPC_GermanSoldier::SquadSideCrowding( const Vector &vecPos, const Vector &vecCenter )
+{
+	if ( !m_pSquad )
+		return 0;
+	Vector vecDir = vecPos - vecCenter;
+	vecDir.z = 0.0f;
+	if ( VectorNormalize( vecDir ) < 1.0f )
+		return 0;
+	int n = 0;
+	AISquadIter_t iter;
+	for ( CAI_BaseNPC *pMember = m_pSquad->GetFirstMember( &iter ); pMember; pMember = m_pSquad->GetNextMember( &iter ) )
+	{
+		if ( pMember == this || !pMember->IsAlive() || !FClassnameIs( pMember, "npc_german_soldier" ) )
+			continue;
+		CNPC_GermanSoldier *pG = static_cast<CNPC_GermanSoldier *>( pMember );
+		Vector vecTheirs = ( pG->m_bHasCoverSpot ? pG->m_vecCoverSpot : pG->GetAbsOrigin() ) - vecCenter;
+		vecTheirs.z = 0.0f;
+		if ( VectorNormalize( vecTheirs ) > 1.0f && DotProduct( vecTheirs, vecDir ) > 0.82f )
+			n++;
+	}
+	return n;
 }
 
 bool CNPC_GermanSoldier::IsSquadLeader( void )
@@ -2037,51 +2158,64 @@ void CNPC_GermanSoldier::SquadTick( void )
 		 !( pWatch->IsCurSchedule( SCHED_GERMAN_MOVE_TO_COVER, false ) && pWatch->m_eMoveKind == MOVE_OVERWATCH ) ) ) )
 		sq.hOverwatch = NULL;
 
-	// A3d-2 - the clearing drill.
+	// A3d-2 - the clearing drill (one or two teams, each at its own way in).
 	if ( sq.nClear != CLEAR_NONE )
 	{
-		CNPC_GermanSoldier *pA = static_cast<CNPC_GermanSoldier *>( sq.hClear[0].Get() );
-		CNPC_GermanSoldier *pB = static_cast<CNPC_GermanSoldier *>( sq.hClear[1].Get() );
-		if ( pA && !pA->IsAlive() ) pA = NULL;
-		if ( pB && !pB->IsAlive() ) pB = NULL;
+		CNPC_GermanSoldier *apC[4];
+		int nLive = 0, nStacked = 0, nOrdered = 0, nIn = 0;
+		for ( int k = 0; k < 4; k++ )
+		{
+			apC[k] = static_cast<CNPC_GermanSoldier *>( sq.hClear[k].Get() );
+			if ( apC[k] && !apC[k]->IsAlive() )
+				apC[k] = NULL;
+			if ( !apC[k] )
+				continue;
+			CNPC_GermanSoldier *pC = apC[k];
+			nLive++;
+			bool bStacked = pC->IsCurSchedule( SCHED_GERMAN_STACK, false );
+			nStacked += bStacked ? 1 : 0;
+			nOrdered += ( pC->m_eSquadOrder == ORDER_STACK || pC->IsCurSchedule( SCHED_GERMAN_MOVE_TO_COVER, false ) || bStacked ) ? 1 : 0;
+			nIn += ( pC->m_eSquadOrder == ORDER_CLEAR || pC->IsCurSchedule( SCHED_GERMAN_CLEAR, false ) ) ? 1 : 0;
+		}
 		const char *pszEnd = NULL;
-		if ( !pA && !pB )
-			pszEnd = "the clearing pair is down";
+		if ( !nLive )
+			pszEnd = "the clearing team is down";
 		else if ( now - sq.flLastSeen < 0.5f )
 			pszEnd = "you showed yourself - they fight";
 		else if ( sq.nClear == CLEAR_STACKING )
 		{
-			bool bAStacked = !pA || pA->IsCurSchedule( SCHED_GERMAN_STACK, false );
-			bool bBStacked = !pB || pB->IsCurSchedule( SCHED_GERMAN_STACK, false );
-			bool bAOrdered = pA && ( pA->m_eSquadOrder == ORDER_STACK || pA->IsCurSchedule( SCHED_GERMAN_MOVE_TO_COVER, false ) || bAStacked );
-			bool bBOrdered = pB && ( pB->m_eSquadOrder == ORDER_STACK || pB->IsCurSchedule( SCHED_GERMAN_MOVE_TO_COVER, false ) || bBStacked );
-			if ( !bAOrdered && !bBOrdered )
+			if ( !nOrdered )
 				pszEnd = "nobody got to the way in";
-			else if ( ( bAStacked && bBStacked ) || now > sq.flClearUntil )
+			else if ( nStacked == nLive || now > sq.flClearUntil )
 			{
-				// Both at the door (or long enough): in together - the first man, his partner right on
-				// his heels (the drill's entry pair). Nobody stacked waits for a man still on his way:
-				// if one isn't there, the one who is still goes, but never before the time is up.
+				// Everyone at his door (or long enough): in together - at every way in at once, each
+				// pair's first man, his partner right on his heels (the drill's entry pair).
 				Vector vecTo = vec3_origin;
-				if ( pA ) pA->GiveSquadOrder( ORDER_CLEAR, 0.3f, vecTo );
-				if ( pB ) pB->GiveSquadOrder( ORDER_CLEAR, pA ? 0.8f : 0.3f, vecTo );
-				CNPC_GermanSoldier *pCaller = SquadLeader() ? SquadLeader() : ( pA ? pA : pB );
-				pCaller->m_Chatter.Request( CHAT_ORDER_FORWARD, NULL, pA ? pA : pB );
+				for ( int k = 0; k < 4; k++ )
+					if ( apC[k] )
+						apC[k]->GiveSquadOrder( ORDER_CLEAR, ( k & 1 ) && apC[k - 1] ? 0.8f : 0.3f, vecTo );
+				CNPC_GermanSoldier *pFirstIn = apC[0] ? apC[0] : apC[1] ? apC[1] : apC[2] ? apC[2] : apC[3];
+				CNPC_GermanSoldier *pCaller = SquadLeader() ? SquadLeader() : pFirstIn;
+				pCaller->m_Chatter.Request( CHAT_ORDER_FORWARD, NULL, pFirstIn );
 				sq.nClear = CLEAR_ENTERING;
 				sq.flClearUntil = now + 30.0f;
 				if ( npc_german_debug.GetBool() )
-					Msg( "[%.2f] npc_german_soldier %d: squad - %s at the way in: going in\n", now, entindex(), bAStacked && bBStacked ? "both" : "waited long enough" );
+					Msg( "[%.2f] npc_german_soldier %d: squad - %d of %d at the way in%s: going in\n", now, entindex(), nStacked, nLive,
+						 nStacked == nLive ? "" : " (waited long enough)" );
 			}
 		}
 		else if ( sq.nClear == CLEAR_ENTERING )
 		{
-			bool bAIn = pA && ( pA->m_eSquadOrder == ORDER_CLEAR || pA->IsCurSchedule( SCHED_GERMAN_CLEAR, false ) );
-			bool bBIn = pB && ( pB->m_eSquadOrder == ORDER_CLEAR || pB->IsCurSchedule( SCHED_GERMAN_CLEAR, false ) );
-			if ( !bAIn && !bBIn )
+			if ( !nIn )
 				pszEnd = "they went through to where you were";
 			else if ( now > sq.flClearUntil )
 			{
-				( pA ? pA : pB )->Invariant( INV_CLEAR_TIMEOUT, "still clearing 30 s after going in - calling it off" );
+				for ( int k = 0; k < 4; k++ )
+					if ( apC[k] )
+					{
+						apC[k]->Invariant( INV_CLEAR_TIMEOUT, "still clearing 30 s after going in - calling it off" );
+						break;
+					}
 				pszEnd = "took too long";
 			}
 		}
@@ -2089,10 +2223,13 @@ void CNPC_GermanSoldier::SquadTick( void )
 		{
 			if ( npc_german_debug.GetBool() )
 				Msg( "[%.2f] npc_german_soldier %d: squad - clearing drill over: %s\n", now, entindex(), pszEnd );
-			if ( pA ) pA->m_bInDrill = false;
-			if ( pB ) pB->m_bInDrill = false;
+			for ( int k = 0; k < 4; k++ )
+			{
+				if ( apC[k] )
+					apC[k]->m_bInDrill = false;
+				sq.hClear[k] = NULL;
+			}
 			sq.nClear = CLEAR_NONE;
-			sq.hClear[0] = sq.hClear[1] = NULL;
 			sq.flNextAssault = now + 10.0f / m_flSquadAggression;
 		}
 	}
@@ -2103,6 +2240,26 @@ void CNPC_GermanSoldier::SquadTick( void )
 	if ( !pEnemy || !pEnemy->IsAlive() || now - sq.flLastSeen > 45.0f )
 		return;		// nobody knows where he is any more
 	float flAggr = m_flSquadAggression;
+
+	// A3d - the squad fights as one. A man who hasn't seen the enemy himself (round a corner,
+	// at the back, still idling where he was posted) is told: contact. Without this he stays
+	// idle where he spawned, takes no orders, and his partner fights alone.
+	if ( now - sq.flLastSeen < 10.0f )
+	{
+		int nRoused = 0;
+		for ( int i = 0; i < nAlive; i++ )
+		{
+			CNPC_GermanSoldier *pG = apMembers[i];
+			if ( pG->GetState() == NPC_STATE_COMBAT || pG->IsInAScript() || pG->GetState() == NPC_STATE_SCRIPT )
+				continue;
+			pG->UpdateEnemyMemory( pEnemy, sq.vecLKP, this );
+			pG->SetEnemy( pEnemy );
+			pG->SetCondition( COND_NEW_ENEMY );
+			nRoused++;
+		}
+		if ( nRoused && npc_german_debug.GetBool() )
+			Msg( "[%.2f] npc_german_soldier %d: squad - contact! %d man/men who hadn't seen you join the fight\n", now, entindex(), nRoused );
+	}
 
 	// A3c - he's out of sight (in a house, round a corner): don't wait for him. Up to two men work
 	// their way to cover next to where he was last seen, by routes he can't see; one other man
@@ -2161,13 +2318,53 @@ void CNPC_GermanSoldier::SquadTick( void )
 				sq.nClear = CLEAR_STACKING;
 				sq.hClear[0] = pFirst;
 				sq.hClear[1] = pSecond;
+				sq.hClear[2] = sq.hClear[3] = NULL;
 				sq.flClearUntil = now + 25.0f;		// time for the second man to come up from the back
+
+				// A second team at a different way in (a back door, another side of the house) - both
+				// go in at once. Only if there is one: at least 192 units from the first.
+				Vector vecEntry2 = vec3_origin;
+				CNPC_GermanSoldier *pThird = NULL, *pFourth = NULL;
+				if ( nAlive >= 4 )
+				{
+					float flNear2 = FLT_MAX;
+					for ( int i = 0; i < nAlive; i++ )
+					{
+						CNPC_GermanSoldier *pG = apMembers[i];
+						float flDist = ( pG->GetAbsOrigin() - sq.vecLKP ).Length2D();
+						if ( pG != pFirst && pG != pSecond && pG->CanTakeSquadOrder() && pG->GetEnemy() && flDist < flNear2 )
+						{
+							flNear2 = flDist;
+							pThird = pG;
+						}
+					}
+					Vector vecS1, vecS2;
+					if ( pThird && pThird->FindOtherEntry( sq.vecLKP, vecEntry, vecS1, vecS2, vecEntry2 ) )
+					{
+						pFourth = pThird->Partner();
+						if ( pFourth && ( pFourth == pFirst || pFourth == pSecond || !pFourth->CanTakeSquadOrder() ) )
+							pFourth = NULL;
+						pThird->m_vecOrderPos = vecS1;
+						pThird->m_bInDrill = true;
+						pThird->GiveSquadOrder( ORDER_STACK, 0.6f, vecTo );
+						if ( pFourth )
+						{
+							pFourth->m_vecOrderPos = vecS2;
+							pFourth->m_bInDrill = true;
+							pFourth->GiveSquadOrder( ORDER_STACK, 1.3f, vecTo );
+						}
+						sq.hClear[2] = pThird;
+						sq.hClear[3] = pFourth;
+					}
+					else
+						pThird = NULL;
+				}
 				// The covering group is everyone else: the squad comes up to the house.
 				int nWatch = 0;
 				for ( int i = 0; i < nAlive; i++ )
 				{
 					CNPC_GermanSoldier *pG = apMembers[i];
-					if ( pG == pFirst || pG == pSecond || !pG->CanTakeSquadOrder() )
+					if ( pG == pFirst || pG == pSecond || pG == pThird || pG == pFourth || !pG->CanTakeSquadOrder() )
 						continue;
 					Vector vecW = pG->GetAbsOrigin() - sq.vecLKP;
 					vecW.z = 0.0f;
@@ -2177,9 +2374,12 @@ void CNPC_GermanSoldier::SquadTick( void )
 				}
 				if ( npc_german_debug.GetBool() )
 				{
-					Msg( "[%.2f] npc_german_soldier %d: squad - lost you %.0f s ago: clearing drill - %d and %d stack up at the way in, %d watch the house\n",
-						 now, entindex(), now - sq.flLastSeen, pFirst->entindex(), pSecond ? pSecond->entindex() : -1, nWatch );
+					Msg( "[%.2f] npc_german_soldier %d: squad - lost you %.0f s ago: clearing drill - %d and %d stack up at the way in%s, %d watch the house\n",
+						 now, entindex(), now - sq.flLastSeen, pFirst->entindex(), pSecond ? pSecond->entindex() : -1,
+						 pThird ? "; a second team at another way in" : "", nWatch );
 					NDebugOverlay::Box( vecEntry, Vector( -10, -10, 0 ), Vector( 10, 10, 72 ), 255, 255, 0, 80, 8.0f );
+					if ( pThird )
+						NDebugOverlay::Box( vecEntry2, Vector( -10, -10, 0 ), Vector( 10, 10, 72 ), 255, 160, 0, 80, 8.0f );
 				}
 				return;
 			}
@@ -3505,6 +3705,8 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, int nMode, const Ve
 			c.cover += ( flFoe - flMyFoe ) * 0.05f;
 		if ( bAssault )
 			c.cover += ( 450.0f - flFoe ) * 0.08f;		// the closer to where he was, the better
+		if ( bWatch )
+			c.cover -= 25.0f * SquadSideCrowding( vecPos, vecFoe );	// the covering group spreads round the house: every exit watched
 		c.cover -= 40.0f * SquadCrowding( vecPos );		// spread out: not onto a squadmate's wall
 		// A3d: ...but close to his partner (128-300 units: near, not on top of him)
 		if ( pPartner )
