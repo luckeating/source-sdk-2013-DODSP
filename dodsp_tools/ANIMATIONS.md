@@ -113,6 +113,12 @@ traces pelvis to head and pelvis to chest; if that is blocked (a door swung shut
 ragdolls on the spot. One owner: `DeathAnimFits` / `DeathSequenceFits` / `DeathBodyBlocked`. With
 `npc_german_debug 1` the console says which body part would have hit what.
 
+Slopes: the animations are made for flat ground. `DeathGroundFit` traces the ground under the body's
+final pose (head, chest, pelvis, hands, feet), fits a plane through his feet and tilts the whole body
+toward it as he falls (`UpdateDeathTilt`: upright at the start, lying along the ground at the hand-over),
+so the ragdoll starts on the ground instead of half inside or above it. Too steep (over 30 degrees), too
+lumpy (a body part more than 12 units off the plane) or a drop under the body -> plain ragdoll.
+
 ## Animation sweep (to do - logged 2026-11-13)
 
 Gameplay with the A4a set is right; these are visual and wait for a full animation pass:

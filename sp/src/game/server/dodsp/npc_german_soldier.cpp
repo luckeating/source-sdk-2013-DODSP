@@ -245,6 +245,10 @@ private:
 	bool		DeathAnimFits( Activity act, const char **ppszWhy );
 	bool		DeathSequenceFits( int iSeq, const char **ppszWhy );
 	bool		DeathBodyBlocked( const char **ppszWhy );
+	bool		DeathGroundFit( int iSeq, float &flPitch, float &flRoll, float &flSlopeF, float &flSlopeL, const char **ppszWhy );
+	void		PoseDeathProbes( int iSeq, float flCycle, const QAngle &angRoot, Vector *pvecOut, bool *pbValid );
+	float		DeathPlaneZ( const Vector &vecPos, float flSlopeF, float flSlopeL );
+	void		UpdateDeathTilt( void );
 	Activity	PickAvailable( const char **ppszNames, int nCount );
 	void		FinishDeathAnim( void );
 	void		DoHitReaction( const CTakeDamageInfo &info );
@@ -688,6 +692,11 @@ private:
 	float				m_flDeathAnimSpeed;
 	float				m_flDeathRagdollAt;		// cycle at which the death animation hands over to the ragdoll
 	float				m_flDeathNextCheck;		// next mid-fall "has the body hit something" check
+	// Slopes: the death animation is tilted to lie along the ground (rotated about his feet)
+	float				m_flDeathYaw;			// facing when he was killed
+	int					m_iDeathTiltSeq;		// sequence the tilt below was fitted for (-1 = not yet)
+	float				m_flDeathTiltPitch, m_flDeathTiltRoll;	// full tilt, reached at the ragdoll hand-over
+	float				m_flDeathSlopeF, m_flDeathSlopeL;		// ground rise per unit, forward / to his left
 
 	// Hit reaction state
 	float				m_flFlinchUntil;		// no firing until then
@@ -892,6 +901,10 @@ CNPC_GermanSoldier::CNPC_GermanSoldier() : m_AnimMap( DefLessFunc( int ) )
 	m_flDeathAnimSpeed = 1.0f;
 	m_flDeathRagdollAt = 0.8f;
 	m_flDeathNextCheck = 0.0f;
+	m_flDeathYaw = 0.0f;
+	m_iDeathTiltSeq = -1;
+	m_flDeathTiltPitch = m_flDeathTiltRoll = 0.0f;
+	m_flDeathSlopeF = m_flDeathSlopeL = 0.0f;
 	m_flFlinchUntil = 0.0f;
 	m_flNextHitReaction = 0.0f;
 	m_flNextFullFlinch = 0.0f;
@@ -5557,7 +5570,10 @@ void CNPC_GermanSoldier::RunTask( const Task_t *pTask )
 			}
 		}
 		if ( m_bDeathAnim )
+		{
 			SetPlaybackRate( m_flDeathAnimSpeed );
+			UpdateDeathTilt();
+		}
 		BaseClass::RunTask( pTask );
 		break;
 
@@ -5665,44 +5681,166 @@ bool CNPC_GermanSoldier::DeathAnimFits( Activity act, const char **ppszWhy )
 	return true;
 }
 
-bool CNPC_GermanSoldier::DeathSequenceFits( int iSeq, const char **ppszWhy )
+// Where each probe bone is at one point of a death sequence, with the body rotated by
+// angRoot about his feet (yaw = his facing; pitch/roll = the slope tilt).
+void CNPC_GermanSoldier::PoseDeathProbes( int iSeq, float flCycle, const QAngle &angRoot, Vector *pvecOut, bool *pbValid )
 {
 	CStudioHdr *pHdr = GetModelPtr();
-	if ( !pHdr || iSeq < 0 )
-		return true;
-
-	int iBones[ARRAYSIZE( s_pszDeathProbeBones )];
 	for ( int b = 0; b < (int)ARRAYSIZE( s_pszDeathProbeBones ); b++ )
-		iBones[b] = LookupBone( s_pszDeathProbeBones[b] );
+		pbValid[b] = false;
+	if ( !pHdr || iSeq < 0 )
+		return;
 
-	const matrix3x4_t &matRoot = EntityToWorldTransform();
-	const Vector vecFrom = WorldSpaceCenter();
-	const float flFloorZ = GetAbsOrigin().z;
+	matrix3x4_t matRoot;
+	AngleMatrix( angRoot, GetAbsOrigin(), matRoot );
 
 	Vector pos[MAXSTUDIOBONES];
 	Quaternion q[MAXSTUDIOBONES];
 	matrix3x4_t matBones[MAXSTUDIOBONES];
+	IBoneSetup boneSetup( pHdr, BONE_USED_BY_ANYTHING, GetPoseParameterArray() );
+	boneSetup.InitPose( pos, q );
+	boneSetup.AccumulatePose( pos, q, iSeq, flCycle, 1.0f, gpGlobals->curtime, NULL );
+
+	CBoneBitList boneComputed;
+	for ( int b = 0; b < (int)ARRAYSIZE( s_pszDeathProbeBones ); b++ )
+	{
+		int iBone = LookupBone( s_pszDeathProbeBones[b] );
+		if ( iBone < 0 )
+			continue;
+		BuildBoneChain( pHdr, matRoot, pos, q, iBone, matBones, boneComputed );
+		MatrixGetColumn( matBones[iBone], 3, pvecOut[b] );
+		pbValid[b] = true;
+	}
+}
+
+// Height of the fitted ground plane under a point (flat ground: his foot level)
+float CNPC_GermanSoldier::DeathPlaneZ( const Vector &vecPos, float flSlopeF, float flSlopeL )
+{
+	Vector vecFwd, vecLeft;
+	AngleVectors( QAngle( 0, m_flDeathYaw, 0 ), &vecFwd, &vecLeft, NULL );
+	vecLeft = -vecLeft;		// AngleVectors gives right
+	Vector d = vecPos - GetAbsOrigin();
+	return GetAbsOrigin().z + flSlopeF * DotProduct( d, vecFwd ) + flSlopeL * DotProduct( d, vecLeft );
+}
+
+//-----------------------------------------------------------------------------
+// Ground fit: the death animations are made for flat ground. Find the ground under
+// where the body will lie (head, chest, pelvis, hands, feet at the hand-over pose),
+// fit a plane through his feet, and return the tilt that lays the body along it.
+// Refuses (-> plain ragdoll) when the body would hang over a drop, the slope is too
+// steep, or the ground is too lumpy for one plane.
+//-----------------------------------------------------------------------------
+bool CNPC_GermanSoldier::DeathGroundFit( int iSeq, float &flPitch, float &flRoll, float &flSlopeF, float &flSlopeL, const char **ppszWhy )
+{
+	static char s_sz[128];
+	flPitch = flRoll = flSlopeF = flSlopeL = 0.0f;
+
+	Vector vecProbe[ARRAYSIZE( s_pszDeathProbeBones )];
+	bool bValid[ARRAYSIZE( s_pszDeathProbeBones )];
+	PoseDeathProbes( iSeq, m_flDeathRagdollAt, QAngle( 0, m_flDeathYaw, 0 ), vecProbe, bValid );
+
+	Vector vecFwd, vecLeft;
+	AngleVectors( QAngle( 0, m_flDeathYaw, 0 ), &vecFwd, &vecLeft, NULL );
+	vecLeft = -vecLeft;
+
+	const Vector vecOrigin = GetAbsOrigin();
+	float u[ARRAYSIZE( s_pszDeathProbeBones )], v[ARRAYSIZE( s_pszDeathProbeBones )], z[ARRAYSIZE( s_pszDeathProbeBones )];
+	float Suu = 0, Svv = 0, Suv = 0, Suz = 0, Svz = 0;
+	for ( int b = 0; b < (int)ARRAYSIZE( s_pszDeathProbeBones ); b++ )
+	{
+		if ( !bValid[b] )
+			continue;
+		trace_t tr;
+		Vector vecTop( vecProbe[b].x, vecProbe[b].y, vecOrigin.z + 48.0f );
+		Vector vecBottom( vecProbe[b].x, vecProbe[b].y, vecOrigin.z - 64.0f );
+		UTIL_TraceLine( vecTop, vecBottom, DEATH_PROBE_MASK, this, COLLISION_GROUP_NONE, &tr );
+		if ( tr.startsolid )
+		{
+			Q_snprintf( s_sz, sizeof( s_sz ), "%s would end up inside %s", s_pszDeathProbeNames[b],
+						( tr.m_pEnt && !tr.m_pEnt->IsWorld() ) ? tr.m_pEnt->GetClassname() : "the world" );
+			if ( ppszWhy ) *ppszWhy = s_sz;
+			return false;
+		}
+		if ( tr.fraction >= 1.0f )
+		{
+			Q_snprintf( s_sz, sizeof( s_sz ), "no ground under his %s (a drop)", s_pszDeathProbeNames[b] );
+			if ( ppszWhy ) *ppszWhy = s_sz;
+			return false;
+		}
+		Vector d = vecProbe[b] - vecOrigin;
+		u[b] = DotProduct( d, vecFwd );
+		v[b] = DotProduct( d, vecLeft );
+		z[b] = tr.endpos.z - vecOrigin.z;
+		Suu += u[b] * u[b]; Svv += v[b] * v[b]; Suv += u[b] * v[b];
+		Suz += u[b] * z[b]; Svz += v[b] * z[b];
+	}
+
+	// Plane through his feet: z = a*u + b*v. Least squares, damped so a body lying in a
+	// narrow line can't produce a wild sideways tilt from a few units of spread.
+	const float flDamp = 400.0f;
+	float A = Suu + flDamp, B = Suv, D = Svv + flDamp;
+	float flDet = A * D - B * B;
+	if ( flDet < 1.0f )
+		return true;	// degenerate pose - treat as flat
+	float a = ( Suz * D - B * Svz ) / flDet;
+	float bb = ( A * Svz - B * Suz ) / flDet;
+
+	const float flMaxSlope = tanf( DEG2RAD( 30.0f ) );
+	if ( fabsf( a ) > flMaxSlope || fabsf( bb ) > flMaxSlope )
+	{
+		Q_snprintf( s_sz, sizeof( s_sz ), "ground too steep (%.0f / %.0f degrees)", RAD2DEG( atanf( a ) ), RAD2DEG( atanf( bb ) ) );
+		if ( ppszWhy ) *ppszWhy = s_sz;
+		return false;
+	}
+	for ( int b = 0; b < (int)ARRAYSIZE( s_pszDeathProbeBones ); b++ )
+	{
+		if ( !bValid[b] )
+			continue;
+		float flOff = z[b] - ( a * u[b] + bb * v[b] );
+		if ( fabsf( flOff ) > 12.0f )
+		{
+			Q_snprintf( s_sz, sizeof( s_sz ), "ground too uneven (%.0f units off under his %s)", flOff, s_pszDeathProbeNames[b] );
+			if ( ppszWhy ) *ppszWhy = s_sz;
+			return false;
+		}
+	}
+
+	flSlopeF = a;
+	flSlopeL = bb;
+	flPitch = -RAD2DEG( atanf( a ) );	// Source pitch: positive = nose down
+	flRoll = RAD2DEG( atanf( bb ) );	// positive roll lifts his left side
+	return true;
+}
+
+bool CNPC_GermanSoldier::DeathSequenceFits( int iSeq, const char **ppszWhy )
+{
+	if ( iSeq < 0 )
+		return true;
+
+	// 1. The ground: how the body must tilt to lie on it (or no animation at all)
+	float flPitch, flRoll, flSlopeF, flSlopeL;
+	if ( !DeathGroundFit( iSeq, flPitch, flRoll, flSlopeF, flSlopeL, ppszWhy ) )
+		return false;
+
+	// 2. The room: trace from his chest to each body part along the (tilted) fall
+	const Vector vecFrom = WorldSpaceCenter();
+	Vector vecProbe[ARRAYSIZE( s_pszDeathProbeBones )];
+	bool bValid[ARRAYSIZE( s_pszDeathProbeBones )];
 
 	static const float s_flSamples[] = { 0.2f, 0.4f, 0.6f, 0.8f, 1.0f };	// of the way to the hand-over
 	for ( int i = 0; i < (int)ARRAYSIZE( s_flSamples ); i++ )
 	{
-		float flCycle = s_flSamples[i] * m_flDeathRagdollAt;
+		float t = s_flSamples[i];		// the tilt grows with the fall, as UpdateDeathTilt plays it
+		PoseDeathProbes( iSeq, t * m_flDeathRagdollAt, QAngle( flPitch * t, m_flDeathYaw, flRoll * t ), vecProbe, bValid );
 
-		IBoneSetup boneSetup( pHdr, BONE_USED_BY_ANYTHING, GetPoseParameterArray() );
-		boneSetup.InitPose( pos, q );
-		boneSetup.AccumulatePose( pos, q, iSeq, flCycle, 1.0f, gpGlobals->curtime, NULL );
-
-		CBoneBitList boneComputed;
 		for ( int b = 0; b < (int)ARRAYSIZE( s_pszDeathProbeBones ); b++ )
 		{
-			if ( iBones[b] < 0 )
+			if ( !bValid[b] )
 				continue;
-			BuildBoneChain( pHdr, matRoot, pos, q, iBones[b], matBones, boneComputed );
-			Vector vecBone;
-			MatrixGetColumn( matBones[iBones[b]], 3, vecBone );
-			// Bodies end up lying on the floor and animations dip a little into it; only the
-			// walls and things on the floor matter, so keep the probe just above floor level.
-			vecBone.z = MAX( vecBone.z, flFloorZ + 6.0f );
+			Vector vecBone = vecProbe[b];
+			// Bodies end up lying on the ground and animations dip a little into it; only the
+			// walls and things on the ground matter, so keep the probe just above the ground.
+			vecBone.z = MAX( vecBone.z, DeathPlaneZ( vecBone, flSlopeF, flSlopeL ) + 6.0f );
 
 			trace_t tr;
 			UTIL_TraceLine( vecFrom, vecBone, DEATH_PROBE_MASK, this, COLLISION_GROUP_NONE, &tr );
@@ -5719,8 +5857,30 @@ bool CNPC_GermanSoldier::DeathSequenceFits( int iSeq, const char **ppszWhy )
 	return true;
 }
 
-// Mid-fall check on the pose actually playing: is the head, chest or pelvis inside or
-// behind something solid?
+// While the death animation plays: tilt the body toward the slope as he goes down -
+// upright at the start, lying along the ground by the ragdoll hand-over.
+void CNPC_GermanSoldier::UpdateDeathTilt( void )
+{
+	int iSeq = GetSequence();
+	if ( iSeq != m_iDeathTiltSeq )
+	{
+		m_iDeathTiltSeq = iSeq;
+		const char *pszWhy = NULL;
+		if ( !DeathGroundFit( iSeq, m_flDeathTiltPitch, m_flDeathTiltRoll, m_flDeathSlopeF, m_flDeathSlopeL, &pszWhy ) )
+		{
+			m_flDeathTiltPitch = m_flDeathTiltRoll = m_flDeathSlopeF = m_flDeathSlopeL = 0.0f;	// (test deaths skip the pre-check)
+		}
+		else if ( npc_german_debug.GetBool() && ( m_flDeathTiltPitch != 0.0f || m_flDeathTiltRoll != 0.0f ) )
+		{
+			Msg( "[%.2f] npc_german_soldier %d: death on a slope - lies tilted %.0f pitch / %.0f roll\n", gpGlobals->curtime, entindex(), m_flDeathTiltPitch, m_flDeathTiltRoll );
+		}
+	}
+	float t = clamp( GetCycle() / MAX( m_flDeathRagdollAt, 0.05f ), 0.0f, 1.0f );
+	SetAbsAngles( QAngle( m_flDeathTiltPitch * t, m_flDeathYaw, m_flDeathTiltRoll * t ) );
+}
+
+// Mid-fall check on the pose actually playing: is the head or chest inside or behind
+// something solid?
 bool CNPC_GermanSoldier::DeathBodyBlocked( const char **ppszWhy )
 {
 	int iPelvis = LookupBone( "ValveBiped.Bip01_Pelvis" );
@@ -5729,7 +5889,7 @@ bool CNPC_GermanSoldier::DeathBodyBlocked( const char **ppszWhy )
 	Vector vecPelvis;
 	QAngle angDummy;
 	GetBonePosition( iPelvis, vecPelvis, angDummy );
-	vecPelvis.z = MAX( vecPelvis.z, GetAbsOrigin().z + 6.0f );
+	vecPelvis.z = MAX( vecPelvis.z, DeathPlaneZ( vecPelvis, m_flDeathSlopeF, m_flDeathSlopeL ) + 6.0f );
 
 	for ( int b = 0; b < 2; b++ )	// head, chest
 	{
@@ -5738,7 +5898,7 @@ bool CNPC_GermanSoldier::DeathBodyBlocked( const char **ppszWhy )
 			continue;
 		Vector vecBone;
 		GetBonePosition( iBone, vecBone, angDummy );
-		vecBone.z = MAX( vecBone.z, GetAbsOrigin().z + 6.0f );
+		vecBone.z = MAX( vecBone.z, DeathPlaneZ( vecBone, m_flDeathSlopeF, m_flDeathSlopeL ) + 6.0f );
 		trace_t tr;
 		UTIL_TraceLine( vecPelvis, vecBone, DEATH_PROBE_MASK, this, COLLISION_GROUP_NONE, &tr );
 		if ( tr.startsolid || tr.fraction < 1.0f )
@@ -5839,6 +5999,10 @@ void CNPC_GermanSoldier::Event_Killed( const CTakeDamageInfo &info )
 		m_bDeathAnim = true;
 	}
 	m_flDeathNextCheck = gpGlobals->curtime + 0.1f;
+	m_flDeathYaw = GetAbsAngles().y;
+	m_iDeathTiltSeq = -1;
+	m_flDeathTiltPitch = m_flDeathTiltRoll = 0.0f;
+	m_flDeathSlopeF = m_flDeathSlopeL = 0.0f;
 
 	BaseClass::Event_Killed( info );
 }
