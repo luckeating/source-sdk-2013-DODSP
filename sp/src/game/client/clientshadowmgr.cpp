@@ -99,6 +99,7 @@
 static ConVar r_flashlightdrawfrustum( "r_flashlightdrawfrustum", "0" );
 static ConVar r_flashlightmodels( "r_flashlightmodels", "1" );
 static ConVar r_shadowrendertotexture( "r_shadowrendertotexture", "0" );
+static ConVar r_shadow_onstaticprops( "r_shadow_onstaticprops", "1", FCVAR_ARCHIVE, "DOD-SP: 1 = every object's shadow falls onto static props too (doors, window frames, furniture). 0 = stock: only NPC and player shadows do." );
 #ifdef ASW_PROJECTED_TEXTURES
 static ConVar r_shadow_lightpos_lerptime( "r_shadow_lightpos_lerptime", "0.5" );
 static ConVar r_shadowfromworldlights_debug( "r_shadowfromworldlights_debug", "0", FCVAR_CHEAT );
@@ -3553,10 +3554,23 @@ void CClientShadowMgr::UpdateShadow( ClientShadowHandle_t handle, bool force )
 	// its shadow and one dragged indoors loses it.
 	if ( r_shadow_sunonly.GetBool() && g_pWorldLights )
 	{
+		// Any part of it in the sun counts: the centre, then points toward each corner (pulled
+		// in so they don't poke through a wall it stands against). A table beside a sunbeam
+		// with only its edge in the light still casts.
 		Vector vecMins, vecMaxs;
 		pRenderable->GetRenderBoundsWorldspace( vecMins, vecMaxs );
 		C_BaseEntity *pEnt = pRenderable->GetIClientUnknown() ? pRenderable->GetIClientUnknown()->GetBaseEntity() : NULL;
-		if ( g_pWorldLights->IsInSunlight( 0.5f * ( vecMins + vecMaxs ), pEnt ) == 0 )
+		Vector vecCenter = 0.5f * ( vecMins + vecMaxs );
+		Vector vecHalf = 0.35f * ( vecMaxs - vecMins );
+		int nSun = g_pWorldLights->IsInSunlight( vecCenter, pEnt );
+		for ( int iCorner = 0; nSun == 0 && iCorner < 8; iCorner++ )
+		{
+			Vector vecPt( vecCenter.x + ( ( iCorner & 1 ) ? vecHalf.x : -vecHalf.x ),
+						  vecCenter.y + ( ( iCorner & 2 ) ? vecHalf.y : -vecHalf.y ),
+						  vecCenter.z + ( ( iCorner & 4 ) ? vecHalf.z : -vecHalf.z ) );
+			nSun = g_pWorldLights->IsInSunlight( vecPt, pEnt );
+		}
+		if ( nSun == 0 )
 		{
 			shadowmgr->EnableShadow( shadow.m_ShadowHandle, false );
 			pRenderable->MarkShadowDirty( false );
@@ -3945,8 +3959,11 @@ void CClientShadowMgr::AddShadowToReceiver( ClientShadowHandle_t handle,
 		{
 			// Also don't add them unless an NPC or player casts them..
 			// They are wickedly expensive!!!
+			// DOD-SP: any caster with r_shadow_onstaticprops (2004's "wickedly expensive" isn't
+			// any more, and sun-only shadows keep the count low) - otherwise a chair's shadow
+			// stopped dead at the door or window frame next to it.
 			C_BaseEntity *pEnt = pSourceRenderable->GetIClientUnknown()->GetBaseEntity();
-			if ( pEnt && ( pEnt->GetFlags() & (FL_NPC | FL_CLIENT)) )
+			if ( pEnt && ( r_shadow_onstaticprops.GetBool() || ( pEnt->GetFlags() & (FL_NPC | FL_CLIENT)) ) )
 			{
 				staticpropmgr->AddShadowToStaticProp( shadow.m_ShadowHandle, pRenderable );
 			}
