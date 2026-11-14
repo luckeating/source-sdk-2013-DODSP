@@ -119,10 +119,11 @@ ConVar r_flashlightdepthtexture( "r_flashlightdepthtexture", "1" );
 ConVar r_flashlightdepthres( "r_flashlightdepthres", "512" );
 #else
 #ifdef MAPBASE
-// DOD-SP: 4096 (was 2048) - the env_global_light sun stretches one of these over the whole
-// area around the player. Set at launch with -shadowres N (512-8192); changing it during
-// a map is refused, because the engine crashes reallocating these textures mid-game.
-ConVar r_flashlightdepthres( "r_flashlightdepthres", "4096" );
+// DOD-SP: stays 2048. Tested on the env_global_light sun: 8192 came out BLURRIER - the stock
+// shaders' soft-shadow filter is a fixed width in texture space, so a bigger map only widens
+// the blur. For sharper sun shadows shrink its orthosize instead. -shadowres N (512-8192) at
+// launch still overrides; changing it mid-map is refused (the engine crashes reallocating).
+ConVar r_flashlightdepthres( "r_flashlightdepthres", "2048" );
 #else
 ConVar r_flashlightdepthres( "r_flashlightdepthres", "1024" );
 #endif
