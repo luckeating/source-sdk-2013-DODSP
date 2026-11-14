@@ -779,7 +779,13 @@ bool CGameRules::ShouldCollide( int collisionGroup0, int collisionGroup1 )
 		::V_swap(collisionGroup0,collisionGroup1);
 	}
 
-#ifndef HL2MP
+	// DOD-SP: no "walk through and shove aside" props. DoD:S maps (and DoD-style maps built for
+	// this mod) use prop_physics_multiplayer, which always takes COLLISION_GROUP_PUSHAWAY - in
+	// multiplayer the player walks through those and pushes them away. Single player has no
+	// push-away code, so the player just passed through chairs and tables. Here the player
+	// collides with them like any prop_physics: blocked by them, and his physics shadow shoves
+	// them. (Small debris props stay COLLISION_GROUP_DEBRIS and still don't block him.)
+#if 0	// was: #ifndef HL2MP
 	if ( (collisionGroup0 == COLLISION_GROUP_PLAYER || collisionGroup0 == COLLISION_GROUP_PLAYER_MOVEMENT) &&
 		collisionGroup1 == COLLISION_GROUP_PUSHAWAY )
 	{
