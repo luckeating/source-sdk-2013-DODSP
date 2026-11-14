@@ -31,9 +31,11 @@ ConVar cl_globallight_freeze( "cl_globallight_freeze", "0" );
 ConVar cl_globallight_xoffset( "cl_globallight_xoffset", "0" );
 ConVar cl_globallight_yoffset( "cl_globallight_yoffset", "0" );
 
-static ConVar cl_globallight_slopescaledepthbias_shadowmap( "cl_globallight_slopescaledepthbias_shadowmap", "16", FCVAR_CHEAT );
-static ConVar cl_globallight_shadowfiltersize( "cl_globallight_shadowfiltersize", "0.1", FCVAR_CHEAT );
-static ConVar cl_globallight_depthbias_shadowmap( "cl_globallight_depthbias_shadowmap", "0.00001", FCVAR_CHEAT );
+// DOD-SP: slope bias 4 (was 16) - 16 pushed shadows off their casters and let the sun leak
+// under walls (Fake-CSM's tested value is 4 too). Not cheats, so they can be tuned in play.
+static ConVar cl_globallight_slopescaledepthbias_shadowmap( "cl_globallight_slopescaledepthbias_shadowmap", "4" );
+static ConVar cl_globallight_shadowfiltersize( "cl_globallight_shadowfiltersize", "0.1" );
+static ConVar cl_globallight_depthbias_shadowmap( "cl_globallight_depthbias_shadowmap", "0.00001" );
 // DOD-SP: 0 = the real shadow map size (r_flashlightdepthres). It used to claim 8192 while
 // the texture was 2048, so the shader filtered for the wrong size.
 static ConVar cl_globallight_depthres( "cl_globallight_depthres", "0", FCVAR_CHEAT );
