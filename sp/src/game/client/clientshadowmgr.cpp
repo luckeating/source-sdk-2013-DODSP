@@ -1069,6 +1069,19 @@ private:
 // Singleton
 //-----------------------------------------------------------------------------
 static CClientShadowMgr s_ClientShadowMgr;
+
+//-----------------------------------------------------------------------------
+// DOD-SP: an env_global_light with shadows (a real shadow-mapped sun) owns sun shadows.
+// While it's on, no object gets a soft blob shadow as well - one shadow per object.
+//-----------------------------------------------------------------------------
+static bool s_bDoDSP_GlobalSunShadows = false;
+void DoDSP_SetGlobalSunShadows( bool bActive )
+{
+	if ( s_bDoDSP_GlobalSunShadows == bActive )
+		return;
+	s_bDoDSP_GlobalSunShadows = bActive;
+	s_ClientShadowMgr.SetShadowDirection( s_ClientShadowMgr.GetShadowDirection() );	// re-evaluates every shadow
+}
 IClientShadowMgr* g_pClientShadowMgr = &s_ClientShadowMgr;
 
 
@@ -3549,6 +3562,15 @@ void CClientShadowMgr::UpdateShadow( ClientShadowHandle_t handle, bool force )
 	}
 
 #ifdef DYNAMIC_RTT_SHADOWS
+	// DOD-SP: a shadow-mapped sun (env_global_light) is up - it casts every object's sun
+	// shadow, so no blob on top of it.
+	if ( s_bDoDSP_GlobalSunShadows )
+	{
+		shadowmgr->EnableShadow( shadow.m_ShadowHandle, false );
+		pRenderable->MarkShadowDirty( false );
+		return;
+	}
+
 	// DOD-SP: no blob shadow out of the sun (see r_shadow_sunonly). Re-checked whenever the
 	// object moves (that's when its shadow goes dirty), so a chair kicked into a sunbeam gets
 	// its shadow and one dragged indoors loses it.

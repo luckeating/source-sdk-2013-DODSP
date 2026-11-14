@@ -12,6 +12,11 @@
 #include "materialsystem/itexture.h"
 #endif
 
+#ifdef MAPBASE
+#include "worldlight.h"
+#endif
+void DoDSP_SetGlobalSunShadows( bool bActive );	// clientshadowmgr.cpp
+
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
@@ -116,6 +121,7 @@ END_RECV_TABLE()
 
 C_GlobalLight::~C_GlobalLight()
 {
+	DoDSP_SetGlobalSunShadows( false );
 	if ( m_LocalFlashlightHandle != CLIENTSHADOW_INVALID_HANDLE )
 	{
 		g_pClientShadowMgr->DestroyFlashlight( m_LocalFlashlightHandle );
@@ -214,6 +220,14 @@ void C_GlobalLight::ClientThink()
 		FlashlightState_t state;
 
 		Vector vDirection = m_shadowDirection;
+#ifdef MAPBASE
+		// DOD-SP: the map's light_environment owns the sun direction, so this sun's shadows
+		// always line up with the baked ones. (The entity's own angles only matter on a map
+		// with no light_environment.)
+		Vector vWorldSun;
+		if ( g_pWorldLights && g_pWorldLights->GetSunDirection( vWorldSun ) )
+			vDirection = vWorldSun;
+#endif
 		VectorNormalize( vDirection );
 
 		//Vector vViewUp = Vector( 0.0f, 1.0f, 0.0f );
@@ -343,6 +357,7 @@ void C_GlobalLight::ClientThink()
 	}
 
 	g_pClientShadowMgr->SetShadowFromWorldLightsEnabled( !bSupressWorldLights );
+	DoDSP_SetGlobalSunShadows( bSupressWorldLights );	// DOD-SP: shadow-mapped sun replaces blob shadows
 
 	BaseClass::ClientThink();
 } 
