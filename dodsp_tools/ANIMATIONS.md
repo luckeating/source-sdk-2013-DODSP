@@ -103,6 +103,16 @@ or a release frame timed in code.
 - **Known issue**: in some corner sets the hands don't line up with the bonemerged rifle. Left for the
   animation-polish pass.
 
+## Death animations and walls (done - 2026-11-14)
+
+A death animation only plays if it has room. Before it starts, every sequence the death activity can pick
+is posed at five points of the fall (up to the ragdoll hand-over) and a line is traced from the chest to
+the head, chest, pelvis, hands and feet. Anything solid in the way (world, props, doors, windows; not
+other soldiers) and he ragdolls straight away instead. While a death animation plays, a check every 0.1 s
+traces pelvis to head and pelvis to chest; if that is blocked (a door swung shut, a prop moved), he
+ragdolls on the spot. One owner: `DeathAnimFits` / `DeathSequenceFits` / `DeathBodyBlocked`. With
+`npc_german_debug 1` the console says which body part would have hit what.
+
 ## Animation sweep (to do - logged 2026-11-13)
 
 Gameplay with the A4a set is right; these are visual and wait for a full animation pass:

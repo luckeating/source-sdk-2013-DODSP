@@ -61,6 +61,7 @@
 #include "KeyValues.h"
 #include "player.h"
 #include "german_chatter.h"
+#include "bone_setup.h"
 
 void DoDSP_SetWeaponDeployed( CBaseCombatWeapon *pWeapon, bool bDeployed );		// weapon_dodsp_guns.cpp
 
@@ -239,8 +240,11 @@ private:
 	void		ApplyAimPose( void );
 	void		HoldMoveForward( void );
 	bool		FireOneShot( bool bPlayGesture );
-	bool		ShouldPlayDeathAnim( const CTakeDamageInfo &info );
+	bool		ShouldPlayDeathAnim( const CTakeDamageInfo &info, Activity &actOut );
 	Activity	PickDeathActivity( void );
+	bool		DeathAnimFits( Activity act, const char **ppszWhy );
+	bool		DeathSequenceFits( int iSeq, const char **ppszWhy );
+	bool		DeathBodyBlocked( const char **ppszWhy );
 	Activity	PickAvailable( const char **ppszNames, int nCount );
 	void		FinishDeathAnim( void );
 	void		DoHitReaction( const CTakeDamageInfo &info );
@@ -683,6 +687,7 @@ private:
 	float				m_flDeathAnimGiveUp;
 	float				m_flDeathAnimSpeed;
 	float				m_flDeathRagdollAt;		// cycle at which the death animation hands over to the ragdoll
+	float				m_flDeathNextCheck;		// next mid-fall "has the body hit something" check
 
 	// Hit reaction state
 	float				m_flFlinchUntil;		// no firing until then
@@ -886,6 +891,7 @@ CNPC_GermanSoldier::CNPC_GermanSoldier() : m_AnimMap( DefLessFunc( int ) )
 	m_flDeathAnimGiveUp = 0.0f;
 	m_flDeathAnimSpeed = 1.0f;
 	m_flDeathRagdollAt = 0.8f;
+	m_flDeathNextCheck = 0.0f;
 	m_flFlinchUntil = 0.0f;
 	m_flNextHitReaction = 0.0f;
 	m_flNextFullFlinch = 0.0f;
@@ -5536,6 +5542,20 @@ void CNPC_GermanSoldier::RunTask( const Task_t *pTask )
 			FinishDeathAnim();
 			break;
 		}
+		// Mid-fall: if the body runs into something anyway (a door swung shut, a prop the
+		// pre-check couldn't predict), ragdoll now - before the limbs are deep inside it.
+		if ( m_bDeathAnim && gpGlobals->curtime >= m_flDeathNextCheck )
+		{
+			m_flDeathNextCheck = gpGlobals->curtime + 0.1f;
+			const char *pszWhy = NULL;
+			if ( DeathBodyBlocked( &pszWhy ) )
+			{
+				if ( npc_german_debug.GetBool() )
+					Msg( "[%.2f] npc_german_soldier %d: death animation cut short at %.0f%% - %s; ragdolls\n", gpGlobals->curtime, entindex(), GetCycle() * 100.0f, pszWhy );
+				FinishDeathAnim();
+				break;
+			}
+		}
 		if ( m_bDeathAnim )
 			SetPlaybackRate( m_flDeathAnimSpeed );
 		BaseClass::RunTask( pTask );
@@ -5556,9 +5576,10 @@ void CNPC_GermanSoldier::RunTask( const Task_t *pTask )
 // GetDeathActivity; when it ends (or after a safety timeout) we ragdoll for real,
 // starting from the animation's last pose.
 //-----------------------------------------------------------------------------
-bool CNPC_GermanSoldier::ShouldPlayDeathAnim( const CTakeDamageInfo &info )
+bool CNPC_GermanSoldier::ShouldPlayDeathAnim( const CTakeDamageInfo &info, Activity &actOut )
 {
 	EnsureAnimMap();
+	actOut = ACT_INVALID;
 
 	if ( random->RandomFloat( 0.0f, 1.0f ) > m_flDeathAnimChance )
 		return false;
@@ -5575,7 +5596,159 @@ bool CNPC_GermanSoldier::ShouldPlayDeathAnim( const CTakeDamageInfo &info )
 	if ( IsInAScript() || GetParent() )
 		return false;
 
-	return PickDeathActivity() != ACT_INVALID;
+	// Pick once (the pick is random; picking again later could give a different one), then
+	// make sure the fall has room. No room -> no animation: a plain ragdoll from where he
+	// stands never ends up inside a wall.
+	Activity act = PickDeathActivity();
+	if ( act == ACT_INVALID )
+		return false;
+	const char *pszWhy = NULL;
+	if ( !DeathAnimFits( act, &pszWhy ) )
+	{
+		if ( npc_german_debug.GetBool() )
+			Msg( "[%.2f] npc_german_soldier %d: no room for death animation %s - %s; ragdolls\n", gpGlobals->curtime, entindex(), ActivityList_NameForIndex( act ), pszWhy );
+		return false;
+	}
+	actOut = act;
+	return true;
+}
+
+//-----------------------------------------------------------------------------
+// Death-space check: one owner for "does this death animation have room?"
+//
+// For each sequence the activity can play, pose the skeleton at a few points of the
+// fall (up to the ragdoll hand-over) and trace from his chest to the head, pelvis,
+// hands and feet. Anything solid in the way - wall, door, table, window - and the
+// animation is refused. All sequences of the activity must fit, because the engine
+// picks among them at random when the death starts.
+//-----------------------------------------------------------------------------
+static const char *s_pszDeathProbeBones[] = { "ValveBiped.Bip01_Head1", "ValveBiped.Bip01_Spine2", "ValveBiped.Bip01_Pelvis",
+											  "ValveBiped.Bip01_L_Hand", "ValveBiped.Bip01_R_Hand", "ValveBiped.Bip01_L_Foot", "ValveBiped.Bip01_R_Foot" };
+static const char *s_pszDeathProbeNames[] = { "head", "chest", "pelvis", "left hand", "right hand", "left foot", "right foot" };
+#define DEATH_PROBE_MASK	( MASK_SOLID & ~CONTENTS_MONSTER )	// world, props, doors, windows - not other soldiers
+
+static const char *DeathBlockerText( const trace_t &tr, const char *pszBone )
+{
+	static char s_sz[128];
+	Q_snprintf( s_sz, sizeof( s_sz ), "%s would go into %s", pszBone,
+				( tr.m_pEnt && !tr.m_pEnt->IsWorld() ) ? tr.m_pEnt->GetClassname() : "the world" );
+	return s_sz;
+}
+
+bool CNPC_GermanSoldier::DeathAnimFits( Activity act, const char **ppszWhy )
+{
+	CStudioHdr *pHdr = GetModelPtr();
+	if ( !pHdr )
+		return true;
+
+	// The activity actually played (the script maps Combine deaths to DoD/CoD ones)
+	Activity actPlay = NPC_TranslateActivity( act );
+	if ( !HaveSequenceForActivity( actPlay ) )
+		actPlay = act;
+
+	int nChecked = 0;
+	for ( int iSeq = 0; iSeq < pHdr->GetNumSeq(); iSeq++ )
+	{
+		if ( GetSequenceActivity( iSeq ) != actPlay )
+			continue;
+		nChecked++;
+		if ( !DeathSequenceFits( iSeq, ppszWhy ) )
+			return false;
+	}
+	if ( !nChecked )
+	{
+		// Shouldn't happen (PickDeathActivity only offers activities with sequences)
+		int iSeq = SelectWeightedSequence( actPlay );
+		if ( iSeq >= 0 && !DeathSequenceFits( iSeq, ppszWhy ) )
+			return false;
+	}
+	return true;
+}
+
+bool CNPC_GermanSoldier::DeathSequenceFits( int iSeq, const char **ppszWhy )
+{
+	CStudioHdr *pHdr = GetModelPtr();
+	if ( !pHdr || iSeq < 0 )
+		return true;
+
+	int iBones[ARRAYSIZE( s_pszDeathProbeBones )];
+	for ( int b = 0; b < (int)ARRAYSIZE( s_pszDeathProbeBones ); b++ )
+		iBones[b] = LookupBone( s_pszDeathProbeBones[b] );
+
+	const matrix3x4_t &matRoot = EntityToWorldTransform();
+	const Vector vecFrom = WorldSpaceCenter();
+	const float flFloorZ = GetAbsOrigin().z;
+
+	Vector pos[MAXSTUDIOBONES];
+	Quaternion q[MAXSTUDIOBONES];
+	matrix3x4_t matBones[MAXSTUDIOBONES];
+
+	static const float s_flSamples[] = { 0.2f, 0.4f, 0.6f, 0.8f, 1.0f };	// of the way to the hand-over
+	for ( int i = 0; i < (int)ARRAYSIZE( s_flSamples ); i++ )
+	{
+		float flCycle = s_flSamples[i] * m_flDeathRagdollAt;
+
+		IBoneSetup boneSetup( pHdr, BONE_USED_BY_ANYTHING, GetPoseParameterArray() );
+		boneSetup.InitPose( pos, q );
+		boneSetup.AccumulatePose( pos, q, iSeq, flCycle, 1.0f, gpGlobals->curtime, NULL );
+
+		CBoneBitList boneComputed;
+		for ( int b = 0; b < (int)ARRAYSIZE( s_pszDeathProbeBones ); b++ )
+		{
+			if ( iBones[b] < 0 )
+				continue;
+			BuildBoneChain( pHdr, matRoot, pos, q, iBones[b], matBones, boneComputed );
+			Vector vecBone;
+			MatrixGetColumn( matBones[iBones[b]], 3, vecBone );
+			// Bodies end up lying on the floor and animations dip a little into it; only the
+			// walls and things on the floor matter, so keep the probe just above floor level.
+			vecBone.z = MAX( vecBone.z, flFloorZ + 6.0f );
+
+			trace_t tr;
+			UTIL_TraceLine( vecFrom, vecBone, DEATH_PROBE_MASK, this, COLLISION_GROUP_NONE, &tr );
+			if ( tr.startsolid || tr.fraction < 1.0f )
+			{
+				if ( ppszWhy )
+					*ppszWhy = DeathBlockerText( tr, s_pszDeathProbeNames[b] );
+				if ( npc_german_debug.GetInt() >= 2 )
+					NDebugOverlay::Line( vecFrom, vecBone, 255, 0, 0, true, 5.0f );
+				return false;
+			}
+		}
+	}
+	return true;
+}
+
+// Mid-fall check on the pose actually playing: is the head, chest or pelvis inside or
+// behind something solid?
+bool CNPC_GermanSoldier::DeathBodyBlocked( const char **ppszWhy )
+{
+	int iPelvis = LookupBone( "ValveBiped.Bip01_Pelvis" );
+	if ( iPelvis < 0 )
+		return false;
+	Vector vecPelvis;
+	QAngle angDummy;
+	GetBonePosition( iPelvis, vecPelvis, angDummy );
+	vecPelvis.z = MAX( vecPelvis.z, GetAbsOrigin().z + 6.0f );
+
+	for ( int b = 0; b < 2; b++ )	// head, chest
+	{
+		int iBone = LookupBone( s_pszDeathProbeBones[b] );
+		if ( iBone < 0 )
+			continue;
+		Vector vecBone;
+		GetBonePosition( iBone, vecBone, angDummy );
+		vecBone.z = MAX( vecBone.z, GetAbsOrigin().z + 6.0f );
+		trace_t tr;
+		UTIL_TraceLine( vecPelvis, vecBone, DEATH_PROBE_MASK, this, COLLISION_GROUP_NONE, &tr );
+		if ( tr.startsolid || tr.fraction < 1.0f )
+		{
+			if ( ppszWhy )
+				*ppszWhy = DeathBlockerText( tr, s_pszDeathProbeNames[b] );
+			return true;
+		}
+	}
+	return false;
 }
 
 Activity CNPC_GermanSoldier::PickAvailable( const char **ppszNames, int nCount )
@@ -5658,14 +5831,14 @@ void CNPC_GermanSoldier::Event_Killed( const CTakeDamageInfo &info )
 		m_flDeathAnimGiveUp = gpGlobals->curtime + 8.0f;
 		m_bDeathAnim = true;
 	}
-	else if ( !IsCurSchedule( SCHED_NPC_FREEZE ) && ShouldPlayDeathAnim( info ) )	// frozen NPCs don't die
+	else if ( !IsCurSchedule( SCHED_NPC_FREEZE ) && ShouldPlayDeathAnim( info, m_actDeath ) )	// frozen NPCs don't die
 	{
-		m_actDeath = PickDeathActivity();
 		m_DeathInfo = info;
 		m_vecDeathForce = vec3_origin;		// a finished death animation settles; see FinishDeathAnim
 		m_flDeathAnimGiveUp = gpGlobals->curtime + 8.0f;
 		m_bDeathAnim = true;
 	}
+	m_flDeathNextCheck = gpGlobals->curtime + 0.1f;
 
 	BaseClass::Event_Killed( info );
 }
