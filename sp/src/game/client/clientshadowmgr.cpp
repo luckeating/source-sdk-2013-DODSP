@@ -1865,6 +1865,18 @@ const Vector &CClientShadowMgr::GetShadowDirection( ClientShadowHandle_t shadowH
 	IClientRenderable* pRenderable = ClientEntityList().GetClientRenderableFromHandle( m_Shadows[shadowHandle].m_Entity );
 	Assert( pRenderable );
 
+	// DOD-SP: with r_shadow_sunonly, every shadow that's drawn is in sunlight, so it falls
+	// along the sun - one direction for all, matching the baked shadows. No per-object light
+	// search (that's what made them swing between lamps), and the shadow_control angle and
+	// its "shadows from local lights" switch don't matter on a map with a sun.
+	Vector vecSun;
+	if ( r_shadow_sunonly.GetBool() && g_pWorldLights && g_pWorldLights->GetSunDirection( vecSun ) )
+	{
+		Vector &vecSunResult = AllocTempVector();
+		vecSunResult = vecSun;
+		return vecSunResult;
+	}
+
 	if ( !IsShadowingFromWorldLights() )
 	{
 		return GetShadowDirection( pRenderable );
@@ -3360,7 +3372,9 @@ void CClientShadowMgr::PreRender()
 void CClientShadowMgr::UpdateDirtyShadow( ClientShadowHandle_t handle )
 {
 	Assert( m_Shadows.IsValidIndex( handle ) );
-	if ( IsShadowingFromWorldLights() )
+	Vector vecSun;
+	bool bSunOnly = r_shadow_sunonly.GetBool() && g_pWorldLights && g_pWorldLights->GetSunDirection( vecSun );
+	if ( IsShadowingFromWorldLights() && !bSunOnly )	// DOD-SP: sun-only shadows all use the sun
 	{
 		UpdateShadowDirectionFromLocalLightSource( handle );
 	}

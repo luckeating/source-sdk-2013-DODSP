@@ -335,6 +335,18 @@ static bool DoDSP_SpotlightReaches( const dworldlight_t *light, const Vector &ve
 	return DotProduct( vecLightToProp, light->normal ) >= light->stopdot2;
 }
 
+bool CWorldLights::GetSunDirection( Vector &vecDir ) const
+{
+#ifdef MAPBASE
+	if ( m_iSunIndex < 0 || !m_pWorldLights )
+		return false;
+	vecDir = m_pWorldLights[m_iSunIndex].normal;
+	return vecDir.NormalizeInPlace() > 0.0f;
+#else
+	return false;
+#endif
+}
+
 int CWorldLights::IsInSunlight( const Vector &vecPosition, const IHandleEntity *pIgnore ) const
 {
 #ifdef MAPBASE
