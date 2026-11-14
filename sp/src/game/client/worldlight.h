@@ -33,6 +33,12 @@ public:
 	bool GetCumulativeLightSource(const Vector &vecPosition, Vector &vecLightPos, float flMinBrightnessSqr);
 #endif
 
+public:
+	// DOD-SP: does the sun (light_environment) reach this point? 1 = yes, 0 = no,
+	// -1 = the map has no sun. pIgnore: the entity asking (so it doesn't block itself).
+	int IsInSunlight( const Vector &vecPosition, const IHandleEntity *pIgnore = NULL ) const;
+private:
+
 	// CAutoGameSystem overrides
 public:
 	virtual bool Init();

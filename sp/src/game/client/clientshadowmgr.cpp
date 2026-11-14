@@ -103,6 +103,11 @@ static ConVar r_shadowrendertotexture( "r_shadowrendertotexture", "0" );
 static ConVar r_shadow_lightpos_lerptime( "r_shadow_lightpos_lerptime", "0.5" );
 static ConVar r_shadowfromworldlights_debug( "r_shadowfromworldlights_debug", "0", FCVAR_CHEAT );
 static ConVar r_shadow_shortenfactor( "r_shadow_shortenfactor", "2" , 0, "Makes shadows cast from local lights shorter" );
+// DOD-SP: the soft "blob" shadow under props and characters only appears where sunlight
+// reaches them. Indoors (and in any shade) the baked lighting already does the shading, and
+// the blob - one per object, from one light - only ever pointed somewhere wrong and fought
+// with projected-texture shadows. 0 = stock behaviour (blob shadows everywhere).
+static ConVar r_shadow_sunonly( "r_shadow_sunonly", "1", FCVAR_ARCHIVE, "DOD-SP: 1 = dynamic prop/character shadows only where sunlight reaches (none indoors). 0 = everywhere (stock)." );
 static ConVar r_shadow_mincastintensity( "r_shadow_mincastintensity", "0.3", FCVAR_CHEAT, "Minimum brightness of a light to be classed as shadow casting", true, 0, false, 0 );
 #endif
 static ConVar r_flashlight_version2( "r_flashlight_version2", "0", FCVAR_CHEAT | FCVAR_DEVELOPMENTONLY );
@@ -3527,6 +3532,24 @@ void CClientShadowMgr::UpdateShadow( ClientShadowHandle_t handle, bool force )
 		pRenderable->MarkShadowDirty( false );
 		return;
 	}
+
+#ifdef DYNAMIC_RTT_SHADOWS
+	// DOD-SP: no blob shadow out of the sun (see r_shadow_sunonly). Re-checked whenever the
+	// object moves (that's when its shadow goes dirty), so a chair kicked into a sunbeam gets
+	// its shadow and one dragged indoors loses it.
+	if ( r_shadow_sunonly.GetBool() && g_pWorldLights )
+	{
+		Vector vecMins, vecMaxs;
+		pRenderable->GetRenderBoundsWorldspace( vecMins, vecMaxs );
+		C_BaseEntity *pEnt = pRenderable->GetIClientUnknown() ? pRenderable->GetIClientUnknown()->GetBaseEntity() : NULL;
+		if ( g_pWorldLights->IsInSunlight( 0.5f * ( vecMins + vecMaxs ), pEnt ) == 0 )
+		{
+			shadowmgr->EnableShadow( shadow.m_ShadowHandle, false );
+			pRenderable->MarkShadowDirty( false );
+			return;
+		}
+	}
+#endif
 
 	shadowmgr->EnableShadow( shadow.m_ShadowHandle, true );
 

@@ -335,6 +335,20 @@ static bool DoDSP_SpotlightReaches( const dworldlight_t *light, const Vector &ve
 	return DotProduct( vecLightToProp, light->normal ) >= light->stopdot2;
 }
 
+int CWorldLights::IsInSunlight( const Vector &vecPosition, const IHandleEntity *pIgnore ) const
+{
+#ifdef MAPBASE
+	if ( m_iSunIndex < 0 || !m_pWorldLights )
+		return -1;
+	const dworldlight_t *light = &m_pWorldLights[m_iSunIndex];
+	trace_t tr;
+	UTIL_TraceLine( vecPosition, vecPosition - light->normal * MAX_TRACE_LENGTH, MASK_OPAQUE, pIgnore, COLLISION_GROUP_NONE, &tr );
+	return ( tr.DidHit() && ( tr.surface.flags & SURF_SKY ) ) ? 1 : 0;
+#else
+	return -1;
+#endif
+}
+
 void CWorldLights::FindBrightestLightSourceOld( const Vector &vecPosition, Vector &vecLightPos, Vector &vecLightBrightness, int nCluster )
 {
 	// Find the size of the PVS for our current position
