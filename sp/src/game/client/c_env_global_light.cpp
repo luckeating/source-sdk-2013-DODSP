@@ -34,7 +34,10 @@ ConVar cl_globallight_yoffset( "cl_globallight_yoffset", "0" );
 static ConVar cl_globallight_slopescaledepthbias_shadowmap( "cl_globallight_slopescaledepthbias_shadowmap", "16", FCVAR_CHEAT );
 static ConVar cl_globallight_shadowfiltersize( "cl_globallight_shadowfiltersize", "0.1", FCVAR_CHEAT );
 static ConVar cl_globallight_depthbias_shadowmap( "cl_globallight_depthbias_shadowmap", "0.00001", FCVAR_CHEAT );
-static ConVar cl_globallight_depthres( "cl_globallight_depthres", "8192", FCVAR_CHEAT );
+// DOD-SP: 0 = the real shadow map size (r_flashlightdepthres). It used to claim 8192 while
+// the texture was 2048, so the shader filtered for the wrong size.
+static ConVar cl_globallight_depthres( "cl_globallight_depthres", "0", FCVAR_CHEAT );
+extern ConVar r_flashlightdepthres;
 #else
 ConVar cl_globallight_xoffset( "cl_globallight_xoffset", "-800" );
 ConVar cl_globallight_yoffset( "cl_globallight_yoffset", "1600" );
@@ -307,7 +310,7 @@ void C_GlobalLight::ClientThink()
 
 #ifdef MAPBASE
 		//state.m_bDrawShadowFrustum = true; // Don't draw that huge debug thing
-		state.m_flShadowMapResolution = cl_globallight_depthres.GetFloat();
+		state.m_flShadowMapResolution = cl_globallight_depthres.GetFloat() > 0 ? cl_globallight_depthres.GetFloat() : r_flashlightdepthres.GetFloat();
 		state.m_flShadowFilterSize = cl_globallight_shadowfiltersize.GetFloat();
 		state.m_flShadowSlopeScaleDepthBias = cl_globallight_slopescaledepthbias_shadowmap.GetFloat();
 		state.m_flShadowDepthBias = cl_globallight_depthbias_shadowmap.GetFloat();

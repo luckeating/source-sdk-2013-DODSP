@@ -119,7 +119,10 @@ ConVar r_flashlightdepthtexture( "r_flashlightdepthtexture", "1" );
 ConVar r_flashlightdepthres( "r_flashlightdepthres", "512" );
 #else
 #ifdef MAPBASE
-ConVar r_flashlightdepthres( "r_flashlightdepthres", "2048" );
+// DOD-SP: 4096 (was 2048) - the env_global_light sun stretches one of these over the whole
+// area around the player. Set at launch with -shadowres N (512-8192); changing it during
+// a map is refused, because the engine crashes reallocating these textures mid-game.
+ConVar r_flashlightdepthres( "r_flashlightdepthres", "4096" );
 #else
 ConVar r_flashlightdepthres( "r_flashlightdepthres", "1024" );
 #endif
@@ -1440,6 +1443,18 @@ bool CClientShadowMgr::Init()
 		r_flashlightdepthtexture.SetValue( 0 );
 		ShutdownDepthTextureShadows();	
 	}
+
+#ifdef MAPBASE
+	// DOD-SP: shadow map size from the command line, before the textures are created
+	int nShadowRes = CommandLine()->ParmValue( "-shadowres", 0 );
+	if ( nShadowRes > 0 )
+	{
+		int nPow2 = 512;
+		while ( nPow2 < nShadowRes && nPow2 < 8192 )
+			nPow2 *= 2;
+		r_flashlightdepthres.SetValue( nPow2 );
+	}
+#endif
 
 	if ( !bLowEnd && r_flashlightdepthtexture.GetBool() )
 	{
@@ -3314,8 +3329,16 @@ void CClientShadowMgr::PreRender()
 			if ( ( bDepthTextureActive == true ) && ( m_bDepthTextureActive == true ) &&
 				 ( nDepthTextureResolution != m_nDepthTextureResolution ) )
 			{
+#ifdef MAPBASE
+				// DOD-SP: reallocating the shadow maps mid-game crashes the engine. Keep the
+				// current size and say how to change it.
+				Warning( "r_flashlightdepthres can't change while the game is running (it crashes the engine). "
+						 "Add -shadowres %d to the launch options instead. Staying at %d.\n", nDepthTextureResolution, m_nDepthTextureResolution );
+				r_flashlightdepthres.SetValue( m_nDepthTextureResolution );
+#else
 				ShutdownDepthTextureShadows();	
 				InitDepthTextureShadows();
+#endif
 			}
 			else
 			{
