@@ -5,6 +5,9 @@
 # that touches game code. Download the result from the Actions tab:
 #   Actions -> "DOD-SP Build" -> newest run -> Artifacts -> game_hl2_win32_Release
 # Unzip it and copy client.dll + server.dll into sourcemods\DOD-SP\bin (back up the old ones first).
+# The second artifact, shaders_hl2_win32_Release, holds game_shader_dx9.dll - Mapbase's shaders
+# (SDK_LightmappedGeneric etc.), which the patched HL2 materials in DOD-SP\content need. It goes
+# into sourcemods\DOD-SP\bin too. Without it those materials draw unlit (full bright, no shadows).
 #
 # Can also be started by hand: Actions -> "DOD-SP Build" -> "Run workflow".
 
@@ -24,6 +27,7 @@ on:
       - 'sp/src/tier1/**'
       - 'sp/src/vgui2/vgui_controls/**'
       - 'sp/src/vscript/**'
+      - 'sp/src/materialsystem/**'
   workflow_dispatch:
 
 jobs:
@@ -36,3 +40,13 @@ jobs:
       project-group: 'game'
       solution-name: 'games'
       build-on-linux: false  # Windows only
+
+  shaders:
+    uses: ./.github/workflows/mapbase_build-base.yml
+    with:
+      configuration: Release
+      branch: 'sp'
+      game: 'hl2'
+      project-group: 'shaders'
+      solution-name: 'shaders'
+      build-on-linux: false
