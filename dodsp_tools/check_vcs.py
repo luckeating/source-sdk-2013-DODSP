@@ -12,11 +12,13 @@ def vcs_counts(path):
     return ver, total, dyn
 
 def inc_counts(stdshaders, base):
-    for sub in ('fxctmp9', 'vshtmp9'):
-        p = os.path.join(stdshaders, sub, base + '.inc')
-        if os.path.exists(p):
-            break
-    else:
+    p = None
+    for sub in ('fxctmp9', 'vshtmp9'):   # case-insensitive: the game runs on Windows
+        d = os.path.join(stdshaders, sub)
+        for f in os.listdir(d):
+            if f.lower() == (base + '.inc').lower():
+                p = os.path.join(d, f)
+    if p is None:
         return None
     s = open(p, errors='ignore').read()
     out = {}
