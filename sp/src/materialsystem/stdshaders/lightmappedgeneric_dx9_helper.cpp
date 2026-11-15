@@ -1760,7 +1760,7 @@ void DrawLightmappedGeneric_DX9_Internal(CBaseVSShader *pShader, IMaterialVar** 
 		eyePos[3] = pShaderAPI->GetFloatRenderingParameter( FLOAT_RENDERPARM_MINIMUMLIGHTING );
 		DynamicCmdsOut.SetPixelShaderConstant( 10, eyePos );
 
-		// DOD-SP sun shadows (lightmappedgeneric_ps2_3_x.h, c26-c31, s13-s14). The client publishes
+		// DOD-SP sun shadows (lightmappedgeneric_ps2_3_x.h, c32-c37, s13-s14). The client publishes
 		// the maps only for the frame that rendered them; anything missing = strength 0 = baked only.
 		if ( g_pHardwareConfig->SupportsShaderModel_3_0() && !IsX360() )
 		{
@@ -1794,7 +1794,7 @@ void DrawLightmappedGeneric_DX9_Internal(CBaseVSShader *pShader, IMaterialVar** 
 				DynamicCmdsOut.BindStandardTexture( SHADER_SAMPLER13, TEXTURE_WHITE );
 				DynamicCmdsOut.BindStandardTexture( SHADER_SAMPLER14, TEXTURE_WHITE );
 			}
-			DynamicCmdsOut.SetPixelShaderConstant( 26, sun[0], 6 );
+			DynamicCmdsOut.SetPixelShaderConstant( 32, sun[0], 6 );
 		}
 
 		DynamicCmdsOut.End();

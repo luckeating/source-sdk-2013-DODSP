@@ -181,7 +181,7 @@ sampler RandRotSampler			: register( s15 );
 #endif
 
 //-----------------------------------------------------------------------------
-// DOD-SP sun shadows (shader model 3 only; set by lightmappedgeneric_dx9_helper.cpp from the
+// DOD-SP sun shadows (shader model 3 only; c32-c37 - c28-c31 belong to common_ps_fxc.h; set by lightmappedgeneric_dx9_helper.cpp from the
 // client's render parameters, see public/renderparm.h).
 //
 // The lightmap already holds the baked sun. Two sun shadow maps come in: static casters (world,
@@ -193,10 +193,10 @@ sampler RandRotSampler			: register( s15 );
 #define DODSP_SUNSHADOW 1
 sampler DoDSPSunStaticSampler	: register( s13 );
 sampler DoDSPSunDynamicSampler	: register( s14 );
-const float4 g_DoDSPSunMatrix[3]	: register( c26 );	// world -> shadow map (u, v, depth), c26-c28
-const float4 g_DoDSPSunColor		: register( c29 );	// rgb = baked sun, w = strength (0 = off)
-const float4 g_DoDSPSunDir			: register( c30 );	// xyz = direction light travels, w = 1/map resolution
-const float4 g_DoDSPSunTweaks		: register( c31 );	// x = 1 when depth must be compared by hand (no hardware PCF)
+const float4 g_DoDSPSunMatrix[3]	: register( c32 );	// world -> shadow map (u, v, depth), c32-c34
+const float4 g_DoDSPSunColor		: register( c35 );	// rgb = baked sun, w = strength (0 = off)
+const float4 g_DoDSPSunDir			: register( c36 );	// xyz = direction light travels, w = 1/map resolution
+const float4 g_DoDSPSunTweaks		: register( c37 );	// x = 1 when depth must be compared by hand (no hardware PCF)
 
 // 3x3 filtered sun visibility: 1 = lit, 0 = blocked.
 float DoDSP_SunVisibility( sampler DepthSampler, float3 vPos )
