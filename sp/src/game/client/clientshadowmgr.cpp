@@ -109,6 +109,19 @@ static ConVar r_shadow_shortenfactor( "r_shadow_shortenfactor", "2" , 0, "Makes 
 // the blob - one per object, from one light - only ever pointed somewhere wrong and fought
 // with projected-texture shadows. 0 = stock behaviour (blob shadows everywhere).
 static ConVar dodsp_sunshadow_maps( "dodsp_sunshadow_maps", "1", 0, "DOD-SP: render the sun's static and dynamic shadow maps for the world shaders (needs an env_global_light with shadows)" );
+static ConVar dodsp_sun_darken( "dodsp_sun_darken", "1", FCVAR_ARCHIVE, "DOD-SP: 1 = the env_global_light only darkens (removes baked sun where something dynamic blocks it; baked bounce stays). 0 = it adds its own light on top (stock)." );
+static ConVar dodsp_sunshadow_strength( "dodsp_sunshadow_strength", "1", FCVAR_ARCHIVE, "DOD-SP: how much of the baked sun a dynamic shadow removes (1 = all of it)" );
+
+// DOD-SP: one owner for "is this light the darken-only sun"
+static bool DoDSP_SunDarkens( const FlashlightState_t &state )
+{
+#ifdef ASW_PROJECTED_TEXTURES
+	return state.m_bGlobalLight && state.m_bOrtho && state.m_bEnableShadows && dodsp_sun_darken.GetBool();
+#else
+	return false;
+#endif
+}
+
 static ConVar dodsp_sunshadow_view( "dodsp_sunshadow_view", "0", 0, "DOD-SP debug: which shadow map the env_global_light's own light uses. 0 = its normal one, 1 = static casters only (world, static props), 2 = dynamic casters only (NPCs, physics props, brush entities)" );
 static ConVar r_shadow_sunonly( "r_shadow_sunonly", "1", FCVAR_ARCHIVE, "DOD-SP: 1 = dynamic prop/character shadows only where sunlight reaches (none indoors). 0 = everywhere (stock)." );
 static ConVar r_shadow_mincastintensity( "r_shadow_mincastintensity", "0.3", FCVAR_CHEAT, "Minimum brightness of a light to be classed as shadow casting", true, 0, false, 0 );
@@ -1072,6 +1085,7 @@ public:
 	int m_nDoDSPSunCasters[2][2];	// [map][static props, entities]
 	Vector m_vecDoDSPSunOrigin;
 	float m_flDoDSPSunOrtho;
+	float m_flDoDSPSunStrength;
 private:
 	int	m_nMaxDepthTextureShadows;
 
@@ -1314,6 +1328,7 @@ CClientShadowMgr::CClientShadowMgr() :
 	memset( m_nDoDSPSunCasters, 0, sizeof( m_nDoDSPSunCasters ) );
 	m_vecDoDSPSunOrigin.Init();
 	m_flDoDSPSunOrtho = 0.0f;
+	m_flDoDSPSunStrength = 0.0f;
 }
 
 
@@ -3085,6 +3100,14 @@ void CClientShadowMgr::BuildFlashlight( ClientShadowHandle_t handle )
 
 	VPROF_BUDGET( "CClientShadowMgr::BuildFlashlight", VPROF_BUDGETGROUP_SHADOW_DEPTH_TEXTURING );
 
+	// DOD-SP: the darken-only sun lights nothing itself - project it onto no surfaces and no models
+	// (matrices still update) and let the world shaders darken from its shadow maps instead.
+	if ( DoDSP_SunDarkens( shadowmgr->GetFlashlightState( shadow.m_ShadowHandle ) ) )
+	{
+		shadowmgr->ProjectFlashlight( shadow.m_ShadowHandle, shadow.m_WorldToShadow, 0, NULL );
+		return;
+	}
+
 	bool bLightModels = r_flashlightmodels.GetBool();
 	bool bLightSpecificEntity = shadow.m_hTargetEntity.Get() != NULL;
 	bool bLightWorld = ( shadow.m_Flags & SHADOW_FLAGS_LIGHT_WORLD ) != 0;
@@ -4674,7 +4697,9 @@ void CClientShadowMgr::ComputeShadowDepthTextures( const CViewSetup &viewSetup )
 		pRenderContext->SetShadowDepthBiasFactors( flashlightState.m_flShadowSlopeScaleDepthBias, flashlightState.m_flShadowDepthBias );
 
 		// Render to the shadow depth texture with appropriate view
-		view->UpdateShadowDepthTexture( m_DummyColorTexture, shadowDepthTexture, shadowView );
+		// (DOD-SP: not for the darken-only sun - it draws no light of its own, only its two maps)
+		if ( !DoDSP_SunDarkens( flashlightState ) )
+			view->UpdateShadowDepthTexture( m_DummyColorTexture, shadowDepthTexture, shadowView );
 
 		// DOD-SP: the global light (the sun) also renders its static/dynamic caster maps for the
 		// world shaders. dodsp_sunshadow_view lets its own light show either map for checking.
@@ -4777,8 +4802,11 @@ void CClientShadowMgr::DoDSP_RenderSunMaps( ClientShadow_t &shadow, const Flashl
 	pRenderContext->SetVectorRenderingParameter( VECTOR_RENDERPARM_DODSP_SUN_MATRIX_3, Vector( f[9], f[10], f[11] ) );
 	pRenderContext->SetVectorRenderingParameter( VECTOR_RENDERPARM_DODSP_SUN_COLOR, vecSunColor );
 	pRenderContext->SetVectorRenderingParameter( VECTOR_RENDERPARM_DODSP_SUN_DIR, vecSunDir );
+	// z = strength: only the darken-only sun darkens (0 keeps the shaders on the baked lightmap)
+	float flStrength = DoDSP_SunDarkens( flashlightState ) ? MAX( 0.0f, dodsp_sunshadow_strength.GetFloat() ) : 0.0f;
 	pRenderContext->SetVectorRenderingParameter( VECTOR_RENDERPARM_DODSP_SUN_PARAMS,
-		Vector( 1.0f / (float)MAX( 1, m_DoDSPSunDepth[0]->GetActualWidth() ), 1.0f, 0.0f ) );
+		Vector( 1.0f / (float)MAX( 1, m_DoDSPSunDepth[0]->GetActualWidth() ), 1.0f, flStrength ) );
+	m_flDoDSPSunStrength = flStrength;
 
 	m_bDoDSPSunValid = true;
 	m_vecDoDSPSunOrigin = flashlightState.m_vecLightOrigin;
@@ -4793,6 +4821,7 @@ void CClientShadowMgr::DoDSP_Report()
 		Msg( "  resolution %d x %d, ortho half-size %.0f units (%.2f units per texel)\n",
 			 m_DoDSPSunDepth[0]->GetActualWidth(), m_DoDSPSunDepth[0]->GetActualHeight(), m_flDoDSPSunOrtho,
 			 m_DoDSPSunDepth[0]->GetActualWidth() > 0 ? 2.0f * m_flDoDSPSunOrtho / m_DoDSPSunDepth[0]->GetActualWidth() : 0.0f );
+	Msg( "  mode: %s, strength sent to shaders %.2f\n", dodsp_sun_darken.GetBool() ? "darken-only (dodsp_sun_darken 1)" : "additive (dodsp_sun_darken 0)", m_flDoDSPSunStrength );
 	Msg( "  static map:  %d static props (+ world)\n", m_nDoDSPSunCasters[0][0] );
 	Msg( "  dynamic map: %d entities\n", m_nDoDSPSunCasters[1][1] );
 	if ( m_nDoDSPSunCasters[0][1] || m_nDoDSPSunCasters[1][0] )

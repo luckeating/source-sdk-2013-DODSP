@@ -11,6 +11,7 @@
 #include "commandbuilder.h"
 #include "cpp_shader_constant_register_map.h"
 #include "convar.h"
+#include "renderparm.h"
 #include "SDK_lightmappedgeneric_ps20b.inc"
 #include "SDK_lightmappedgeneric_vs20.inc"
 #include "SDK_lightmappedgeneric_ps30.inc"
@@ -988,6 +989,15 @@ void DrawLightmappedGeneric_DX9_Internal(CBaseVSShader *pShader, IMaterialVar** 
 					pShaderShadow->EnableSRGBRead( SHADER_SAMPLER1, false );
 				}
 
+				// DOD-SP sun shadows: the sun's static/dynamic depth maps (shader model 3 only)
+				if ( g_pHardwareConfig->SupportsShaderModel_3_0() && !IsX360() )
+				{
+					pShaderShadow->EnableTexture( SHADER_SAMPLER13, true );
+					pShaderShadow->SetShadowDepthFiltering( SHADER_SAMPLER13 );
+					pShaderShadow->EnableTexture( SHADER_SAMPLER14, true );
+					pShaderShadow->SetShadowDepthFiltering( SHADER_SAMPLER14 );
+				}
+
 				if( hasEnvmap || ( IsX360() && hasFlashlight ) )
 				{
 					if( hasEnvmap )
@@ -1749,6 +1759,43 @@ void DrawLightmappedGeneric_DX9_Internal(CBaseVSShader *pShader, IMaterialVar** 
 		pShaderAPI->GetWorldSpaceCameraPosition( eyePos );
 		eyePos[3] = pShaderAPI->GetFloatRenderingParameter( FLOAT_RENDERPARM_MINIMUMLIGHTING );
 		DynamicCmdsOut.SetPixelShaderConstant( 10, eyePos );
+
+		// DOD-SP sun shadows (lightmappedgeneric_ps2_3_x.h, c26-c31, s13-s14). The client publishes
+		// the maps only for the frame that rendered them; anything missing = strength 0 = baked only.
+		if ( g_pHardwareConfig->SupportsShaderModel_3_0() && !IsX360() )
+		{
+			ITexture *pSunStatic = (ITexture *)pShaderAPI->GetIntRenderingParameter( INT_RENDERPARM_DODSP_SUN_STATIC_DEPTH );
+			ITexture *pSunDynamic = (ITexture *)pShaderAPI->GetIntRenderingParameter( INT_RENDERPARM_DODSP_SUN_DYNAMIC_DEPTH );
+			Vector vParams = pShaderAPI->GetVectorRenderingParameter( VECTOR_RENDERPARM_DODSP_SUN_PARAMS );
+			bool bSun = pSunStatic && pSunDynamic && vParams.y > 0.0f && vParams.z > 0.0f;
+
+			float sun[6][4];
+			memset( sun, 0, sizeof( sun ) );
+			if ( bSun )
+			{
+				pShader->BindTexture( SHADER_SAMPLER13, pSunStatic, 0 );
+				pShader->BindTexture( SHADER_SAMPLER14, pSunDynamic, 0 );
+
+				for ( int r = 0; r < 4; r++ )
+				{
+					Vector v = pShaderAPI->GetVectorRenderingParameter( VECTOR_RENDERPARM_DODSP_SUN_MATRIX_0 + r );
+					( &sun[0][0] )[r * 3 + 0] = v.x;
+					( &sun[0][0] )[r * 3 + 1] = v.y;
+					( &sun[0][0] )[r * 3 + 2] = v.z;
+				}
+				Vector vColor = pShaderAPI->GetVectorRenderingParameter( VECTOR_RENDERPARM_DODSP_SUN_COLOR );
+				Vector vDir = pShaderAPI->GetVectorRenderingParameter( VECTOR_RENDERPARM_DODSP_SUN_DIR );
+				sun[3][0] = vColor.x; sun[3][1] = vColor.y; sun[3][2] = vColor.z; sun[3][3] = vParams.z;
+				sun[4][0] = vDir.x; sun[4][1] = vDir.y; sun[4][2] = vDir.z; sun[4][3] = vParams.x;
+				sun[5][0] = ( g_pHardwareConfig->GetShadowFilterMode() != 0 ) ? 1.0f : 0.0f;
+			}
+			else
+			{
+				DynamicCmdsOut.BindStandardTexture( SHADER_SAMPLER13, TEXTURE_WHITE );
+				DynamicCmdsOut.BindStandardTexture( SHADER_SAMPLER14, TEXTURE_WHITE );
+			}
+			DynamicCmdsOut.SetPixelShaderConstant( 26, sun[0], 6 );
+		}
 
 		DynamicCmdsOut.End();
 		pShaderAPI->ExecuteCommandBuffer( DynamicCmdsOut.Base() );

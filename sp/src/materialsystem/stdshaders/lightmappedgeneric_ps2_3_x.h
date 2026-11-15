@@ -180,6 +180,43 @@ sampler ShadowDepthSampler		: register( s14 );
 sampler RandRotSampler			: register( s15 );
 #endif
 
+//-----------------------------------------------------------------------------
+// DOD-SP sun shadows (shader model 3 only; set by lightmappedgeneric_dx9_helper.cpp from the
+// client's render parameters, see public/renderparm.h).
+//
+// The lightmap already holds the baked sun. Two sun shadow maps come in: static casters (world,
+// static props - what VRAD baked) and dynamic casters (NPCs, physics props, brush entities). Where
+// the static map says "sunlit" but the dynamic map says "blocked", the sun's direct light is taken
+// back out of the lightmap. Nothing is ever added, so bounce and sky light stay exactly as baked.
+//-----------------------------------------------------------------------------
+#if defined( SHADER_MODEL_PS_3_0 ) && !defined( _X360 )
+#define DODSP_SUNSHADOW 1
+sampler DoDSPSunStaticSampler	: register( s13 );
+sampler DoDSPSunDynamicSampler	: register( s14 );
+const float4 g_DoDSPSunMatrix[3]	: register( c26 );	// world -> shadow map (u, v, depth), c26-c28
+const float4 g_DoDSPSunColor		: register( c29 );	// rgb = baked sun, w = strength (0 = off)
+const float4 g_DoDSPSunDir			: register( c30 );	// xyz = direction light travels, w = 1/map resolution
+const float4 g_DoDSPSunTweaks		: register( c31 );	// x = 1 when depth must be compared by hand (no hardware PCF)
+
+// 3x3 filtered sun visibility: 1 = lit, 0 = blocked.
+float DoDSP_SunVisibility( sampler DepthSampler, float3 vPos )
+{
+	float flSum = 0.0f;
+	for ( int y = -1; y <= 1; y++ )
+	{
+		for ( int x = -1; x <= 1; x++ )
+		{
+			float4 vTap = float4( vPos.xy + float2( x, y ) * g_DoDSPSunDir.w, vPos.z, 0.0f );
+			float flTap = tex2Dlod( DepthSampler, vTap ).x;	// hardware PCF: already the comparison
+			flSum += ( g_DoDSPSunTweaks.x > 0.5f ) ? ( ( flTap > vPos.z ) ? 1.0f : 0.0f ) : flTap;
+		}
+	}
+	return flSum * ( 1.0f / 9.0f );
+}
+#else
+#define DODSP_SUNSHADOW 0
+#endif
+
 struct PS_INPUT
 {
 #if SEAMLESS
@@ -535,6 +572,34 @@ HALF4 main( PS_INPUT i ) : COLOR
 #endif
 
 	float3 worldVertToEyeVector = g_EyePos - i.worldPos_projPosZ.xyz;
+
+#if DODSP_SUNSHADOW && ( LIGHTING_PREVIEW == 0 )
+	{
+		// Brush faces are flat, so the face normal comes from screen-space derivatives: it works
+		// for every material, whatever vertex data the mesh was built with. Taken outside the
+		// branch (derivatives aren't allowed inside dynamic flow control).
+		float3 vDoDSPWorldPos = i.worldPos_projPosZ.xyz;
+		float3 vDoDSPFaceNormal = normalize( cross( ddx( vDoDSPWorldPos ), ddy( vDoDSPWorldPos ) ) );
+		vDoDSPFaceNormal *= ( dot( vDoDSPFaceNormal, worldVertToEyeVector ) < 0.0f ) ? -1.0f : 1.0f;
+
+		[branch]
+		if ( g_DoDSPSunColor.w > 0.0f )
+		{
+			float flNdotL = saturate( dot( vDoDSPFaceNormal, -g_DoDSPSunDir.xyz ) );
+			float4 vWorld = float4( vDoDSPWorldPos, 1.0f );
+			float3 vSun = float3( dot( vWorld, g_DoDSPSunMatrix[0] ), dot( vWorld, g_DoDSPSunMatrix[1] ), dot( vWorld, g_DoDSPSunMatrix[2] ) );
+
+			[branch]
+			if ( flNdotL > 0.0f && all( vSun == saturate( vSun ) ) )
+			{
+				float flStatic = DoDSP_SunVisibility( DoDSPSunStaticSampler, vSun );
+				float flDynamic = DoDSP_SunVisibility( DoDSPSunDynamicSampler, vSun );
+				float flRemove = g_DoDSPSunColor.w * flNdotL * flStatic * ( 1.0f - flDynamic );
+				diffuseLighting = max( diffuseLighting - g_DoDSPSunColor.rgb * flRemove, 0.0f );
+			}
+		}
+	}
+#endif
 
 #if FOGTYPE == 2 || FLASHLIGHT != 0
 	float3 diffuseComponent = albedo.xyz * diffuseLighting;

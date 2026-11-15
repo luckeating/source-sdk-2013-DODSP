@@ -5,8 +5,6 @@
 # standalone ShaderCompile (SCell555, pinned), for ps/vs 2.0b and 3.0, then checks every result
 # against the DLL's combo headers (dodsp_tools/check_vcs.py - the build fails on a mismatch).
 # Artifact "dodsp_shaders": the .vcs files -> sourcemods\DOD-SP\shaders\fxc\
-# Artifact "dodsp_shaders_canary": the same shaders with the projected light tinted RED - a
-# 30-second in-game proof that the game loads our .vcs files (red sun patch = ours). Test only.
 #
 name: DOD-SP Shaders
 
@@ -48,37 +46,19 @@ jobs:
         if (-not $sc) { throw "ShaderCompile.exe not built" }
         $dir = (Resolve-Path "sp/src/materialsystem/stdshaders").Path
         $list = Get-Content "$dir/dodsp_shaderlist.txt" | ForEach-Object { $_.Trim() } | Where-Object { $_ -and -not $_.StartsWith("//") }
-        foreach ($ver in "20b", "30") {
-          foreach ($fxc in $list) {
+        foreach ($line in $list) {
+          $parts = $line -split '\s+'
+          $fxc = $parts[0]
+          $vers = if ($parts.Count -gt 1) { $parts[1..($parts.Count - 1)] } else { @("20b", "30") }
+          foreach ($ver in $vers) {
             Write-Host "== $fxc ($ver)"
+            $t = [Diagnostics.Stopwatch]::StartNew()
             & $sc -ver $ver -shaderpath $dir $fxc
             if ($LASTEXITCODE -ne 0) { throw "ShaderCompile failed: $fxc $ver" }
+            Write-Host ("   took {0:N1} min" -f $t.Elapsed.TotalMinutes)
           }
         }
         Get-ChildItem "$dir/shaders/fxc" | Format-Table Name, Length
-
-    - name: Compile canary (red-tinted proof)
-      shell: pwsh
-      run: |
-        $sc = (Get-ChildItem tools/ShaderCompile/build -Recurse -Filter ShaderCompile.exe | Select-Object -First 1).FullName
-        $src = (Resolve-Path "sp/src/materialsystem/stdshaders").Path
-        $dir = "$env:RUNNER_TEMP/canary"
-        New-Item -ItemType Directory $dir | Out-Null
-        Get-ChildItem $src -File | Copy-Item -Destination $dir
-        $f = "$dir/SDK_lightmappedgeneric_flashlight_ps2x.fxc"
-        $old = 'return FinalOutput( float4(outColor, baseColor.a)'
-        $txt = Get-Content $f -Raw
-        if (-not $txt.Contains($old)) { throw "INVARIANT: canary patch point not found in $f" }
-        Set-Content $f ($txt.Replace($old, 'outColor *= float3(1.0, 0.1, 0.1); // DOD-SP canary' + "`n`t" + $old)) -NoNewline
-        foreach ($ver in "20b", "30") {
-          & $sc -ver $ver -shaderpath $dir SDK_lightmappedgeneric_flashlight_ps2x.fxc
-          if ($LASTEXITCODE -ne 0) { throw "canary compile failed ($ver)" }
-        }
-        New-Item -ItemType Directory canary_out | Out-Null
-        Copy-Item "sp/src/materialsystem/stdshaders/shaders/fxc/*vs*.vcs" canary_out/
-        Copy-Item "$dir/shaders/fxc/*.vcs" canary_out/
-        python dodsp_tools/check_vcs.py canary_out sp/src/materialsystem/stdshaders
-        if ($LASTEXITCODE -ne 0) { throw "canary does not match the DLL" }
 
     - name: Check shaders match the DLL
       run: python dodsp_tools/check_vcs.py sp/src/materialsystem/stdshaders/shaders/fxc sp/src/materialsystem/stdshaders
@@ -90,9 +70,3 @@ jobs:
         path: sp/src/materialsystem/stdshaders/shaders/fxc/*.vcs
         if-no-files-found: error
 
-    - name: Publish canary
-      uses: actions/upload-artifact@v4
-      with:
-        name: dodsp_shaders_canary
-        path: canary_out/*.vcs
-        if-no-files-found: error
