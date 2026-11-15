@@ -11,6 +11,8 @@
 #include "materialsystem/imaterialsystem.h"
 #include "materialsystem/imaterial.h"
 #include "materialsystem/IShader.h"
+#include "materialsystem/imaterialsystemhardwareconfig.h"
+#include "filesystem.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -46,7 +48,23 @@ CON_COMMAND( dodsp_shadercheck, "DOD-SP: list loaded shaders and how materials r
 	for ( int w = 0; w < (int)ARRAYSIZE( s_pszWatch ); w++ )
 		Msg( "  %-26s %s\n", s_pszWatch[w], bFound[w] ? "LOADED" : "missing" );
 
-	static const char *s_pszDefault[] = { "plaster/plasterwall043c", "plaster/plasterwall011", "wood/woodwall006a", "plaster/wallpaper004" };
+	// Which shader model the card runs (ps30 vs ps20b files), and which copy of each of our
+	// compiled .vcs files the engine opens (it loads "shaders/fxc/<name>.vcs" through GAME).
+	bool bSM3 = g_pMaterialSystemHardwareConfig && g_pMaterialSystemHardwareConfig->SupportsShaderModel_3_0();
+	Msg( "  dx level %d, shader model 3: %s\n",
+		 g_pMaterialSystemHardwareConfig ? g_pMaterialSystemHardwareConfig->GetDXSupportLevel() : -1, bSM3 ? "yes (uses *_ps30/_vs30)" : "NO (uses *_ps20b/_vs20)" );
+	static const char *s_pszVcs[] = { "SDK_lightmappedgeneric_flashlight_ps30", "SDK_lightmappedgeneric_flashlight_ps20b",
+									  "SDK_lightmappedgeneric_flashlight_vs30", "SDK_lightmappedgeneric_flashlight_vs20" };
+	for ( int v = 0; v < (int)ARRAYSIZE( s_pszVcs ); v++ )
+	{
+		char szRel[MAX_PATH], szFull[MAX_PATH];
+		Q_snprintf( szRel, sizeof( szRel ), "shaders\\fxc\\%s.vcs", s_pszVcs[v] );
+		szFull[0] = 0;
+		g_pFullFileSystem->RelativePathToFullPath( szRel, "GAME", szFull, sizeof( szFull ) );
+		Msg( "  %-42s %8u bytes  %s\n", s_pszVcs[v], g_pFullFileSystem->Size( szRel, "GAME" ), szFull[0] ? szFull : "(inside a VPK or missing)" );
+	}
+
+	static const char *s_pszDefault[] = { "wood/woodboards02", "wood/woodboards04", "wood/woodfloor002", "plaster/plasterwall043c", "plaster/wallpaper004" };
 	int nMats = args.ArgC() > 1 ? args.ArgC() - 1 : ARRAYSIZE( s_pszDefault );
 	for ( int m = 0; m < nMats; m++ )
 	{
