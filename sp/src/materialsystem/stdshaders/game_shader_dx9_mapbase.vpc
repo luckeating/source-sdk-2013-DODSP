@@ -68,6 +68,11 @@ $Project
 		$File	"core_dx9.cpp"
 	}
 
+	$Folder	"DOD-SP"
+	{
+		$File	"dodsp_marker.cpp"
+	}
+
 	//$Shaders	"mapbase_dx9_20b.txt"
 	//$Shaders	"mapbase_dx9_30.txt"
 }

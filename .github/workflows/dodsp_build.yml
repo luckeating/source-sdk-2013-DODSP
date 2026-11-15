@@ -12,6 +12,11 @@
 # built from this repo. Hammer needs them for Mapbase's SDK_ shaders: the stock SDK 2013 tools
 # baked those faces with no lightmap (flat, full bright). Stage 3 of the sun shadows also
 # changes VRAD, so the compilers come from here.
+#
+# The third artifact, shaders_hl2_win32_Release, is DOD-SP's own game_shader_dx9.dll (Mapbase's
+# shader source plus our changes). It goes into sourcemods\DOD-SP\bin and replaces Mapbase's copy
+# (the engine loads the first game_shader_dx9.dll on the bin search path). Delete it to go back.
+# "dodsp_shadercheck" reports which one is loaded.
 
 name: DOD-SP Build
 
@@ -30,6 +35,7 @@ on:
       - 'sp/src/vgui2/vgui_controls/**'
       - 'sp/src/vscript/**'
       - 'sp/src/utils/**'
+      - 'sp/src/materialsystem/**'
   workflow_dispatch:
 
 jobs:
@@ -50,4 +56,14 @@ jobs:
       branch: 'sp'
       project-group: 'maptools'
       solution-name: 'maptools'
+      build-on-linux: false
+
+  shaders:
+    uses: ./.github/workflows/mapbase_build-base.yml
+    with:
+      configuration: Release
+      branch: 'sp'
+      game: 'hl2'
+      project-group: 'shaders'
+      solution-name: 'shaders'
       build-on-linux: false

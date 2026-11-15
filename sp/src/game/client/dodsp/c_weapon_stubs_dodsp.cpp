@@ -33,7 +33,7 @@ CON_COMMAND( dodsp_shadercheck, "DOD-SP: list loaded shaders and how materials r
 	int nGot = materials->GetShaders( 0, nShaders, shaders.Base() );
 	int nSDK = 0;
 	Msg( "dodsp_shadercheck: %d shaders loaded\n", nGot );
-	static const char *s_pszWatch[] = { "SDK_LightmappedGeneric", "SDK_VertexLitGeneric", "SDK_UnlitGeneric", "SDK_WorldVertexTransition", "LightmappedGeneric", "VertexLitGeneric" };
+	static const char *s_pszWatch[] = { "DODSP_ShaderDLL", "SDK_LightmappedGeneric", "SDK_VertexLitGeneric", "SDK_UnlitGeneric", "SDK_WorldVertexTransition", "LightmappedGeneric", "VertexLitGeneric" };
 	bool bFound[ARRAYSIZE( s_pszWatch )] = {};
 	for ( int i = 0; i < nGot; i++ )
 	{
@@ -45,6 +45,7 @@ CON_COMMAND( dodsp_shadercheck, "DOD-SP: list loaded shaders and how materials r
 				bFound[w] = true;
 	}
 	Msg( "  SDK_ (Mapbase) shaders: %d\n", nSDK );
+	Msg( "  shader DLL: %s\n", bFound[0] ? "DOD-SP's own (DOD-SP\\bin\\game_shader_dx9.dll)" : "Mapbase's (no DOD-SP marker shader)" );
 	for ( int w = 0; w < (int)ARRAYSIZE( s_pszWatch ); w++ )
 		Msg( "  %-26s %s\n", s_pszWatch[w], bFound[w] ? "LOADED" : "missing" );
 
