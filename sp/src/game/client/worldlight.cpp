@@ -347,6 +347,19 @@ bool CWorldLights::GetSunDirection( Vector &vecDir ) const
 #endif
 }
 
+// DOD-SP: the sun's intensity exactly as VRAD baked it (linear, lightmap units).
+bool CWorldLights::GetSunColor( Vector &vecColor ) const
+{
+#ifdef MAPBASE
+	if ( m_iSunIndex < 0 || !m_pWorldLights )
+		return false;
+	vecColor = m_pWorldLights[m_iSunIndex].intensity;
+	return true;
+#else
+	return false;
+#endif
+}
+
 int CWorldLights::IsInSunlight( const Vector &vecPosition, const IHandleEntity *pIgnore ) const
 {
 #ifdef MAPBASE

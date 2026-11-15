@@ -30,6 +30,18 @@ enum RenderParamVector_t
 
 	VECTOR_RENDERPARM_WIND_DIRECTION,
 
+	// DOD-SP sun shadows (client: clientshadowmgr.cpp, shaders: lightmappedgeneric). The sun's
+	// world-to-shadow matrix (orthographic, rows 0-2; row 3 is 0 0 0 1) packed 4 floats per row
+	// across MATRIX_0..3, the baked sun color (linear lightmap units), the direction light travels,
+	// and params: x = 1/shadow map resolution, y = 1 when the sun maps are valid this frame.
+	VECTOR_RENDERPARM_DODSP_SUN_MATRIX_0,
+	VECTOR_RENDERPARM_DODSP_SUN_MATRIX_1,
+	VECTOR_RENDERPARM_DODSP_SUN_MATRIX_2,
+	VECTOR_RENDERPARM_DODSP_SUN_MATRIX_3,
+	VECTOR_RENDERPARM_DODSP_SUN_COLOR,
+	VECTOR_RENDERPARM_DODSP_SUN_DIR,
+	VECTOR_RENDERPARM_DODSP_SUN_PARAMS,
+
 	MAX_VECTOR_RENDER_PARMS = 20
 };
 
@@ -57,8 +69,19 @@ enum RenderParamInt_t
 	INT_FLASHLIGHT_DEPTHTEXTURE_FALLBACK_FIRST,
 	INT_FLASHLIGHT_DEPTHTEXTURE_FALLBACK_LAST = INT_FLASHLIGHT_DEPTHTEXTURE_FALLBACK_FIRST + 4,
 
+	// DOD-SP sun shadows: ITexture* of the sun's static-caster and dynamic-caster depth maps
+	// (0 = no sun shadow this frame). Same pointer-in-int convention as the fallback slots above.
+	INT_RENDERPARM_DODSP_SUN_STATIC_DEPTH,
+	INT_RENDERPARM_DODSP_SUN_DYNAMIC_DEPTH,
+
 	MAX_INT_RENDER_PARMS = 20
 };
+
+// The engine stores exactly MAX_*_RENDER_PARMS slots; ours must stay inside them.
+#ifdef COMPILE_TIME_ASSERT
+COMPILE_TIME_ASSERT( VECTOR_RENDERPARM_DODSP_SUN_PARAMS < MAX_VECTOR_RENDER_PARMS );
+COMPILE_TIME_ASSERT( INT_RENDERPARM_DODSP_SUN_DYNAMIC_DEPTH < MAX_INT_RENDER_PARMS );
+#endif
 
 // for INT_RENDERPARM_BACK_BUFFER_INDEX
 #define BACK_BUFFER_INDEX_DEFAULT	0

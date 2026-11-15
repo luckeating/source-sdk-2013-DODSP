@@ -561,4 +561,14 @@ private:
 #endif
 };
 
+// DOD-SP sun shadows: caster split for shadow depth renders (see viewrender.cpp)
+enum
+{
+	DODSP_CASTERS_ALL = 0,
+	DODSP_CASTERS_STATIC,		// world + static props
+	DODSP_CASTERS_DYNAMIC,		// entities: NPCs, physics props, brush entities, the player
+};
+void DoDSP_SetShadowCasterFilter( int nCasters );
+void DoDSP_GetShadowCastersDrawn( int &nStaticProps, int &nEntities );
+
 #endif // VIEWRENDER_H

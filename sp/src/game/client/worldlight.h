@@ -39,6 +39,7 @@ public:
 	int IsInSunlight( const Vector &vecPosition, const IHandleEntity *pIgnore = NULL ) const;
 	// DOD-SP: the direction sunlight travels (light_environment), false if the map has no sun
 	bool GetSunDirection( Vector &vecDir ) const;
+	bool GetSunColor( Vector &vecColor ) const;		// DOD-SP: baked sun intensity, linear lightmap units
 private:
 
 	// CAutoGameSystem overrides
