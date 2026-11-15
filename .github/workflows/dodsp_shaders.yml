@@ -1,0 +1,66 @@
+#
+# DOD-SP shaders
+#
+# Compiles the shaders listed in sp/src/materialsystem/stdshaders/dodsp_shaderlist.txt with the
+# standalone ShaderCompile (SCell555, pinned), for ps/vs 2.0b and 3.0, then checks every result
+# against the DLL's combo headers (dodsp_tools/check_vcs.py - the build fails on a mismatch).
+# Artifact "dodsp_shaders": the .vcs files -> sourcemods\DOD-SP\shaders\fxc\
+#
+name: DOD-SP Shaders
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - '.github/workflows/dodsp_shaders.yml'
+      - 'sp/src/materialsystem/stdshaders/**'
+      - 'dodsp_tools/check_vcs.py'
+  workflow_dispatch:
+
+jobs:
+  shaders:
+    runs-on: windows-latest
+    timeout-minutes: 300
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Get ShaderCompile
+      uses: actions/checkout@v4
+      with:
+        repository: SCell555/ShaderCompile
+        ref: 7ea74828baa22df9db5efad67b48abb7c5b3dbed
+        submodules: recursive
+        path: tools/ShaderCompile
+
+    - name: Build ShaderCompile
+      shell: pwsh
+      run: |
+        cmake -S tools/ShaderCompile -B tools/ShaderCompile/build -A x64
+        cmake --build tools/ShaderCompile/build --config Release --parallel
+
+    - name: Compile shaders
+      shell: pwsh
+      run: |
+        $sc = (Get-ChildItem tools/ShaderCompile/build -Recurse -Filter ShaderCompile.exe | Select-Object -First 1).FullName
+        if (-not $sc) { throw "ShaderCompile.exe not built" }
+        $dir = (Resolve-Path "sp/src/materialsystem/stdshaders").Path
+        $list = Get-Content "$dir/dodsp_shaderlist.txt" | ForEach-Object { $_.Trim() } | Where-Object { $_ -and -not $_.StartsWith("//") }
+        foreach ($ver in "20b", "30") {
+          foreach ($fxc in $list) {
+            Write-Host "== $fxc ($ver)"
+            & $sc -ver $ver -shaderpath $dir $fxc
+            if ($LASTEXITCODE -ne 0) { throw "ShaderCompile failed: $fxc $ver" }
+          }
+        }
+        Get-ChildItem "$dir/shaders/fxc" | Format-Table Name, Length
+
+    - name: Check shaders match the DLL
+      run: python dodsp_tools/check_vcs.py sp/src/materialsystem/stdshaders/shaders/fxc sp/src/materialsystem/stdshaders
+
+    - name: Publish
+      uses: actions/upload-artifact@v4
+      with:
+        name: dodsp_shaders
+        path: sp/src/materialsystem/stdshaders/shaders/fxc/*.vcs
+        if-no-files-found: error
