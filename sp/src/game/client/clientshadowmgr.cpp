@@ -76,6 +76,7 @@
 #include "engine/IStaticPropMgr.h"
 #include "datacache/imdlcache.h"
 #include "viewrender.h"
+#include "view.h"
 #include "tier0/icommandline.h"
 #include "vstdlib/jobthread.h"
 #include "toolframework_client.h"
@@ -110,8 +111,13 @@ static ConVar r_shadow_shortenfactor( "r_shadow_shortenfactor", "2" , 0, "Makes 
 // with projected-texture shadows. 0 = stock behaviour (blob shadows everywhere).
 static ConVar dodsp_sunshadow_maps( "dodsp_sunshadow_maps", "1", 0, "DOD-SP: render the sun's static and dynamic shadow maps for the world shaders (needs an env_global_light with shadows)" );
 static ConVar dodsp_sun_darken( "dodsp_sun_darken", "1", FCVAR_ARCHIVE, "DOD-SP: 1 = the env_global_light only darkens (removes baked sun where something dynamic blocks it; baked bounce stays). 0 = it adds its own light on top (stock)." );
-static ConVar dodsp_sunshadow_debug( "dodsp_sunshadow_debug", "0", 0, "DOD-SP debug: world brushes show the sun shadow data instead of lighting. 1 = verdict: green = sunlit (should match the baked sun patch), red = sunlit but blocked by something dynamic, blue = static map says shadowed, purple = outside the sun map, grey = faces away from the sun. 2 = raw sun-map coordinates (red/green across the map, blue depth). No colours at all = the shader gets no sun data." );
+static ConVar dodsp_sunshadow_debug( "dodsp_sunshadow_debug", "0", 0, "DOD-SP debug: world brushes show the sun shadow data instead of lighting. 1 = verdict: red = sunlit (should match the baked sun patch), green = sunlit but blocked by something dynamic, blue = static map says shadowed, purple = outside the sun map, grey = faces away from the sun. 2 = raw sun-map coordinates (red/green across the map, blue depth). No colours at all = the shader gets no sun data." );
 static ConVar dodsp_sunshadow_sampler( "dodsp_sunshadow_sampler", "0", 0, "DOD-SP debug: how the world shaders read the sun maps. 0 = tex2Dproj, the way Valve's flashlight shadows do (default). 1 = tex2Dlod (the first version)." );
+// INVARIANT (one owner: BuildOrthoWorldToFlashlightMatrix): an orthographic light's lookup depth must
+// equal what its shadow map stores, (d - NearZ) / (FarZ - NearZ). Valve's ortho matrix gives
+// (d + NearZ) / (FarZ - NearZ), so every surface reads 2 x NearZ units behind itself = shadowed.
+static ConVar dodsp_ortho_depthfix( "dodsp_ortho_depthfix", "1", 0, "DOD-SP: correct the depth of orthographic projected textures (the env_global_light sun) so it matches their shadow map. 0 = stock Valve maths (every surface reads 2 x NearZ units too deep, so everything counts as shadowed)." );
+static ConVar dodsp_sunshadow_zbias( "dodsp_sunshadow_zbias", "0", 0, "DOD-SP debug: extra world units the sun shadow lookup is pulled toward the sun (positive = fewer surfaces count as shadowed)" );
 static ConVar dodsp_sunshadow_strength( "dodsp_sunshadow_strength", "1", FCVAR_ARCHIVE, "DOD-SP: how much of the baked sun a dynamic shadow removes (1 = all of it)" );
 
 // DOD-SP: one owner for "is this light the darken-only sun"
@@ -1083,6 +1089,9 @@ private:
 	void DoDSP_ClearSunParams();
 	Vector m_vecDoDSPSunLightDir;		// env_global_light forward, for the alignment check
 	float m_flDoDSPSunMisalign;			// degrees between it and the baked sun (-1 = no baked sun)
+	float m_flDoDSPSunDepthAt[2];		// lookup depth of the points on the near and far planes (want 0 and 1)
+	float m_flDoDSPSunNearFar[2];
+	VMatrix m_matDoDSPSun;				// the published world-to-sun-map matrix, for the report
 public:
 	void DoDSP_Report();
 	bool m_bDoDSPSunValid;
@@ -1335,6 +1344,9 @@ CClientShadowMgr::CClientShadowMgr() :
 	m_flDoDSPSunStrength = 0.0f;
 	m_vecDoDSPSunLightDir.Init();
 	m_flDoDSPSunMisalign = -1.0f;
+	m_flDoDSPSunDepthAt[0] = m_flDoDSPSunDepthAt[1] = -1.0f;
+	m_flDoDSPSunNearFar[0] = m_flDoDSPSunNearFar[1] = 0.0f;
+	m_matDoDSPSun.Identity();
 }
 
 
@@ -2470,6 +2482,15 @@ void CClientShadowMgr::BuildOrthoWorldToFlashlightMatrix( VMatrix& matWorldToSha
 	addW[0][3] = -1.0f;
 	addW[1][3] = -1.0f;
 	addW[2][3] = 0.0f;
+	// DOD-SP: MatrixBuildOrtho expects view z = -distance, BuildWorldToShadowMatrix gives +distance,
+	// and the z flip below only negates the distance term: the result is (d + n) / (f - n) while the
+	// shadow map stores (d - n) / (f - n). Adding 2n / (f - n) here (it is negated below) fixes it.
+	if ( flashlightState.m_FarZ > flashlightState.m_NearZ )
+	{
+		double flRange = (double)flashlightState.m_FarZ - (double)flashlightState.m_NearZ;
+		double flFix = dodsp_ortho_depthfix.GetBool() ? 2.0 * flashlightState.m_NearZ : 0.0;
+		addW[2][3] = (float)( ( flFix + dodsp_sunshadow_zbias.GetFloat() ) / flRange );
+	}
 	MatrixMultiply( addW, matPerspective, matPerspective );
 
 	// Flip x/y to positive 0 to 1... flip z to negative
@@ -4834,6 +4855,25 @@ void CClientShadowMgr::DoDSP_RenderSunMaps( ClientShadow_t &shadow, const Flashl
 		}
 	}
 
+	// INVARIANT: a point on the near plane must look up depth 0 and one on the far plane depth 1 -
+	// the range the shadow map was rendered with. Anything else shifts every shadow test.
+	m_matDoDSPSun = m;
+	m_flDoDSPSunNearFar[0] = flashlightState.m_NearZ;
+	m_flDoDSPSunNearFar[1] = flashlightState.m_FarZ;
+	Vector vecFwd = m_vecDoDSPSunLightDir.Normalized(), vecMap;
+	Vector3DMultiplyPosition( m, flashlightState.m_vecLightOrigin + vecFwd * flashlightState.m_NearZ, vecMap );
+	m_flDoDSPSunDepthAt[0] = vecMap.z;
+	Vector3DMultiplyPosition( m, flashlightState.m_vecLightOrigin + vecFwd * flashlightState.m_FarZ, vecMap );
+	m_flDoDSPSunDepthAt[1] = vecMap.z;
+	static bool s_bWarnedDepth = false;
+	if ( dodsp_ortho_depthfix.GetBool() && dodsp_sunshadow_zbias.GetFloat() == 0.0f && !s_bWarnedDepth &&
+		 ( fabsf( m_flDoDSPSunDepthAt[0] ) > 0.001f || fabsf( m_flDoDSPSunDepthAt[1] - 1.0f ) > 0.001f ) )
+	{
+		s_bWarnedDepth = true;
+		Warning( "INVARIANT: DOD-SP sun shadows: near/far planes look up depth %.4f / %.4f, should be 0 / 1 (dodsp_sunshadow_report)\n",
+				 m_flDoDSPSunDepthAt[0], m_flDoDSPSunDepthAt[1] );
+	}
+
 	m_bDoDSPSunValid = true;
 	m_vecDoDSPSunOrigin = flashlightState.m_vecLightOrigin;
 }
@@ -4867,6 +4907,21 @@ void CClientShadowMgr::DoDSP_Report()
 			Warning( "INVARIANT: env_global_light is %.1f degrees off the light_environment - match their Pitch/Yaw in Hammer\n", m_flDoDSPSunMisalign );
 		else
 			Msg( "  alignment: env_global_light matches the light_environment (%.1f degrees)\n", m_flDoDSPSunMisalign );
+	}
+	if ( m_bDoDSPSunValid )
+	{
+		float flRange = m_flDoDSPSunNearFar[1] - m_flDoDSPSunNearFar[0];
+		Msg( "  depth range: near %.0f, far %.0f; near plane looks up %.5f, far plane %.5f (want 0 and 1)\n",
+			 m_flDoDSPSunNearFar[0], m_flDoDSPSunNearFar[1], m_flDoDSPSunDepthAt[0], m_flDoDSPSunDepthAt[1] );
+		Msg( "  depth fix %s (dodsp_ortho_depthfix), extra bias %.1f units; stock maths reads %.0f units too deep\n",
+			 dodsp_ortho_depthfix.GetBool() ? "ON" : "OFF", dodsp_sunshadow_zbias.GetFloat(), 2.0f * m_flDoDSPSunNearFar[0] );
+		// The matrix must spread positions across the map: 64 units should move about 64 / (2 x half-size)
+		Vector vecEye = MainViewOrigin(), a, b, c;
+		Vector3DMultiplyPosition( m_matDoDSPSun, vecEye, a );
+		Vector3DMultiplyPosition( m_matDoDSPSun, vecEye + Vector( 64, 0, 0 ), b );
+		Vector3DMultiplyPosition( m_matDoDSPSun, vecEye + Vector( 0, 64, 0 ), c );
+		Msg( "  map coords at your eye %.3f %.3f depth %.4f; 64 units east %.3f %.3f; 64 units north %.3f %.3f%s\n",
+			 a.x, a.y, a.z, b.x, b.y, c.x, c.y, flRange > 0.0f ? "" : " (no depth range!)" );
 	}
 	static const char *s_pszFilter[] = { "NVIDIA hardware PCF", "AMD depth texture, compared in the shader", "AMD Fetch4, compared in the shader" };
 	int nFilter = g_pMaterialSystemHardwareConfig ? g_pMaterialSystemHardwareConfig->GetShadowFilterMode() : -1;
