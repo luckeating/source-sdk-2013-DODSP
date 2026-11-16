@@ -16,6 +16,7 @@ on:
       - '.github/workflows/dodsp_shaders.yml'
       - 'sp/src/materialsystem/stdshaders/**'
       - 'dodsp_tools/check_vcs.py'
+      - 'dodsp_tools/lint_shader_registers.py'
   workflow_dispatch:
 
 jobs:
@@ -24,6 +25,11 @@ jobs:
     timeout-minutes: 300
     steps:
     - uses: actions/checkout@v4
+
+    # Seconds, not hours: pixel constants past c31 or a shader/DLL register mismatch fail here,
+    # before the long compile starts.
+    - name: Check shader constant registers
+      run: python dodsp_tools/lint_shader_registers.py sp/src/materialsystem/stdshaders
 
     - name: Get ShaderCompile
       uses: actions/checkout@v4

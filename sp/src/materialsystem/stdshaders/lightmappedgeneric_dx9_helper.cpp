@@ -12,6 +12,19 @@
 #include "cpp_shader_constant_register_map.h"
 #include "convar.h"
 #include "renderparm.h"
+
+// DOD-SP sun shadow pixel constants - must match the register( cN ) of the g_DoDSPSun* constants in
+// lightmappedgeneric_ps2_3_x.h (dodsp_tools/lint_shader_registers.py checks both, and that every
+// pixel constant stays below 32: the engine keeps only c0-c31, even on shader model 3).
+enum
+{
+	DODSP_PSREG_SUN_ROW0 = 5,
+	DODSP_PSREG_SUN_ROW1 = 6,
+	DODSP_PSREG_SUN_ROW2 = 9,
+	DODSP_PSREG_SUN_COLOR = 20,
+	DODSP_PSREG_SUN_DIR = 26,
+	DODSP_PSREG_SUN_TWEAKS = 27,
+};
 #include "SDK_lightmappedgeneric_ps20b.inc"
 #include "SDK_lightmappedgeneric_vs20.inc"
 #include "SDK_lightmappedgeneric_ps30.inc"
@@ -1760,41 +1773,56 @@ void DrawLightmappedGeneric_DX9_Internal(CBaseVSShader *pShader, IMaterialVar** 
 		eyePos[3] = pShaderAPI->GetFloatRenderingParameter( FLOAT_RENDERPARM_MINIMUMLIGHTING );
 		DynamicCmdsOut.SetPixelShaderConstant( 10, eyePos );
 
-		// DOD-SP sun shadows (lightmappedgeneric_ps2_3_x.h, c32-c37, s13-s14). The client publishes
-		// the maps only for the frame that rendered them; anything missing = strength 0 = baked only.
+		// DOD-SP sun shadows (lightmappedgeneric_ps2_3_x.h, s13-s14 and the DODSP_PSREG_* constants).
+		// The client publishes the maps only for the frame that rendered them; anything missing =
+		// strength 0 = baked only.
 		if ( g_pHardwareConfig->SupportsShaderModel_3_0() && !IsX360() )
 		{
 			ITexture *pSunStatic = (ITexture *)pShaderAPI->GetIntRenderingParameter( INT_RENDERPARM_DODSP_SUN_STATIC_DEPTH );
 			ITexture *pSunDynamic = (ITexture *)pShaderAPI->GetIntRenderingParameter( INT_RENDERPARM_DODSP_SUN_DYNAMIC_DEPTH );
 			Vector vParams = pShaderAPI->GetVectorRenderingParameter( VECTOR_RENDERPARM_DODSP_SUN_PARAMS );
-			bool bSun = pSunStatic && pSunDynamic && vParams.y > 0.0f && vParams.z > 0.0f;
+			Vector vTweaks = pShaderAPI->GetVectorRenderingParameter( VECTOR_RENDERPARM_DODSP_SUN_TWEAKS );
+			bool bDebug = vTweaks.x > 0.5f;
+			bool bSun = pSunStatic && pSunDynamic && vParams.y > 0.0f && ( vParams.z > 0.0f || bDebug );
 
-			float sun[6][4];
-			memset( sun, 0, sizeof( sun ) );
+			float row[3][4], color[4], dir[4], tweaks[4];
+			memset( row, 0, sizeof( row ) );
+			memset( color, 0, sizeof( color ) );
+			memset( dir, 0, sizeof( dir ) );
+			memset( tweaks, 0, sizeof( tweaks ) );
 			if ( bSun )
 			{
 				pShader->BindTexture( SHADER_SAMPLER13, pSunStatic, 0 );
 				pShader->BindTexture( SHADER_SAMPLER14, pSunDynamic, 0 );
 
+				float m[12];
 				for ( int r = 0; r < 4; r++ )
 				{
 					Vector v = pShaderAPI->GetVectorRenderingParameter( VECTOR_RENDERPARM_DODSP_SUN_MATRIX_0 + r );
-					( &sun[0][0] )[r * 3 + 0] = v.x;
-					( &sun[0][0] )[r * 3 + 1] = v.y;
-					( &sun[0][0] )[r * 3 + 2] = v.z;
+					m[r * 3 + 0] = v.x;
+					m[r * 3 + 1] = v.y;
+					m[r * 3 + 2] = v.z;
 				}
+				memcpy( row, m, sizeof( m ) );
 				Vector vColor = pShaderAPI->GetVectorRenderingParameter( VECTOR_RENDERPARM_DODSP_SUN_COLOR );
 				Vector vDir = pShaderAPI->GetVectorRenderingParameter( VECTOR_RENDERPARM_DODSP_SUN_DIR );
-				sun[3][0] = vColor.x; sun[3][1] = vColor.y; sun[3][2] = vColor.z; sun[3][3] = vParams.z;
-				sun[4][0] = vDir.x; sun[4][1] = vDir.y; sun[4][2] = vDir.z; sun[4][3] = vParams.x;
-				sun[5][0] = ( g_pHardwareConfig->GetShadowFilterMode() != 0 ) ? 1.0f : 0.0f;
+				color[0] = vColor.x; color[1] = vColor.y; color[2] = vColor.z; color[3] = vParams.z;
+				dir[0] = vDir.x; dir[1] = vDir.y; dir[2] = vDir.z; dir[3] = vParams.x;
+				tweaks[0] = ( g_pHardwareConfig->GetShadowFilterMode() != 0 ) ? 1.0f : 0.0f;
+				tweaks[1] = bDebug ? 1.0f : 0.0f;
 			}
 			else
 			{
 				DynamicCmdsOut.BindStandardTexture( SHADER_SAMPLER13, TEXTURE_WHITE );
 				DynamicCmdsOut.BindStandardTexture( SHADER_SAMPLER14, TEXTURE_WHITE );
 			}
-			DynamicCmdsOut.SetPixelShaderConstant( 32, sun[0], 6 );
+			// Always written (zeros = off), so a stale value from another material can never leak in.
+			DynamicCmdsOut.SetPixelShaderConstant( DODSP_PSREG_SUN_ROW0, row[0], 1 );
+			DynamicCmdsOut.SetPixelShaderConstant( DODSP_PSREG_SUN_ROW1, row[1], 1 );
+			DynamicCmdsOut.SetPixelShaderConstant( DODSP_PSREG_SUN_ROW2, row[2], 1 );
+			DynamicCmdsOut.SetPixelShaderConstant( DODSP_PSREG_SUN_COLOR, color, 1 );
+			DynamicCmdsOut.SetPixelShaderConstant( DODSP_PSREG_SUN_DIR, dir, 1 );
+			DynamicCmdsOut.SetPixelShaderConstant( DODSP_PSREG_SUN_TWEAKS, tweaks, 1 );
 		}
 
 		DynamicCmdsOut.End();

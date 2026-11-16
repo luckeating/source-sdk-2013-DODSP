@@ -110,6 +110,7 @@ static ConVar r_shadow_shortenfactor( "r_shadow_shortenfactor", "2" , 0, "Makes 
 // with projected-texture shadows. 0 = stock behaviour (blob shadows everywhere).
 static ConVar dodsp_sunshadow_maps( "dodsp_sunshadow_maps", "1", 0, "DOD-SP: render the sun's static and dynamic shadow maps for the world shaders (needs an env_global_light with shadows)" );
 static ConVar dodsp_sun_darken( "dodsp_sun_darken", "1", FCVAR_ARCHIVE, "DOD-SP: 1 = the env_global_light only darkens (removes baked sun where something dynamic blocks it; baked bounce stays). 0 = it adds its own light on top (stock)." );
+static ConVar dodsp_sunshadow_debug( "dodsp_sunshadow_debug", "0", 0, "DOD-SP debug: 1 = world brushes show the sun shadow data instead of lighting. Green = sunlit by the static map (should match the baked sun patch), red = sunlit but blocked by something dynamic (gets darkened), dark blue = not sunlit / outside the sun map. No colours = the shader gets no sun data." );
 static ConVar dodsp_sunshadow_strength( "dodsp_sunshadow_strength", "1", FCVAR_ARCHIVE, "DOD-SP: how much of the baked sun a dynamic shadow removes (1 = all of it)" );
 
 // DOD-SP: one owner for "is this light the darken-only sun"
@@ -1079,6 +1080,8 @@ private:
 	CTextureReference m_DoDSPSunDepth[2];
 	void DoDSP_RenderSunMaps( ClientShadow_t &shadow, const FlashlightState_t &flashlightState, const CViewSetup &shadowView );
 	void DoDSP_ClearSunParams();
+	Vector m_vecDoDSPSunLightDir;		// env_global_light forward, for the alignment check
+	float m_flDoDSPSunMisalign;			// degrees between it and the baked sun (-1 = no baked sun)
 public:
 	void DoDSP_Report();
 	bool m_bDoDSPSunValid;
@@ -1329,6 +1332,8 @@ CClientShadowMgr::CClientShadowMgr() :
 	m_vecDoDSPSunOrigin.Init();
 	m_flDoDSPSunOrtho = 0.0f;
 	m_flDoDSPSunStrength = 0.0f;
+	m_vecDoDSPSunLightDir.Init();
+	m_flDoDSPSunMisalign = -1.0f;
 }
 
 
@@ -4748,6 +4753,7 @@ void CClientShadowMgr::DoDSP_ClearSunParams()
 	pRenderContext->SetIntRenderingParameter( INT_RENDERPARM_DODSP_SUN_STATIC_DEPTH, 0 );
 	pRenderContext->SetIntRenderingParameter( INT_RENDERPARM_DODSP_SUN_DYNAMIC_DEPTH, 0 );
 	pRenderContext->SetVectorRenderingParameter( VECTOR_RENDERPARM_DODSP_SUN_PARAMS, vec3_origin );
+	pRenderContext->SetVectorRenderingParameter( VECTOR_RENDERPARM_DODSP_SUN_TWEAKS, vec3_origin );
 }
 
 void CClientShadowMgr::DoDSP_RenderSunMaps( ClientShadow_t &shadow, const FlashlightState_t &flashlightState, const CViewSetup &shadowView )
@@ -4807,6 +4813,25 @@ void CClientShadowMgr::DoDSP_RenderSunMaps( ClientShadow_t &shadow, const Flashl
 	pRenderContext->SetVectorRenderingParameter( VECTOR_RENDERPARM_DODSP_SUN_PARAMS,
 		Vector( 1.0f / (float)MAX( 1, m_DoDSPSunDepth[0]->GetActualWidth() ), 1.0f, flStrength ) );
 	m_flDoDSPSunStrength = flStrength;
+	pRenderContext->SetVectorRenderingParameter( VECTOR_RENDERPARM_DODSP_SUN_TWEAKS, Vector( dodsp_sunshadow_debug.GetBool() ? 1.0f : 0.0f, 0, 0 ) );
+
+	// INVARIANT: the env_global_light must shine the way the baked sun does, or the shadows it
+	// darkens won't line up with the baked sun patches (and darken where there is no sun).
+	matrix3x4_t matOrient;
+	QuaternionMatrix( flashlightState.m_quatOrientation, matOrient );
+	MatrixGetColumn( matOrient, 0, m_vecDoDSPSunLightDir );
+	m_flDoDSPSunMisalign = -1.0f;
+	if ( vecSunColor.LengthSqr() > 0.0f )
+	{
+		float flDot = clamp( DotProduct( m_vecDoDSPSunLightDir.Normalized(), vecSunDir.Normalized() ), -1.0f, 1.0f );
+		m_flDoDSPSunMisalign = RAD2DEG( acosf( flDot ) );
+		static bool s_bWarnedAlign = false;
+		if ( m_flDoDSPSunMisalign > 2.0f && !s_bWarnedAlign )
+		{
+			s_bWarnedAlign = true;
+			Warning( "INVARIANT: DOD-SP sun shadows: env_global_light points %.1f degrees away from the map's light_environment - shadows won't line up with the baked sun (dodsp_sunshadow_report)\n", m_flDoDSPSunMisalign );
+		}
+	}
 
 	m_bDoDSPSunValid = true;
 	m_vecDoDSPSunOrigin = flashlightState.m_vecLightOrigin;
@@ -4832,6 +4857,17 @@ void CClientShadowMgr::DoDSP_Report()
 		Msg( "  baked sun: color %.3f %.3f %.3f, direction %.2f %.2f %.2f\n", c.x, c.y, c.z, d.x, d.y, d.z );
 	else
 		Msg( "  baked sun: none (map has no light_environment)\n" );
+	if ( m_bDoDSPSunValid )
+	{
+		Msg( "  env_global_light direction %.2f %.2f %.2f\n", m_vecDoDSPSunLightDir.x, m_vecDoDSPSunLightDir.y, m_vecDoDSPSunLightDir.z );
+		if ( m_flDoDSPSunMisalign < 0.0f )
+			Msg( "  alignment: no baked sun to compare against\n" );
+		else if ( m_flDoDSPSunMisalign > 2.0f )
+			Warning( "INVARIANT: env_global_light is %.1f degrees off the light_environment - match their Pitch/Yaw in Hammer\n", m_flDoDSPSunMisalign );
+		else
+			Msg( "  alignment: env_global_light matches the light_environment (%.1f degrees)\n", m_flDoDSPSunMisalign );
+	}
+	Msg( "  debug view: %s\n", dodsp_sunshadow_debug.GetBool() ? "ON (dodsp_sunshadow_debug 1)" : "off" );
 }
 
 CON_COMMAND( dodsp_sunshadow_report, "DOD-SP: state of the sun's static/dynamic shadow maps" )

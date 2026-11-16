@@ -54,7 +54,7 @@ CON_COMMAND( dodsp_shadercheck, "DOD-SP: list loaded shaders and how materials r
 	bool bSM3 = g_pMaterialSystemHardwareConfig && g_pMaterialSystemHardwareConfig->SupportsShaderModel_3_0();
 	Msg( "  dx level %d, shader model 3: %s\n",
 		 g_pMaterialSystemHardwareConfig ? g_pMaterialSystemHardwareConfig->GetDXSupportLevel() : -1, bSM3 ? "yes (uses *_ps30/_vs30)" : "NO (uses *_ps20b/_vs20)" );
-	static const char *s_pszVcs[] = { "SDK_lightmappedgeneric_flashlight_ps30", "SDK_lightmappedgeneric_flashlight_ps20b",
+	static const char *s_pszVcs[] = { "SDK_lightmappedgeneric_ps30", "SDK_lightmappedgeneric_flashlight_ps30", "SDK_lightmappedgeneric_flashlight_ps20b",
 									  "SDK_lightmappedgeneric_flashlight_vs30", "SDK_lightmappedgeneric_flashlight_vs20" };
 	for ( int v = 0; v < (int)ARRAYSIZE( s_pszVcs ); v++ )
 	{
@@ -63,6 +63,10 @@ CON_COMMAND( dodsp_shadercheck, "DOD-SP: list loaded shaders and how materials r
 		szFull[0] = 0;
 		g_pFullFileSystem->RelativePathToFullPath( szRel, "GAME", szFull, sizeof( szFull ) );
 		Msg( "  %-42s %8u bytes  %s\n", s_pszVcs[v], g_pFullFileSystem->Size( szRel, "GAME" ), szFull[0] ? szFull : "(inside a VPK or missing)" );
+		// The brush shader carries the sun shadows; the engine silently uses Mapbase's copy if ours
+		// isn't in DOD-SP\shaders\fxc, and then nothing darkens.
+		if ( v == 0 && !Q_stristr( szFull, "dod-sp" ) )
+			Warning( "INVARIANT: %s is not DOD-SP's copy - put the dodsp_shaders files in DOD-SP\\shaders\\fxc (no sun shadows until then)\n", s_pszVcs[v] );
 	}
 
 	static const char *s_pszDefault[] = { "wood/woodboards02", "wood/woodboards04", "wood/woodfloor002", "plaster/plasterwall043c", "plaster/wallpaper004" };

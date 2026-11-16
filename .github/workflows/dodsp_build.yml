@@ -36,6 +36,7 @@ on:
       - 'sp/src/vscript/**'
       - 'sp/src/utils/**'
       - 'sp/src/materialsystem/**'
+      - 'dodsp_tools/lint_shader_registers.py'
   workflow_dispatch:
 
 jobs:
@@ -58,7 +59,15 @@ jobs:
       solution-name: 'maptools'
       build-on-linux: false
 
+  shader-lint:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Check shader constant registers
+      run: python3 dodsp_tools/lint_shader_registers.py sp/src/materialsystem/stdshaders
+
   shaders:
+    needs: shader-lint
     uses: ./.github/workflows/mapbase_build-base.yml
     with:
       configuration: Release

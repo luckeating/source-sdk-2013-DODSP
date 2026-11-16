@@ -181,22 +181,32 @@ sampler RandRotSampler			: register( s15 );
 #endif
 
 //-----------------------------------------------------------------------------
-// DOD-SP sun shadows (shader model 3 only; c32-c37 - c28-c31 belong to common_ps_fxc.h; set by lightmappedgeneric_dx9_helper.cpp from the
+// DOD-SP sun shadows (shader model 3 only; set by lightmappedgeneric_dx9_helper.cpp from the
 // client's render parameters, see public/renderparm.h).
 //
 // The lightmap already holds the baked sun. Two sun shadow maps come in: static casters (world,
 // static props - what VRAD baked) and dynamic casters (NPCs, physics props, brush entities). Where
 // the static map says "sunlit" but the dynamic map says "blocked", the sun's direct light is taken
 // back out of the lightmap. Nothing is ever added, so bounce and sky light stay exactly as baked.
+//
+// INVARIANT: pixel constants must be c0-c31. The engine keeps exactly 32 of them (hardwareconfig
+// m_NumPixelShaderConstants) even on shader model 3 cards; anything above is written past its
+// buffer and never reliably reaches the card. These six are the slots LightmappedGeneric leaves
+// free in every combo (c1 is the flashlight pass, c2-c4/c7 envmap/outline, c8 detail, c10-c19
+// eye/fog/flashlight, c21-c25 parallax cubemaps, c28-c31 common_ps_fxc.h). The register numbers
+// are mirrored in DODSP_PSREG_* in the helper; dodsp_tools/lint_shader_registers.py fails the
+// build if the two ever disagree or anything goes past c31.
 //-----------------------------------------------------------------------------
 #if defined( SHADER_MODEL_PS_3_0 ) && !defined( _X360 )
 #define DODSP_SUNSHADOW 1
 sampler DoDSPSunStaticSampler	: register( s13 );
 sampler DoDSPSunDynamicSampler	: register( s14 );
-const float4 g_DoDSPSunMatrix[3]	: register( c32 );	// world -> shadow map (u, v, depth), c32-c34
-const float4 g_DoDSPSunColor		: register( c35 );	// rgb = baked sun, w = strength (0 = off)
-const float4 g_DoDSPSunDir			: register( c36 );	// xyz = direction light travels, w = 1/map resolution
-const float4 g_DoDSPSunTweaks		: register( c37 );	// x = 1 when depth must be compared by hand (no hardware PCF)
+const float4 g_DoDSPSunRow0			: register( c5 );	// world -> shadow map u
+const float4 g_DoDSPSunRow1			: register( c6 );	// world -> shadow map v
+const float4 g_DoDSPSunRow2			: register( c9 );	// world -> shadow map depth
+const float4 g_DoDSPSunColor		: register( c20 );	// rgb = baked sun, w = strength (0 = off)
+const float4 g_DoDSPSunDir			: register( c26 );	// xyz = direction light travels, w = 1/map resolution
+const float4 g_DoDSPSunTweaks		: register( c27 );	// x = 1 when depth must be compared by hand (no hardware PCF), y = 1 debug view
 
 // 3x3 filtered sun visibility: 1 = lit, 0 = blocked.
 float DoDSP_SunVisibility( sampler DepthSampler, float3 vPos )
@@ -582,12 +592,22 @@ HALF4 main( PS_INPUT i ) : COLOR
 		float3 vDoDSPFaceNormal = normalize( cross( ddx( vDoDSPWorldPos ), ddy( vDoDSPWorldPos ) ) );
 		vDoDSPFaceNormal *= ( dot( vDoDSPFaceNormal, worldVertToEyeVector ) < 0.0f ) ? -1.0f : 1.0f;
 
+		// Debug view (dodsp_sunshadow_debug 1): replaces the lighting so the data can be checked
+		// by eye. Green = static map says sunlit (should match the baked sun patch exactly),
+		// red = sunlit but a dynamic caster blocks it (the shadow that gets darkened), dark
+		// blue = facing away from the sun or outside the sun map. No tint at all = the shader
+		// gets no sun data.
+		bool bDoDSPDebug = g_DoDSPSunTweaks.y > 0.5f;
+
 		[branch]
-		if ( g_DoDSPSunColor.w > 0.0f )
+		if ( g_DoDSPSunColor.w > 0.0f || bDoDSPDebug )
 		{
+			if ( bDoDSPDebug )
+				diffuseLighting = float3( 0.0f, 0.0f, 0.15f );
+
 			float flNdotL = saturate( dot( vDoDSPFaceNormal, -g_DoDSPSunDir.xyz ) );
 			float4 vWorld = float4( vDoDSPWorldPos, 1.0f );
-			float3 vSun = float3( dot( vWorld, g_DoDSPSunMatrix[0] ), dot( vWorld, g_DoDSPSunMatrix[1] ), dot( vWorld, g_DoDSPSunMatrix[2] ) );
+			float3 vSun = float3( dot( vWorld, g_DoDSPSunRow0 ), dot( vWorld, g_DoDSPSunRow1 ), dot( vWorld, g_DoDSPSunRow2 ) );
 
 			[branch]
 			if ( flNdotL > 0.0f && all( vSun == saturate( vSun ) ) )
@@ -596,6 +616,8 @@ HALF4 main( PS_INPUT i ) : COLOR
 				float flDynamic = DoDSP_SunVisibility( DoDSPSunDynamicSampler, vSun );
 				float flRemove = g_DoDSPSunColor.w * flNdotL * flStatic * ( 1.0f - flDynamic );
 				diffuseLighting = max( diffuseLighting - g_DoDSPSunColor.rgb * flRemove, 0.0f );
+				if ( bDoDSPDebug )
+					diffuseLighting = float3( flStatic * ( 1.0f - flDynamic ), flStatic * flDynamic, 0.15f * ( 1.0f - flStatic ) );
 			}
 		}
 	}
