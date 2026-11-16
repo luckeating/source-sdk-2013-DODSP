@@ -41,7 +41,7 @@ enum RenderParamVector_t
 	VECTOR_RENDERPARM_DODSP_SUN_COLOR,
 	VECTOR_RENDERPARM_DODSP_SUN_DIR,
 	VECTOR_RENDERPARM_DODSP_SUN_PARAMS,
-	VECTOR_RENDERPARM_DODSP_SUN_TWEAKS,		// x = 1: debug view (dodsp_sunshadow_debug)
+	VECTOR_RENDERPARM_DODSP_SUN_TWEAKS,		// x = debug view mode (dodsp_sunshadow_debug), y = 1: tex2Dlod taps (dodsp_sunshadow_sampler)
 
 	MAX_VECTOR_RENDER_PARMS = 20
 };

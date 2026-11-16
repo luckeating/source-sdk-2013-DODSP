@@ -110,7 +110,8 @@ static ConVar r_shadow_shortenfactor( "r_shadow_shortenfactor", "2" , 0, "Makes 
 // with projected-texture shadows. 0 = stock behaviour (blob shadows everywhere).
 static ConVar dodsp_sunshadow_maps( "dodsp_sunshadow_maps", "1", 0, "DOD-SP: render the sun's static and dynamic shadow maps for the world shaders (needs an env_global_light with shadows)" );
 static ConVar dodsp_sun_darken( "dodsp_sun_darken", "1", FCVAR_ARCHIVE, "DOD-SP: 1 = the env_global_light only darkens (removes baked sun where something dynamic blocks it; baked bounce stays). 0 = it adds its own light on top (stock)." );
-static ConVar dodsp_sunshadow_debug( "dodsp_sunshadow_debug", "0", 0, "DOD-SP debug: 1 = world brushes show the sun shadow data instead of lighting. Green = sunlit by the static map (should match the baked sun patch), red = sunlit but blocked by something dynamic (gets darkened), dark blue = not sunlit / outside the sun map. No colours = the shader gets no sun data." );
+static ConVar dodsp_sunshadow_debug( "dodsp_sunshadow_debug", "0", 0, "DOD-SP debug: world brushes show the sun shadow data instead of lighting. 1 = verdict: green = sunlit (should match the baked sun patch), red = sunlit but blocked by something dynamic, blue = static map says shadowed, purple = outside the sun map, grey = faces away from the sun. 2 = raw sun-map coordinates (red/green across the map, blue depth). No colours at all = the shader gets no sun data." );
+static ConVar dodsp_sunshadow_sampler( "dodsp_sunshadow_sampler", "0", 0, "DOD-SP debug: how the world shaders read the sun maps. 0 = tex2Dproj, the way Valve's flashlight shadows do (default). 1 = tex2Dlod (the first version)." );
 static ConVar dodsp_sunshadow_strength( "dodsp_sunshadow_strength", "1", FCVAR_ARCHIVE, "DOD-SP: how much of the baked sun a dynamic shadow removes (1 = all of it)" );
 
 // DOD-SP: one owner for "is this light the darken-only sun"
@@ -4813,7 +4814,7 @@ void CClientShadowMgr::DoDSP_RenderSunMaps( ClientShadow_t &shadow, const Flashl
 	pRenderContext->SetVectorRenderingParameter( VECTOR_RENDERPARM_DODSP_SUN_PARAMS,
 		Vector( 1.0f / (float)MAX( 1, m_DoDSPSunDepth[0]->GetActualWidth() ), 1.0f, flStrength ) );
 	m_flDoDSPSunStrength = flStrength;
-	pRenderContext->SetVectorRenderingParameter( VECTOR_RENDERPARM_DODSP_SUN_TWEAKS, Vector( dodsp_sunshadow_debug.GetBool() ? 1.0f : 0.0f, 0, 0 ) );
+	pRenderContext->SetVectorRenderingParameter( VECTOR_RENDERPARM_DODSP_SUN_TWEAKS, Vector( (float)clamp( dodsp_sunshadow_debug.GetInt(), 0, 2 ), dodsp_sunshadow_sampler.GetBool() ? 1.0f : 0.0f, 0 ) );
 
 	// INVARIANT: the env_global_light must shine the way the baked sun does, or the shadows it
 	// darkens won't line up with the baked sun patches (and darken where there is no sun).
@@ -4867,7 +4868,10 @@ void CClientShadowMgr::DoDSP_Report()
 		else
 			Msg( "  alignment: env_global_light matches the light_environment (%.1f degrees)\n", m_flDoDSPSunMisalign );
 	}
-	Msg( "  debug view: %s\n", dodsp_sunshadow_debug.GetBool() ? "ON (dodsp_sunshadow_debug 1)" : "off" );
+	static const char *s_pszFilter[] = { "NVIDIA hardware PCF", "AMD depth texture, compared in the shader", "AMD Fetch4, compared in the shader" };
+	int nFilter = g_pMaterialSystemHardwareConfig ? g_pMaterialSystemHardwareConfig->GetShadowFilterMode() : -1;
+	Msg( "  card shadow mode %d: %s\n", nFilter, ( nFilter >= 0 && nFilter < 3 ) ? s_pszFilter[nFilter] : "unknown" );
+	Msg( "  debug view %d, sampler %s\n", dodsp_sunshadow_debug.GetInt(), dodsp_sunshadow_sampler.GetBool() ? "tex2Dlod (1)" : "tex2Dproj (0)" );
 }
 
 CON_COMMAND( dodsp_sunshadow_report, "DOD-SP: state of the sun's static/dynamic shadow maps" )

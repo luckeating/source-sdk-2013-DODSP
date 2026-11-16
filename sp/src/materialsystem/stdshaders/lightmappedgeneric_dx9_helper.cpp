@@ -1782,7 +1782,7 @@ void DrawLightmappedGeneric_DX9_Internal(CBaseVSShader *pShader, IMaterialVar** 
 			ITexture *pSunDynamic = (ITexture *)pShaderAPI->GetIntRenderingParameter( INT_RENDERPARM_DODSP_SUN_DYNAMIC_DEPTH );
 			Vector vParams = pShaderAPI->GetVectorRenderingParameter( VECTOR_RENDERPARM_DODSP_SUN_PARAMS );
 			Vector vTweaks = pShaderAPI->GetVectorRenderingParameter( VECTOR_RENDERPARM_DODSP_SUN_TWEAKS );
-			bool bDebug = vTweaks.x > 0.5f;
+			bool bDebug = vTweaks.x > 0.5f;		// x = debug view mode, y = 1: tex2Dlod taps
 			bool bSun = pSunStatic && pSunDynamic && vParams.y > 0.0f && ( vParams.z > 0.0f || bDebug );
 
 			float row[3][4], color[4], dir[4], tweaks[4];
@@ -1809,7 +1809,8 @@ void DrawLightmappedGeneric_DX9_Internal(CBaseVSShader *pShader, IMaterialVar** 
 				color[0] = vColor.x; color[1] = vColor.y; color[2] = vColor.z; color[3] = vParams.z;
 				dir[0] = vDir.x; dir[1] = vDir.y; dir[2] = vDir.z; dir[3] = vParams.x;
 				tweaks[0] = ( g_pHardwareConfig->GetShadowFilterMode() != 0 ) ? 1.0f : 0.0f;
-				tweaks[1] = bDebug ? 1.0f : 0.0f;
+				tweaks[1] = vTweaks.x;
+				tweaks[3] = vTweaks.y;
 			}
 			else
 			{
