@@ -88,14 +88,14 @@ If you learn something like this, add it here in the same commit as the fix.
 - DoD:S content mounts after HL2, so HL2's same-named sound and soundscape manifests hide DoD's.
   We copy missing DoD entries into a generated override (eaa0e7e).
 - DoD maps use prop_physics_multiplayer. The SP player didn't collide with it (004173a).
-- **HL2 materials draw dark, DoD and custom ones don't** (2026-11-17, open). The HL2 materials in
-  DOD-SP come from Mapbase's patched content and name `SDK_LightmappedGeneric` in the .vmt. DoD's
-  name Valve's shaders and are swapped to SDK_ only at runtime, so the compiler sees a shader it
-  knows. Suspect: VBSP decides "no lightmap / flat / bumped" from a material copy or shader the
-  game doesn't use. Fine under `mat_fullbright 1`; `mat_specular 0` changes nothing; func_detail vs
-  world changes nothing. `-lightifmissing` did NOT fix it (it only adds FLAT lightmaps, so a
-  bumped-material mismatch survives it). Watchdog: c_dodsp_lightmapcheck.cpp prints an INVARIANT
-  at map load; `dodsp_lightmap_report` / `dodsp_lightmap_here` give the per-material answer.
+- **HL2 materials drew dark with `dodsp_sun_baked 0`** (2026-11-17). Their .vmt names Mapbase's
+  `SDK_LightmappedGeneric` directly, and the runtime swap only moved materials naming Valve's shaders,
+  so they lost the baked sun and never got the per-pixel one. NOT the compiler, NOT leftover .vcs
+  (dodsp_lightmap_report: all match; DOD-SP\shaders\fxc held only dodsp_ files). Lesson: when a
+  surface is dark, first ask which shader draws it and whether `dodsp_sun_baked` is 0. Fixed: the
+  swap also moves SDK_ brush materials to the DODSP_ twins; INVARIANT at load lists any lit world
+  material still without the per-pixel sun. `dodsp_lightmap_report` / `_here` (compiled lightmap vs
+  what the material wants) stay as the check for real compile mismatches.
 - `mat_luxels 1` draws garbage (solid blue patches) in this setup. Don't diagnose with it.
 - Hammer expert compile: every `-option` goes BEFORE `$path\$file` in a tool's parameters. An
   option after the map name is read as the map name, the tool prints usage and the compile fails.
@@ -114,6 +114,6 @@ If you learn something like this, add it here in the same commit as the fix.
 
 ## Open known issues (lighting)
 - The door entity doesn't cast into the sun cascades.
-- Black front steps = the HL2-materials issue above. The half-black CAFÉ sign is an overlay - the
+- Black front steps = the HL2-materials issue above (fixed in the client build after 44117643276). The half-black CAFÉ sign is an overlay - the
   owner's to fix, not a shader problem. woodstair02 materials reverting.
 - Pending checks: FPS with `dodsp_sun_baked` 1 vs 0; `dodsp_sun_filter 3` against edge saw-tooth.
