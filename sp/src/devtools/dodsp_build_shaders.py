@@ -117,6 +117,16 @@ def check_constants(sources):
                             fail("%s:%d (in pixel shader %s) uses c%s - only c0..c31 exist in this engine"
                                  % (os.path.basename(path), n, src, m.group(1)))
 
+    # Old fxc syntax today's compiler rejects (X3089) - Mapbase ships its shaders precompiled, so its
+    # sources still carry it. Write register( s0 ).
+    for src in sources:
+        for path in include_closure(os.path.join(STDSHADERS, src)):
+            with open(path, encoding="latin-1") as f:
+                for n, line in enumerate(strip_comments(f.read()).split("\n"), 1):
+                    if "D3DVERTEXTEXTURESAMPLER" in line:
+                        fail("%s:%d uses register( D3DVERTEXTEXTURESAMPLERn, sN ) - today's compiler rejects it (X3089); write register( sN )"
+                             % (os.path.basename(path), n))
+
     # The brush sun's slots: shader side vs C++ side
     with open(os.path.join(STDSHADERS, "dodsp_sun_fxc.h"), encoding="latin-1") as f:
         sun_regs = sorted(int(r) for r in re.findall(r"g_DoDSP_\w+\s*:\s*register\s*\(\s*c(\d+)\s*\)",
@@ -146,6 +156,13 @@ def check_constants(sources):
         if regs != want:
             fail("model sun registers disagree: %s declares %s, dodsp_sun_shader.h DODSP_MSUN_%s says %s" % (fxc, regs, key, want))
         model_slots[key] = set(want)
+        # the cascade samplers: s13.. unless the shader picks others (skin: DODSP_MSUN_SAMPLER_SKIN)
+        with open(os.path.join(STDSHADERS, fxc), encoding="latin-1") as f:
+            m = re.search(r"#define\s+DODSP_SAMPLER_NEAR\s+s(\d+)", strip_comments(f.read()))
+        got = int(m.group(1)) if m else 13
+        want_s = menum.get("SAMPLER_SKIN" if key == "PSREG_SKIN" else "SAMPLER", -1)
+        if got != want_s:
+            fail("model sun samplers disagree: %s puts the cascades on s%d, dodsp_sun_shader.h says s%d" % (fxc, got, want_s))
     with open(os.path.join(STDSHADERS, "dodsp_modelsun_vs_fxc.h"), encoding="latin-1") as f:
         vregs = sorted(int(r) for r in re.findall(r"register\s*\(\s*c(\d+)\s*\)", strip_comments(f.read())))
     vwant = list(range(menum.get("VSREG", -99), menum.get("VSREG", -99) + menum.get("VSREG_COUNT", 0)))
@@ -263,6 +280,12 @@ def main():
         old = open(path, encoding="latin-1").read() if os.path.exists(path) else None
         if old != text:
             fail("%s is stale or hand-edited - regenerate with devtools/dodsp_shader_inc.py" % os.path.basename(path))
+
+    # Fast checks first: a broken invariant fails the build here, in seconds, instead of after
+    # half an hour of compiling (stage 4's first build lost 40 minutes to a known compiler trap)
+    if errors:
+        print("DOD-SP shader build FAILED before compiling: %d problem(s)" % len(errors))
+        return 1
 
     # Compile
     for src in sources:

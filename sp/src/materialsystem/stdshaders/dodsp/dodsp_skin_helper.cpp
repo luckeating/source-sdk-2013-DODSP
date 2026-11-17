@@ -514,7 +514,7 @@ void DrawSkin_DX9_Internal( CBaseVSShader *pShader, IMaterialVar** params, IShad
 #endif
 			SET_STATIC_PIXEL_SHADER_COMBO( DODSP_SUNFILTER, bHasFlashlight ? 0 : DoDSP_SunFilterMode() );	// DOD-SP
 			if ( !bHasFlashlight )
-				DoDSP_SunShadowState( pShaderShadow );									// DOD-SP: cascade samplers
+				DoDSP_SunShadowState( pShaderShadow, DODSP_MSUN_SAMPLER_SKIN );									// DOD-SP: cascade samplers
 			SET_STATIC_PIXEL_SHADER( dodsp_skin_ps30 );
 		}
 
@@ -971,7 +971,7 @@ void DrawSkin_DX9_Internal( CBaseVSShader *pShader, IMaterialVar** params, IShad
 		}
 
 		// DOD-SP: the sun - cascades and constants (c15..c18 in the base pass; the flashlight's matrix otherwise)
-		DoDSP_ModelSunDynamicState( pShader, pShaderAPI, DODSP_MSUN_PSREG_SKIN, !bHasFlashlight );
+		DoDSP_ModelSunDynamicState( pShader, pShaderAPI, DODSP_MSUN_PSREG_SKIN, !bHasFlashlight, DODSP_MSUN_SAMPLER_SKIN );	// cascades on s9..s11
 	}
 	pShader->Draw();
 }

@@ -1099,7 +1099,7 @@ void DrawLightmappedGeneric_DX9_Internal(CBaseVSShader *pShader, IMaterialVar** 
 					SET_STATIC_PIXEL_SHADER_COMBO( PARALLAXCORRECT, false );
 #endif
 					SET_STATIC_PIXEL_SHADER_COMBO( DODSP_SUNFILTER, DoDSP_SunFilterMode() );	// DOD-SP
-					DoDSP_SunShadowState( pShaderShadow );									// DOD-SP: cascade samplers
+					DoDSP_SunShadowState( pShaderShadow, 13 );									// DOD-SP: cascade samplers
 					SET_STATIC_PIXEL_SHADER( dodsp_lightmappedgeneric_ps30 );
 				}
 				//else

@@ -102,6 +102,8 @@ sampler ShadowDepthSampler		: register( s8 );	// Flashlight shadow depth map sam
 sampler DepthSampler			: register( s10 );	//depth buffer sampler for depth blending
 sampler SelfIllumMaskSampler	: register( s11 );	// selfillummask
 
+#define DoDSP_VertToEye( i )	( g_EyePos - (i).worldPos_projPosZ.xyz )	// DOD-SP: what the vertex shader used to send
+
 struct PS_INPUT
 {
 #if SEAMLESS_BASE
@@ -115,7 +117,7 @@ struct PS_INPUT
 	HALF2 detailTexCoord			: TEXCOORD1;	// Detail texture coordinate
 #endif
 	float4 color					: TEXCOORD2;	// Vertex color (from lighting or unlit)
-	float3 worldVertToEyeVector		: TEXCOORD3;	// Necessary for reflection
+	float4 dodspSun					: TEXCOORD3;	// DOD-SP: the sun (took the eye vector's slot, see DoDSP_VertToEye)
 	float3 worldSpaceNormal			: TEXCOORD4;	// Necessary for cubemaps and flashlight
 
 #if defined ( _X360 )
@@ -130,7 +132,6 @@ struct PS_INPUT
 #if SEAMLESS_BASE || SEAMLESS_DETAIL
 	float3 SeamlessWeights          : COLOR0;				// x y z projection weights
 #endif
-	float4 dodspSun								: TEXCOORD9;	// DOD-SP: from the vertex shader (dodsp_modelsun_vs_fxc.h)
 };
 
 const float4 g_GlowParameters : register( c5 );
@@ -336,7 +337,7 @@ float4 main( PS_INPUT i ) : COLOR
 
 	#if ( ENVMAPFRESNEL )
 	{
-		float flFresnel = 1-saturate( dot( normalize( i.worldSpaceNormal.xyz ), normalize( i.worldVertToEyeVector.xyz ) ) );
+		float flFresnel = 1-saturate( dot( normalize( i.worldSpaceNormal.xyz ), normalize( DoDSP_VertToEye( i ) ) ) );
 		flFresnel = g_flFresnelScale * pow( flFresnel, g_flFresnelExp ) + g_flFresnelBias;
 		specularFactor *= flFresnel;
 	}
@@ -417,7 +418,7 @@ float4 main( PS_INPUT i ) : COLOR
 #if FOGTYPE == 2 || FLASHLIGHT != 0	
 	float3 diffuseComponent = albedo * diffuseLighting;
 #else
-	float3 vEyeDir = normalize( i.worldVertToEyeVector.xyz );
+	float3 vEyeDir = normalize( DoDSP_VertToEye( i ) );
 	float flFresnelMinlight = saturate( dot( i.worldSpaceNormal, vEyeDir ) );
 
 	float3 diffuseComponent = albedo * lerp( diffuseLighting, 1, g_fMinLighting * flFresnelMinlight );
@@ -450,11 +451,11 @@ float4 main( PS_INPUT i ) : COLOR
 	if( bCubemap )
 	{
 #if CUBEMAP_SPHERE_LEGACY
-		HALF3 reflectVect = normalize(CalcReflectionVectorUnnormalized( i.worldSpaceNormal, i.worldVertToEyeVector.xyz ));
+		HALF3 reflectVect = normalize(CalcReflectionVectorUnnormalized( i.worldSpaceNormal, DoDSP_VertToEye( i ) ));
 
 		specularLighting = 0.5 * tex2D( EnvmapSampler, float2(reflectVect.x, reflectVect.y) ) * g_DiffuseModulation.rgb * diffuseLighting;
 #else
-		HALF3 reflectVect = CalcReflectionVectorUnnormalized( i.worldSpaceNormal, i.worldVertToEyeVector.xyz );
+		HALF3 reflectVect = CalcReflectionVectorUnnormalized( i.worldSpaceNormal, DoDSP_VertToEye( i ) );
 
 		specularLighting = ENV_MAP_SCALE * texCUBE( EnvmapSampler, reflectVect );
 		specularLighting *= specularFactor;

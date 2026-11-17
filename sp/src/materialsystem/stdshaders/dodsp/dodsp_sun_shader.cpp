@@ -34,25 +34,29 @@ enum
 	DODSP_PSREG_COUNT		= 8,
 };
 COMPILE_TIME_ASSERT( DODSP_PSREG_SUNCOLOR + DODSP_PSREG_COUNT <= 32 );
-static const Sampler_t s_CascadeSampler[3] = { SHADER_SAMPLER13, SHADER_SAMPLER14, SHADER_SAMPLER15 };
+static Sampler_t DoDSP_CascadeSampler( int nFirstSampler, int i )
+{
+	return (Sampler_t)( SHADER_SAMPLER0 + nFirstSampler + i );
+}
+COMPILE_TIME_ASSERT( SHADER_SAMPLER13 == SHADER_SAMPLER0 + 13 );
 
 int DoDSP_SunFilterMode()
 {
 	return ( g_pHardwareConfig->GetShadowFilterMode() == 0 ) ? 0 : 1;	// 0 = NVIDIA_PCF_POISSON
 }
 
-void DoDSP_SunShadowState( IShaderShadow *pShaderShadow )
+void DoDSP_SunShadowState( IShaderShadow *pShaderShadow, int nFirstSampler )
 {
 	for ( int i = 0; i < 3; i++ )
 	{
-		pShaderShadow->EnableTexture( s_CascadeSampler[i], true );
-		pShaderShadow->SetShadowDepthFiltering( s_CascadeSampler[i] );
-		pShaderShadow->EnableSRGBRead( s_CascadeSampler[i], false );
+		pShaderShadow->EnableTexture( DoDSP_CascadeSampler( nFirstSampler, i ), true );
+		pShaderShadow->SetShadowDepthFiltering( DoDSP_CascadeSampler( nFirstSampler, i ) );
+		pShaderShadow->EnableSRGBRead( DoDSP_CascadeSampler( nFirstSampler, i ), false );
 	}
 }
 
 // Binds the three cascades (or black when the client published none); true if all three are there
-static bool DoDSP_BindCascades( CBaseVSShader *pShader, IShaderDynamicAPI *pShaderAPI )
+static bool DoDSP_BindCascades( CBaseVSShader *pShader, IShaderDynamicAPI *pShaderAPI, int nFirstSampler )
 {
 	ITexture *pCascade[3];
 	bool bAll = true;
@@ -64,16 +68,16 @@ static bool DoDSP_BindCascades( CBaseVSShader *pShader, IShaderDynamicAPI *pShad
 	for ( int i = 0; i < 3; i++ )
 	{
 		if ( bAll )
-			pShader->BindTexture( s_CascadeSampler[i], pCascade[i], 0 );
+			pShader->BindTexture( DoDSP_CascadeSampler( nFirstSampler, i ), pCascade[i], 0 );
 		else
-			pShaderAPI->BindStandardTexture( s_CascadeSampler[i], TEXTURE_BLACK );
+			pShaderAPI->BindStandardTexture( DoDSP_CascadeSampler( nFirstSampler, i ), TEXTURE_BLACK );
 	}
 	return bAll;
 }
 
 void DoDSP_SunDynamicState( CBaseVSShader *pShader, IShaderDynamicAPI *pShaderAPI, float flLightmapScale )
 {
-	const bool bAll = DoDSP_BindCascades( pShader, pShaderAPI );
+	const bool bAll = DoDSP_BindCascades( pShader, pShaderAPI, 13 );	// the brush shaders: s13..s15
 
 	const Vector &vecSun = pShaderAPI->GetVectorRenderingParameter( DODSP_RP_VEC_SUNCOLOR );
 	float vSunColor[4] = { vecSun.x, vecSun.y, vecSun.z, flLightmapScale > 0.0f ? 1.0f / flLightmapScale : 1.0f };
@@ -159,7 +163,8 @@ static bool DoDSP_ModelSunConstantsFit( int nPsReg )
 		   g_pHardwareConfig->NumVertexShaderConstants() >= DODSP_MSUN_VSREG + DODSP_MSUN_VSREG_COUNT;
 }
 
-void DoDSP_ModelSunDynamicState( CBaseVSShader *pShader, IShaderDynamicAPI *pShaderAPI, int nPsReg, bool bBasePass )
+void DoDSP_ModelSunDynamicState( CBaseVSShader *pShader, IShaderDynamicAPI *pShaderAPI, int nPsReg, bool bBasePass,
+								 int nFirstSampler )
 {
 	// INVARIANT: never write past the constants the hardware layer keeps (SHADER_FALLBACK already
 	// sends materials elsewhere when they don't fit; this is the second line).
@@ -174,7 +179,7 @@ void DoDSP_ModelSunDynamicState( CBaseVSShader *pShader, IShaderDynamicAPI *pSha
 		return;
 	}
 
-	const bool bAll = DoDSP_BindCascades( pShader, pShaderAPI );
+	const bool bAll = DoDSP_BindCascades( pShader, pShaderAPI, nFirstSampler );
 	const Vector &vecSun = pShaderAPI->GetVectorRenderingParameter( DODSP_RP_VEC_SUNCOLOR );
 	const bool bSun = bAll && ( vecSun.x > 0.0f || vecSun.y > 0.0f || vecSun.z > 0.0f );
 

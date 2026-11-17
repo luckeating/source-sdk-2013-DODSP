@@ -29,7 +29,7 @@ const float4x4 g_FlashlightWorldToTexture :  register( SHADER_SPECIFIC_CONST_6 )
 const float3 cMorphTargetTextureDim			: register( SHADER_SPECIFIC_CONST_10 );
 const float4 cMorphSubrect					: register( SHADER_SPECIFIC_CONST_11 );
 
-sampler2D morphSampler : register( D3DVERTEXTEXTURESAMPLER0, s0 );
+sampler2D morphSampler : register( s0 )	/* DOD-SP: today's compiler rejects the old D3DVERTEXTEXTURESAMPLER0 form (X3089) */;
 #endif
 
 
@@ -77,7 +77,9 @@ struct VS_OUTPUT
 
 	float4 baseTexCoord2_tangentSpaceVertToEyeVectorXY			: TEXCOORD0;
 	float3 lightAtten											: TEXCOORD1;
-	float4 worldVertToEyeVectorXYZ_tangentSpaceVertToEyeVectorZ	: TEXCOORD2;
+	// DOD-SP: vs_3_0 has 11 output registers and Mapbase used them all, so the sun takes the eye
+	// vector's slot; the pixel shader works it out from g_EyePos and the world position.
+	float4 dodspSun											: TEXCOORD2;	// DOD-SP: light-space position for the per-pixel sun
 	float3 vWorldNormal											: TEXCOORD3;	// World-space normal
 	float4 vWorldTangent										: TEXCOORD4;
 #if	USE_WITH_2B
@@ -92,7 +94,6 @@ struct VS_OUTPUT
 #if defined( _X360 ) && FLASHLIGHT
 	float4 flashlightSpacePos									: TEXCOORD8;
 #endif
-	float4 dodspSun								: TEXCOORD9;	// DOD-SP: light-space position for the per-pixel sun
 };
 
 
@@ -159,7 +160,6 @@ VS_OUTPUT main( const VS_INPUT v )
 	// Needed for cubemapping + parallax mapping
 	// FIXME: We shouldn't have to compute this all the time.
 	//o.worldVertToEyeVectorXYZ_tangentSpaceVertToEyeVectorZ.xyz = VSHADER_VECT_SCALE * (cEyePos - worldPos);
-	o.worldVertToEyeVectorXYZ_tangentSpaceVertToEyeVectorZ.xyz = normalize( cEyePos.xyz - worldPos.xyz );
 
 #if defined( SHADER_MODEL_VS_2_0 ) && ( !USE_STATIC_CONTROL_FLOW )
 	o.lightAtten.xyz = float3(0,0,0);

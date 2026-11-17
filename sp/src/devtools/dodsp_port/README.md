@@ -12,3 +12,7 @@ so don't re-run them over the current files - they show exactly what was changed
   `DoDSP_Pinned` on every pinned combo).
 
 Run from `sp/src/materialsystem/stdshaders`: `python port_model_fxc.py .`
+
+After the first stage 4 compile, three fixes were made by hand (see git log): the morph sampler's old
+`D3DVERTEXTEXTURESAMPLER0` syntax, the sun taking the eye vector's output slot in the plain and bump
+vertex shaders (vs_3_0 output limit), and the skin shader's cascades on s9..s11 (all 16 samplers used).

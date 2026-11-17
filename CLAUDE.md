@@ -59,6 +59,16 @@ If you learn something like this, add it here in the same commit as the fix.
   c217..c220 are the engine's clip planes). Numbers live in `DODSP_MSUN_*` (dodsp_sun_shader.h);
   CI checks every .fxc against them and flags any C++ write onto them (literal or PSREG_ name)
   unless the line says `dodsp-lint: flashlight pass only` / `x360 only`.
+- **vs_3_0 has 11 output registers** (o0..o10 with POSITION and FOG; 12 only with PSIZE) and Mapbase's
+  plain and bump model vertex shaders use all 11 (X5622). The sun took their eye-vector slot; the pixel
+  shader rebuilds the eye vector from `g_EyePos` (c20) and the world position (`DoDSP_VertToEye`).
+- **The skin pixel shader uses all 16 samplers** (X4500 on s13..s15). Its cascades sit on the wrinkle
+  samplers s9..s11 (WRINKLEMAP is pinned to 0): `DODSP_SAMPLER_NEAR` in the .fxc, `DODSP_MSUN_SAMPLER_SKIN`
+  in C++ - CI checks they agree.
+- The shader build runs every fast check first and stops BEFORE compiling if one fails (seconds, not
+  40 minutes). The D3DVERTEXTEXTURESAMPLER0 trap below was in these notes and still cost a 40-minute
+  build on stage 4, because nothing checked for it - now the build does. Turn every trap written
+  here into a check.
 - **One sun on models:** while our sun draws (VS `c221.w = 1`) the model vertex shaders drop every
   directional light the engine hands them (`cLightInfo[i].color.w == 1`), i.e. the engine's
   once-per-model sun. Static props with baked vertex lighting (`STATIC_LIGHT`) keep VRAD's baked sun

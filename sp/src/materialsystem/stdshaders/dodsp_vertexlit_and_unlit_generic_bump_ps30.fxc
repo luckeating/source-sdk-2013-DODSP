@@ -97,11 +97,13 @@ sampler FlashlightSampler					: register( s7 );
 sampler ShadowDepthSampler					: register( s8 );	// Flashlight shadow depth map sampler
 sampler DiffuseWarpSampler					: register( s9 );	// Lighting warp sampler (1D texture for diffuse lighting modification)
 
+#define DoDSP_VertToEye( i )	( g_EyePos - (i).worldPos_projPosZ.xyz )	// DOD-SP: what the vertex shader used to send
+
 struct PS_INPUT
 {
 	float4 baseTexCoord2_tangentSpaceVertToEyeVectorXY			: TEXCOORD0;
 	float3 lightAtten											: TEXCOORD1;
-	float4 worldVertToEyeVectorXYZ_tangentSpaceVertToEyeVectorZ	: TEXCOORD2;
+	float4 dodspSun											: TEXCOORD2;	// DOD-SP: the sun (took the eye vector's slot, see DoDSP_VertToEye)
 	float3 vWorldNormal											: TEXCOORD3;	// World-space normal
 	float4 vWorldTangent										: TEXCOORD4;
 #if ((defined(SHADER_MODEL_PS_2_B) || defined(SHADER_MODEL_PS_3_0)))
@@ -118,7 +120,6 @@ struct PS_INPUT
 	float4 flashlightSpacePos									: TEXCOORD8;
 #endif
 #endif
-	float4 dodspSun								: TEXCOORD9;	// DOD-SP: from the vertex shader (dodsp_modelsun_vs_fxc.h)
 };
 
 // Calculate both types of Fog and lerp to get result
@@ -296,7 +297,7 @@ float4 main( PS_INPUT i ) : COLOR
 #if FOGTYPE == 2 || FLASHLIGHT != 0
 	float3 diffuseComponent = albedo * diffuseLighting;
 #else
-	float3 vEyeDir = normalize( i.worldVertToEyeVectorXYZ_tangentSpaceVertToEyeVectorZ.xyz );
+	float3 vEyeDir = normalize( DoDSP_VertToEye( i ) );
 	float flFresnelMinlight = saturate( dot( worldSpaceNormal, vEyeDir ) );
 
 	float3 diffuseComponent = albedo * lerp( diffuseLighting, 1, g_fMinLighting * flFresnelMinlight );
@@ -310,13 +311,13 @@ float4 main( PS_INPUT i ) : COLOR
 			// This will apply a fresnel term based on the vertex normal (not the per-pixel normal!) to help fake and internal glow look
 		    #if ((defined(SHADER_MODEL_PS_2_B) || defined(SHADER_MODEL_PS_3_0)))
 				float3 vVertexNormal = normalize( i.vWorldNormal.xyz );
-				float flSelfIllumFresnel = ( pow( saturate( dot( vVertexNormal.xyz, normalize( i.worldVertToEyeVectorXYZ_tangentSpaceVertToEyeVectorZ.xyz ) ) ), g_SelfIllumScaleBiasExpBrightness.z ) * g_SelfIllumScaleBiasExpBrightness.x ) + g_SelfIllumScaleBiasExpBrightness.y;
+				float flSelfIllumFresnel = ( pow( saturate( dot( vVertexNormal.xyz, normalize( DoDSP_VertToEye( i ) ) ) ), g_SelfIllumScaleBiasExpBrightness.z ) * g_SelfIllumScaleBiasExpBrightness.x ) + g_SelfIllumScaleBiasExpBrightness.y;
 
 				float3 selfIllumComponent = g_SelfIllumTint * albedo * g_SelfIllumScaleBiasExpBrightness.w;
 				diffuseComponent = lerp( diffuseComponent, selfIllumComponent, baseColor.a * saturate( flSelfIllumFresnel ) );
 			#else
 				float3 vVertexNormal = i.vWorldNormal.xyz;
-				float flSelfIllumFresnel = ( pow( saturate( dot( vVertexNormal.xyz, ( i.worldVertToEyeVectorXYZ_tangentSpaceVertToEyeVectorZ.xyz ) ) ), g_SelfIllumScaleBiasExpBrightness.z ) * g_SelfIllumScaleBiasExpBrightness.x ) + g_SelfIllumScaleBiasExpBrightness.y;
+				float flSelfIllumFresnel = ( pow( saturate( dot( vVertexNormal.xyz, ( DoDSP_VertToEye( i ) ) ) ), g_SelfIllumScaleBiasExpBrightness.z ) * g_SelfIllumScaleBiasExpBrightness.x ) + g_SelfIllumScaleBiasExpBrightness.y;
 
 				float3 selfIllumComponent = g_SelfIllumTint * albedo * g_SelfIllumScaleBiasExpBrightness.w;
 				diffuseComponent = lerp( diffuseComponent, selfIllumComponent, baseColor.a * saturate( flSelfIllumFresnel ) );
@@ -332,7 +333,7 @@ float4 main( PS_INPUT i ) : COLOR
 #if !FLASHLIGHT || defined ( _X360 )
 	if( bCubemap )
 	{
-		float3 reflectVect = CalcReflectionVectorUnnormalized( worldSpaceNormal, i.worldVertToEyeVectorXYZ_tangentSpaceVertToEyeVectorZ.xyz );
+		float3 reflectVect = CalcReflectionVectorUnnormalized( worldSpaceNormal, DoDSP_VertToEye( i ) );
 
 		specularLighting = ENV_MAP_SCALE * texCUBE( EnvmapSampler, reflectVect );
 		specularLighting *= specularFactor;

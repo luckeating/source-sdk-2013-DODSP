@@ -741,7 +741,7 @@ static void DrawVertexLitGeneric_DX9_Internal( CBaseVSShader *pShader, IMaterial
 					SET_STATIC_PIXEL_SHADER_COMBO( ENVMAPMASK, bHasEnvmapMask );
 					SET_STATIC_PIXEL_SHADER_COMBO( DODSP_SUNFILTER, bHasFlashlight ? 0 : DoDSP_SunFilterMode() );	// DOD-SP
 					if ( !bHasFlashlight )
-						DoDSP_SunShadowState( pShaderShadow );									// DOD-SP: cascade samplers
+						DoDSP_SunShadowState( pShaderShadow, DODSP_MSUN_SAMPLER );									// DOD-SP: cascade samplers
 					SET_STATIC_PIXEL_SHADER( dodsp_vertexlit_and_unlit_generic_bump_ps30 );
 				}
 			}
@@ -814,7 +814,7 @@ static void DrawVertexLitGeneric_DX9_Internal( CBaseVSShader *pShader, IMaterial
 #endif
 					SET_STATIC_PIXEL_SHADER_COMBO( DODSP_SUNFILTER, bHasFlashlight ? 0 : DoDSP_SunFilterMode() );	// DOD-SP
 					if ( !bHasFlashlight )
-						DoDSP_SunShadowState( pShaderShadow );									// DOD-SP: cascade samplers
+						DoDSP_SunShadowState( pShaderShadow, DODSP_MSUN_SAMPLER );									// DOD-SP: cascade samplers
 					SET_STATIC_PIXEL_SHADER( dodsp_vertexlit_and_unlit_generic_ps30 );
 				}
 			}

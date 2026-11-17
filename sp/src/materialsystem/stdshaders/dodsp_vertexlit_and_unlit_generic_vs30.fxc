@@ -86,7 +86,7 @@ const float4 g_vMiscParams4					: register( SHADER_SPECIFIC_CONST_9 );
 //		 cMorphTargetTextureDim.z = 4tuples/morph
 const float3 cMorphTargetTextureDim			: register( SHADER_SPECIFIC_CONST_10 );
 const float4 cMorphSubrect					: register( SHADER_SPECIFIC_CONST_11 );
-sampler2D morphSampler						: register( D3DVERTEXTEXTURESAMPLER0, s0 );
+sampler2D morphSampler						: register( s0 )	/* DOD-SP: today's compiler rejects the old D3DVERTEXTEXTURESAMPLER0 form (X3089) */;
 #endif
 
 struct VS_INPUT
@@ -132,9 +132,9 @@ struct VS_OUTPUT
 #endif
 	float4 color					: TEXCOORD2;		// Vertex color (from lighting or unlit)
 
-#if 1 //CUBEMAP || _X360
-	float3 worldVertToEyeVector		: TEXCOORD3;		// Necessary for cubemaps
-#endif
+	// DOD-SP: vs_3_0 has 11 output registers and Mapbase used them all, so the sun takes the eye
+	// vector's slot; the pixel shader works the eye vector out from g_EyePos and the world position.
+	float4 dodspSun					: TEXCOORD3;		// DOD-SP: light-space position for the per-pixel sun
 
 	float3 worldSpaceNormal			: TEXCOORD4;		// Necessary for cubemaps and flashlight
 
@@ -149,7 +149,6 @@ struct VS_OUTPUT
 	float3 SeamlessWeights          : COLOR0;				// x y z projection weights
 #endif
 
-	float4 dodspSun								: TEXCOORD9;	// DOD-SP: light-space position for the per-pixel sun
 };
 
 VS_OUTPUT main( const VS_INPUT v )
@@ -221,7 +220,6 @@ VS_OUTPUT main( const VS_INPUT v )
 
 	// Needed for cubemaps 
 #if 1 //CUBEMAP
-	o.worldVertToEyeVector.xyz = VSHADER_VECT_SCALE * (cEyePos - worldPos);
 #endif
 
 #if !defined (_X360) && FLASHLIGHT

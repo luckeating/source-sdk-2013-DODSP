@@ -2,7 +2,7 @@
 //
 // One owner for how a cascade is read, used by the brush sun (dodsp_sun_fxc.h, stage 3b-2) and the
 // model sun (dodsp_modelsun_ps_fxc.h, stage 4):
-//   - the three cascade depth maps on samplers s13..s15 (near, mid, far)
+//   - the three cascade depth maps on samplers s13..s15 (near, mid, far; skin: s9..s11)
 //   - the depth compare (DODSP_SUNFILTER static combo: 0 = hardware compare, NVIDIA; 1 = raw depth)
 //   - the soft-edge filter and the border test
 //   - picking the finest cascade that holds the point, without branching (gradient-based texture
@@ -12,9 +12,16 @@
 #ifndef DODSP_SUN_COMMON_FXC_H
 #define DODSP_SUN_COMMON_FXC_H
 
-sampler DoDSP_CascadeNear			: register( s13 );
-sampler DoDSP_CascadeMid			: register( s14 );
-sampler DoDSP_CascadeFar			: register( s15 );
+// Samplers s13..s15 unless the including shader picks others (the skin shader uses all 16 and
+// puts the cascades on its unused wrinkle samplers - see dodsp_sun_shader.h DODSP_MSUN_SAMPLER_*)
+#ifndef DODSP_SAMPLER_NEAR
+#define DODSP_SAMPLER_NEAR	s13
+#define DODSP_SAMPLER_MID	s14
+#define DODSP_SAMPLER_FAR	s15
+#endif
+sampler DoDSP_CascadeNear			: register( DODSP_SAMPLER_NEAR );
+sampler DoDSP_CascadeMid			: register( DODSP_SAMPLER_MID );
+sampler DoDSP_CascadeFar			: register( DODSP_SAMPLER_FAR );
 
 // 1 = lit, 0 = shadowed, for one depth-map texel neighbourhood
 float DoDSP_Compare( sampler s, float2 uv, float z )

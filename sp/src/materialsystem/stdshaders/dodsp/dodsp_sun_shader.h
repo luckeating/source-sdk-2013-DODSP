@@ -19,8 +19,8 @@ struct VertexLitGeneric_DX9_Vars_t;
 // DODSP_SUNFILTER combo: 0 = hardware depth compare (NVIDIA), 1 = raw depth compared in the shader
 int DoDSP_SunFilterMode();
 
-// Shadow state: samplers 13..15 hold the near/mid/far cascades
-void DoDSP_SunShadowState( IShaderShadow *pShaderShadow );
+// Shadow state: samplers nFirstSampler..+2 hold the near/mid/far cascades (13..15; the skin shader 9..11)
+void DoDSP_SunShadowState( IShaderShadow *pShaderShadow, int nFirstSampler = 13 );
 
 // Dynamic state: binds the cascades and sets c13..c20 (dodsp_sun_fxc.h). lightmap scale = what the shader multiplies
 // lightmaps by (pShaderAPI->GetLightMapScaleFactor()), so the sun lands in the same units.
@@ -44,11 +44,14 @@ enum
 	DODSP_MSUN_PSREG_COUNT	= 4,
 	DODSP_MSUN_VSREG		= 221,	// c221..c223 in every model vertex shader
 	DODSP_MSUN_VSREG_COUNT	= 3,
+	DODSP_MSUN_SAMPLER		= 13,	// cascades on s13..s15 (plain and bump)
+	DODSP_MSUN_SAMPLER_SKIN	= 9,	// the skin shader uses all 16 samplers: its wrinkle ones (WRINKLEMAP pinned to 0)
 };
 
 // Dynamic state for a model draw. bBasePass = false for the flashlight pass: then only the vertex
 // shader's "our sun draws" flag is cleared (the pixel registers belong to the flashlight there).
-void DoDSP_ModelSunDynamicState( CBaseVSShader *pShader, IShaderDynamicAPI *pShaderAPI, int nPsReg, bool bBasePass );
+void DoDSP_ModelSunDynamicState( CBaseVSShader *pShader, IShaderDynamicAPI *pShaderAPI, int nPsReg, bool bBasePass,
+								 int nFirstSampler = DODSP_MSUN_SAMPLER );
 
 // NULL when DODSP_VertexLitGeneric can draw this material, otherwise the feature that sends it
 // back to Mapbase's SDK_VertexLitGeneric (used by SHADER_FALLBACK). One owner: this list and the

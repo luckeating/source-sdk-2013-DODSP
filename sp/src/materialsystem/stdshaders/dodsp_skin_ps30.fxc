@@ -63,6 +63,11 @@ const float4 g_DoDSP_MSun0				: register( c15 );	// DOD-SP sun (the flashlight m
 const float4 g_DoDSP_MSun1				: register( c16 );	// DOD-SP sun
 const float4 g_DoDSP_MSun2				: register( c17 );	// DOD-SP sun
 const float4 g_DoDSP_MSun3				: register( c18 );	// DOD-SP sun
+// The skin shader uses all 16 samplers; the wrinkle ones (s9..s11) are free because DOD-SP pins
+// WRINKLEMAP to 0, so the cascades go there (must match DODSP_MSUN_SAMPLER_SKIN in dodsp_sun_shader.h)
+#define DODSP_SAMPLER_NEAR	s9
+#define DODSP_SAMPLER_MID	s10
+#define DODSP_SAMPLER_FAR	s11
 #include "dodsp_modelsun_ps_fxc.h"
 #endif
 const float4 g_FresnelSpecParams					: register( PSREG_FRESNEL_SPEC_PARAMS );			// xyz are fresnel, w is specular boost
