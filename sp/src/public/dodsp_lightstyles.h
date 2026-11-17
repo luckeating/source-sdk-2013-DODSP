@@ -16,4 +16,13 @@
 // INVARIANT: only the light_environment's direct light may use this style.
 #define DODSP_LIGHTSTYLE_SUN	31
 
+// Static props (lighting stage 4d). With -dodsp_sunstyle AND -StaticPropLighting, VRAD bakes static
+// prop vertex lighting WITHOUT the sun's direct light (vertex lighting has no light styles, so it can't
+// be switched like the lightmaps), and the game adds the sun per pixel instead. VRAD marks the BSP's
+// level flags (LUMP_MAP_FLAGS, next to Valve's LVLFLAGS_BAKED_STATIC_PROP_LIGHTING_*) so the client
+// knows; a map without the mark keeps the sun in its props and the game never adds a second one.
+// INVARIANT: the mark is set exactly when that pass baked static props without the direct sun.
+#define DODSP_LVLFLAGS_PROPS_NOSUN_NONHDR	0x00010000
+#define DODSP_LVLFLAGS_PROPS_NOSUN_HDR		0x00020000
+
 #endif // DODSP_LIGHTSTYLES_H

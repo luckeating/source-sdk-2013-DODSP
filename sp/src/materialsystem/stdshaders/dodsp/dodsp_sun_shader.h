@@ -42,8 +42,8 @@ enum
 	DODSP_MSUN_PSREG_BUMP	= 22,	// dodsp_vertexlit_and_unlit_generic_bump_ps30: the flashlight's c22..c25
 	DODSP_MSUN_PSREG_SKIN	= 15,	// dodsp_skin_ps30: the flashlight matrix's c15..c18
 	DODSP_MSUN_PSREG_COUNT	= 4,
-	DODSP_MSUN_VSREG		= 221,	// c221..c223 in every model vertex shader
-	DODSP_MSUN_VSREG_COUNT	= 3,
+	DODSP_MSUN_VSREG		= 221,	// c221..c224 in every model vertex shader
+	DODSP_MSUN_VSREG_COUNT	= 4,
 	DODSP_MSUN_SAMPLER		= 13,	// cascades on s13..s15 (plain and bump)
 	DODSP_MSUN_SAMPLER_SKIN	= 9,	// the skin shader uses all 16 samplers: its wrinkle ones (WRINKLEMAP pinned to 0)
 };

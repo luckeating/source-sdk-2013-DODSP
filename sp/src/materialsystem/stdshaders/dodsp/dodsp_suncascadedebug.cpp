@@ -23,6 +23,7 @@ BEGIN_VS_SHADER( DODSP_SunCascadeDebug, "DOD-SP stage 3b-1: draws a sun cascade 
 	BEGIN_SHADER_PARAMS
 		SHADER_PARAM( MARKER, SHADER_PARAM_TYPE_VEC4, "[0 0 0 0]", "aim point in this cascade: u, v, depth, 1 = draw" )
 		SHADER_PARAM( PARAMS, SHADER_PARAM_TYPE_VEC4, "[0.004 0.002 0 0]", "x = texture units per screen pixel, y = depth bias" )
+		SHADER_PARAM( RAWDEPTH, SHADER_PARAM_TYPE_INTEGER, "0", "1 = $basetexture returns raw depth (the 4b INTZ probe), never a hardware compare" )
 	END_SHADER_PARAMS
 
 	SHADER_INIT_PARAMS()
@@ -51,14 +52,17 @@ BEGIN_VS_SHADER( DODSP_SunCascadeDebug, "DOD-SP stage 3b-1: draws a sun cascade 
 			pShaderShadow->EnableDepthWrites( false );
 			pShaderShadow->EnableDepthTest( false );
 			pShaderShadow->EnableTexture( SHADER_SAMPLER0, true );
-			pShaderShadow->SetShadowDepthFiltering( SHADER_SAMPLER0 );
+			const bool bRawDepth = params[RAWDEPTH]->GetIntValue() != 0;
+			if ( !bRawDepth )
+				pShaderShadow->SetShadowDepthFiltering( SHADER_SAMPLER0 );	// raw depth is read point sampled
 			pShaderShadow->VertexShaderVertexFormat( VERTEX_POSITION, 1, NULL, 0 );
 
 			DECLARE_STATIC_VERTEX_SHADER( dodsp_screenspace_vs30 );
 			SET_STATIC_VERTEX_SHADER( dodsp_screenspace_vs30 );
 
 			DECLARE_STATIC_PIXEL_SHADER( dodsp_suncascadedebug_ps30 );
-			SET_STATIC_PIXEL_SHADER_COMBO( FILTERMODE, g_pHardwareConfig->GetShadowFilterMode() );
+			// FILTERMODE 1 = compare in the shader against tex2D's raw depth (the existing ATI path)
+			SET_STATIC_PIXEL_SHADER_COMBO( FILTERMODE, bRawDepth ? 1 : g_pHardwareConfig->GetShadowFilterMode() );
 			SET_STATIC_PIXEL_SHADER( dodsp_suncascadedebug_ps30 );
 		}
 		DYNAMIC_STATE

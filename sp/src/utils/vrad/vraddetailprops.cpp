@@ -10,6 +10,7 @@
 //=============================================================================//
 
 #include "vrad.h"
+#include "dodsp_lightstyles.h"
 #include "Bsplib.h"
 #include "GameBSPFile.h"
 #include "UtlBuffer.h"
@@ -716,26 +717,56 @@ void ComputeIndirectLightingAtPoint( Vector &position, Vector &normal, Vector &o
 		}
 
 
-		Vector lightmapColor;
-		if ( !surfEnum.m_bHasLuxel )
+		// DOD-SP (-dodsp_sunstyle): the sunlit surface's direct sun lives in its own style, but the
+		// light it bounces onto a prop is indirect light and must stay in the prop's bake - the same
+		// rule as the leaf ambient cubes (leaf_ambient_lighting.cpp). Slot 0 is read as before; the
+		// sun's slot is added when it is another one.
+		int nSlots[2] = { 0, -1 };
+		if ( g_bDoDSPSunStyle )
 		{
-			ColorRGBExp32* pAvgLightmapColor = dface_AvgLightColor( surfEnum.m_pSurface, 0 );
-			ColorRGBExp32ToVector( *pAvgLightmapColor, lightmapColor );
+			for ( int k = 1; k < MAXLIGHTMAPS && surfEnum.m_pSurface->styles[k] != 255; k++ )
+			{
+				if ( surfEnum.m_pSurface->styles[k] == DODSP_LIGHTSTYLE_SUN )
+				{
+					nSlots[1] = k;
+					break;
+				}
+			}
 		}
-		else
+
+		Vector lightmapColor( 0.0f, 0.0f, 0.0f );
+		for ( int iSlot = 0; iSlot < 2; iSlot++ )
 		{
-			// get color from displacement
-			int smax = ( surfEnum.m_pSurface->m_LightmapTextureSizeInLuxels[0] ) + 1;
-			int tmax = ( surfEnum.m_pSurface->m_LightmapTextureSizeInLuxels[1] ) + 1;
+			const int nSlot = nSlots[iSlot];
+			if ( nSlot < 0 )
+				continue;
+			Vector slotColor;
+			if ( !surfEnum.m_bHasLuxel )
+			{
+				ColorRGBExp32* pAvgLightmapColor = dface_AvgLightColor( surfEnum.m_pSurface, nSlot );
+				ColorRGBExp32ToVector( *pAvgLightmapColor, slotColor );
+			}
+			else
+			{
+				// get color from displacement
+				int smax = ( surfEnum.m_pSurface->m_LightmapTextureSizeInLuxels[0] ) + 1;
+				int tmax = ( surfEnum.m_pSurface->m_LightmapTextureSizeInLuxels[1] ) + 1;
 
-			// luxelcoord is in the space of the accumulated lightmap page; we need to convert
-			// it to be in the space of the surface
-			int ds = clamp( (int)surfEnum.m_LuxelCoord.x, 0, smax-1 );
-			int dt = clamp( (int)surfEnum.m_LuxelCoord.y, 0, tmax-1 );
+				// luxelcoord is in the space of the accumulated lightmap page; we need to convert
+				// it to be in the space of the surface
+				int ds = clamp( (int)surfEnum.m_LuxelCoord.x, 0, smax-1 );
+				int dt = clamp( (int)surfEnum.m_LuxelCoord.y, 0, tmax-1 );
 
-			ColorRGBExp32* pLightmap = (ColorRGBExp32*)&(*pdlightdata)[surfEnum.m_pSurface->lightofs];
-			pLightmap += dt * smax + ds;
-			ColorRGBExp32ToVector( *pLightmap, lightmapColor );
+				// each style's lightmap follows the previous one (with its bump maps, if any)
+				int nStyleSize = smax * tmax;
+				if ( SurfHasBumpedLightmaps( surfEnum.m_pSurface ) )
+					nStyleSize *= ( NUM_BUMP_VECTS + 1 );
+
+				ColorRGBExp32* pLightmap = (ColorRGBExp32*)&(*pdlightdata)[surfEnum.m_pSurface->lightofs];
+				pLightmap += nSlot * nStyleSize + dt * smax + ds;
+				ColorRGBExp32ToVector( *pLightmap, slotColor );
+			}
+			lightmapColor += slotColor;
 		}
 
 		VectorMultiply( lightmapColor, dtexdata[pTex->texdata].reflectivity, lightmapColor );

@@ -15,7 +15,7 @@
 
 #define DODSP_SHADER_DLL_NAME		"game_shader_dx6"
 #define DODSP_SHADER_PREFIX			"DODSP_"
-#define DODSP_SHADER_DLL_VERSION	"4a"	// bump with every DLL change; see dodsp_shaders_version
+#define DODSP_SHADER_DLL_VERSION	"4d"	// bump with every DLL change; see dodsp_shaders_version
 
 // Stage 3a: proves the DLL loads next to Mapbase's. It only falls back to UnlitGeneric.
 #define DODSP_SHADER_PROBE			"DODSP_Probe"
@@ -46,10 +46,20 @@
 #define DODSP_RP_VEC_CASCADE0		15	// near: x = scale (1 / width), y = u offset, z = v offset
 #define DODSP_RP_VEC_CASCADE1		16	// mid
 #define DODSP_RP_VEC_CASCADE2		17	// far
-#define DODSP_RP_VEC_SUNCOLOR		18	// sun colour in lightmap units; 0 0 0 = no dynamic sun
-#define DODSP_RP_VEC_FILTER			19	// x = filter spread (texels), y = normal offset (texels)
+#define DODSP_RP_VEC_SUNCOLOR		18	// sun colour in lightmap units while any DODSP_SUNMODE_ is on, else 0 0 0
+#define DODSP_RP_VEC_FILTER			19	// x = filter spread (texels), y = normal offset (texels), z = DODSP_SUNMODE_ bits
 #define DODSP_RP_INT_CASCADE0		17	// ITexture * of the near cascade's depth map
 #define DODSP_RP_INT_CASCADE1		18	// mid
 #define DODSP_RP_INT_CASCADE2		19	// far
+
+// Who takes the per-pixel sun (bits in DODSP_RP_VEC_FILTER.z; every slot above is taken, Valve's
+// MAX_VECTOR_RENDER_PARMS is 20). Decided ONLY by the client (PublishSun), read ONLY through
+// DoDSP_SunModes in dodsp_sun_shader.cpp.
+//   DYNAMIC      brushes and moving/unbaked models - dodsp_sun_baked 0 (the baked direct sun is off)
+//   STATICPROPS  models with VRAD's baked vertex lighting - whenever the map's static props were
+//                baked without the sun (dodsp_lightstyles.h DODSP_LVLFLAGS_PROPS_NOSUN_*), in BOTH
+//                sun modes: vertex lighting can't switch the sun, so the game always draws it there.
+#define DODSP_SUNMODE_DYNAMIC		1
+#define DODSP_SUNMODE_STATICPROPS	2
 
 #endif // DODSP_SHADERS_H

@@ -9,6 +9,7 @@
 // vrad.c
 
 #include "vrad.h"
+#include "dodsp_lightstyles.h"
 #include "physdll.h"
 #include "lightmap.h"
 #include "tier1/strtools.h"
@@ -2191,6 +2192,23 @@ void VRAD_LoadBSP( char const *pFilename )
 	else
 	{
 		g_LevelFlags &= ~( LVLFLAGS_BAKED_STATIC_PROP_LIGHTING_HDR | LVLFLAGS_BAKED_STATIC_PROP_LIGHTING_NONHDR );
+	}
+
+	// DOD-SP: our marks never collide with Valve's level flags
+	COMPILE_TIME_ASSERT( ( ( DODSP_LVLFLAGS_PROPS_NOSUN_NONHDR | DODSP_LVLFLAGS_PROPS_NOSUN_HDR ) &
+						   ( LVLFLAGS_BAKED_STATIC_PROP_LIGHTING_NONHDR | LVLFLAGS_BAKED_STATIC_PROP_LIGHTING_HDR ) ) == 0 );
+	// DOD-SP (stage 4d): this pass's static props are baked without the sun's direct light exactly
+	// when it bakes them at all (-StaticPropLighting) with the sun in its own style (-dodsp_sunstyle).
+	// Mark it per HDR/LDR pass, like Valve's flags above (dodsp_lightstyles.h).
+	{
+		const uint32 nNoSun = g_bHDR ? DODSP_LVLFLAGS_PROPS_NOSUN_HDR : DODSP_LVLFLAGS_PROPS_NOSUN_NONHDR;
+		if ( g_bStaticPropLighting && g_bDoDSPSunStyle )
+		{
+			g_LevelFlags |= nNoSun;
+			Msg( "DOD-SP: static props are baked without the sun's direct light (the game adds it per pixel)\n" );
+		}
+		else
+			g_LevelFlags &= ~nNoSun;
 	}
 
 	// now, we need to set our face ptr depending upon hdr, and if hdr, init it

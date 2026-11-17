@@ -11,6 +11,11 @@
 // INVARIANT (watchdog): dodsp_sun_baked 0 while the dynamic sun can't draw (no DOD-SP sun shaders,
 // no shader model 3.0, cascades off) would leave the map with no direct sun at all, so the
 // watchdog puts the baked sun back and says why.
+// Stage 4d: static props. When VRAD baked a map's static props without the sun (the BSP's level flags,
+// dodsp_lightstyles.h), those props get the per-pixel sun in BOTH sun modes (DODSP_SUNMODE_STATICPROPS):
+// their vertex lighting can't switch the sun on and off like the lightmaps can.
+// INVARIANT (watchdog): such a map while the per-pixel sun can't draw leaves its static props with no
+// direct sun at all (nothing to put back - the bake has none), so the watchdog says so and why.
 //
 // Stage 3b-1: dodsp_csm_view draws them top-right with DOD-SP's DODSP_SunCascadeDebug shader and a
 // ring on the point under the crosshair (green = the cascade says sunlit, red = in shadow), which
@@ -26,6 +31,13 @@
 //
 // Render targets carry DOD-SP-only names (_rt_DODSP_*) so they can never collide with Valve's or
 // Mapbase's.
+//
+// Stage 4b probe (dodsp_csm_probe_intz 1, read at map load): the soft shadows need the raw depth out
+// of a cascade, but on NVIDIA our cascades use a format the card compares in hardware and never
+// returns. The probe also draws the near cascade into an INTZ map (NVIDIA's readable depth format)
+// and shows it as a 4th panel in dodsp_csm_view, read as raw depth. Same picture and ring as the
+// near panel = the 2014 engine can make and read INTZ, and 4b can be built on it. Nothing in the
+// game's lighting reads the probe.
 //
 // Cvars: dodsp_csm (1 = render), dodsp_csm_debug (1 = coverage boxes + stats), dodsp_csm_res,
 // dodsp_csm_size_near/mid, dodsp_csm_far_interval, dodsp_csm_slopebias, dodsp_csm_bias,
@@ -54,6 +66,9 @@
 #include "dodsp_shaders.h"
 #include "c_dodsp_shaderdll.h"
 #include "c_dodsp_sdkshaders.h"
+#include "filesystem.h"
+#include "bspfile.h"
+#include "dodsp_lightstyles.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -74,6 +89,9 @@ static ConVar dodsp_sun_scale( "dodsp_sun_scale", "1", 0, "DOD-SP: brightness of
 static ConVar dodsp_sun_filter( "dodsp_sun_filter", "1.5", 0, "DOD-SP: softness of the dynamic sun's shadow edge, in cascade texels" );
 static ConVar dodsp_sun_normaloffset( "dodsp_sun_normaloffset", "1.5", 0, "DOD-SP: how far (in cascade texels) a surface is pushed out along its normal before the shadow test - fights shadow acne" );
 static ConVar dodsp_sun_bias( "dodsp_sun_bias", "0.0005", 0, "DOD-SP: depth bias of the dynamic sun's shadow test (0..1 of the cascade depth range)" );
+static ConVar dodsp_csm_probe_intz( "dodsp_csm_probe_intz", "0", 0,
+	"DOD-SP stage 4b probe: 1 = also draw the near sun cascade into an NVIDIA INTZ (readable depth) map, shown as a 4th panel "
+	"(left) in dodsp_csm_view. Read at map load." );
 static ConVar dodsp_csm_view_bias( "dodsp_csm_view_bias", "0.002", 0, "DOD-SP debug: depth bias (0..1 of the cascade's depth) for the aim-point test in dodsp_csm_view" );
 
 namespace
@@ -100,11 +118,13 @@ class CDoDSPSunCascades : public CAutoGameSystem
 {
 public:
 	CDoDSPSunCascades() : CAutoGameSystem( "CDoDSPSunCascades" ), m_bAllocated( false ), m_nRes( 0 ), m_bHaveSun( false ), m_nLastFrame( -1 ),
-		m_bViewMaterials( false ), m_bViewWarned( false ), m_bSunInvariantWarned( false ) {}
+		m_bViewMaterials( false ), m_bViewWarned( false ), m_bSunInvariantWarned( false ),
+		m_bPropsNoSun( false ), m_bPropsInvariantWarned( false ),
+		m_bProbe( false ), m_pProbeMarker( NULL ), m_pProbeParams( NULL ) {}
 
-	virtual void LevelInitPostEntity()	{ Reset(); EnsureTargets(); FindSun(); }
-	virtual void LevelShutdownPreEntity() { Reset(); m_bHaveSun = false; }
-	virtual void Shutdown()				{ FreeTargets(); FreeViewMaterials(); }
+	virtual void LevelInitPostEntity()	{ Reset(); EnsureTargets(); FindSun(); ReadPropsNoSun(); EnsureProbe(); }
+	virtual void LevelShutdownPreEntity() { Reset(); m_bHaveSun = false; m_bPropsNoSun = false; }
+	virtual void Shutdown()				{ FreeProbe(); FreeTargets(); FreeViewMaterials(); }
 
 	void Render( const CViewSetup &mainView );
 	void PublishSun();
@@ -131,6 +151,9 @@ private:
 	bool EnsureViewMaterials();
 	bool CanDrawDynamicSun( const char **ppszWhy ) const;
 	void WatchSunInvariant();
+	void ReadPropsNoSun();
+	void EnsureProbe();
+	void FreeProbe();
 	void FreeViewMaterials();
 
 	bool				m_bAllocated;
@@ -154,6 +177,16 @@ private:
 	bool				m_bViewMaterials;
 	bool				m_bViewWarned;
 	bool				m_bSunInvariantWarned;
+
+	bool				m_bPropsNoSun;			// this map's static props were baked without the direct sun
+	bool				m_bPropsInvariantWarned;
+
+	// stage 4b INTZ probe
+	CTextureReference	m_ProbeDepth;
+	bool				m_bProbe;
+	CMaterialReference	m_ProbeMat;
+	IMaterialVar		*m_pProbeMarker;
+	IMaterialVar		*m_pProbeParams;
 };
 
 static CDoDSPSunCascades s_DoDSPSunCascades;
@@ -193,6 +226,41 @@ void CDoDSPSunCascades::FreeTargets()
 	m_DummyColor.Shutdown();
 	m_bAllocated = false;
 	Reset();
+}
+
+// The 4b probe's INTZ map: same size as the cascades, point sampled (raw depth is never filtered)
+void CDoDSPSunCascades::EnsureProbe()
+{
+	const bool bWant = dodsp_csm_probe_intz.GetBool() && m_bAllocated;
+	if ( bWant == m_bProbe && ( !bWant || m_ProbeDepth->GetActualWidth() == m_nRes ) )
+		return;
+	FreeProbe();
+	if ( !bWant )
+		return;
+
+	materials->BeginRenderTargetAllocation();
+	ITexture *pTex = materials->CreateNamedRenderTargetTextureEx2( "_rt_DODSP_SunProbeINTZ", m_nRes, m_nRes, RT_SIZE_NO_CHANGE,
+		IMAGE_FORMAT_NV_INTZ, MATERIAL_RT_DEPTH_NONE, TEXTUREFLAGS_CLAMPS | TEXTUREFLAGS_CLAMPT | TEXTUREFLAGS_POINTSAMPLE );
+	materials->EndRenderTargetAllocation();
+	if ( !pTex || pTex->IsError() )
+	{
+		Warning( "DOD-SP INTZ probe: RESULT FAIL - the engine could not make an INTZ render target\n" );
+		return;
+	}
+	m_ProbeDepth.Init( pTex );
+	m_bProbe = true;
+	Msg( "DOD-SP INTZ probe: made %dx%d, format %d (INTZ = %d, cascades use %d) - compare the left panel of dodsp_csm_view with the near one\n",
+		 m_ProbeDepth->GetActualWidth(), m_ProbeDepth->GetActualHeight(), (int)m_ProbeDepth->GetImageFormat(),
+		 (int)IMAGE_FORMAT_NV_INTZ, (int)m_Cascades[0].m_Depth->GetImageFormat() );
+}
+
+void CDoDSPSunCascades::FreeProbe()
+{
+	m_ProbeMat.Shutdown();
+	m_pProbeMarker = m_pProbeParams = NULL;
+	if ( m_bProbe )
+		m_ProbeDepth.Shutdown();
+	m_bProbe = false;
 }
 
 void CDoDSPSunCascades::FindSun()
@@ -314,6 +382,8 @@ void CDoDSPSunCascades::Render( const CViewSetup &mainView )
 
 		double t0 = Plat_FloatTime();
 		view->UpdateShadowDepthTexture( m_DummyColor, c.m_Depth, shadowView );
+		if ( i == DODSP_CASCADE_NEAR && m_bProbe )
+			view->UpdateShadowDepthTexture( m_DummyColor, m_ProbeDepth, shadowView );	// 4b probe: same view, INTZ
 		c.m_flCostMs = (float)( ( Plat_FloatTime() - t0 ) * 1000.0 );
 		c.m_flLastRender = gpGlobals->curtime;
 		c.m_nRenders++;
@@ -341,8 +411,53 @@ bool CDoDSPSunCascades::CanDrawDynamicSun( const char **ppszWhy ) const
 	return !pszWhy;
 }
 
+// Reads the map's level flags (LUMP_MAP_FLAGS) for VRAD's "static props baked without the sun" mark,
+// for the lighting the engine draws with (HDR or LDR pass)
+void CDoDSPSunCascades::ReadPropsNoSun()
+{
+	m_bPropsNoSun = false;
+	m_bPropsInvariantWarned = false;
+	const model_t *pWorld = modelinfo->GetModel( 1 );
+	const char *pszMap = pWorld ? modelinfo->GetModelName( pWorld ) : NULL;
+	FileHandle_t h = ( pszMap && *pszMap ) ? g_pFullFileSystem->Open( pszMap, "rb" ) : FILESYSTEM_INVALID_HANDLE;
+	if ( !h )
+		return;
+	dheader_t hdr;
+	dflagslump_t flags;
+	flags.m_LevelFlags = 0;
+	bool bRead = g_pFullFileSystem->Read( &hdr, sizeof( hdr ), h ) == sizeof( hdr );
+	const lump_t &l = hdr.lumps[LUMP_MAP_FLAGS];
+	if ( bRead && l.filelen >= (int)sizeof( flags ) && *(const int *)l.fourCC == 0 )
+	{
+		g_pFullFileSystem->Seek( h, l.fileofs, FILESYSTEM_SEEK_HEAD );
+		bRead = g_pFullFileSystem->Read( &flags, sizeof( flags ), h ) == sizeof( flags );
+	}
+	g_pFullFileSystem->Close( h );
+	if ( !bRead )
+		return;
+
+	const bool bHDR = g_pMaterialSystemHardwareConfig->GetHDREnabled() && engine->MapHasHDRLighting();
+	m_bPropsNoSun = ( flags.m_LevelFlags & ( bHDR ? DODSP_LVLFLAGS_PROPS_NOSUN_HDR : DODSP_LVLFLAGS_PROPS_NOSUN_NONHDR ) ) != 0;
+	if ( m_bPropsNoSun )
+		Msg( "DOD-SP sun: this map's static props were baked without the direct sun - the game draws it on them per pixel\n" );
+}
+
 void CDoDSPSunCascades::WatchSunInvariant()
 {
+	if ( m_bPropsNoSun )
+	{
+		const char *pszWhy = NULL;
+		if ( !CanDrawDynamicSun( &pszWhy ) )
+		{
+			if ( !m_bPropsInvariantWarned )
+				Warning( "INVARIANT: DOD-SP sun: this map's static props were baked without the direct sun, but the per-pixel "
+						 "sun can't draw (%s) - static props have no direct sun. Fix that, or recompile without -dodsp_sunstyle\n", pszWhy );
+			m_bPropsInvariantWarned = true;
+		}
+		else
+			m_bPropsInvariantWarned = false;
+	}
+
 	static ConVarRef s_SunBaked( "dodsp_sun_baked" );
 	if ( !s_SunBaked.IsValid() || s_SunBaked.GetBool() )
 	{
@@ -367,10 +482,13 @@ void CDoDSPSunCascades::PublishSun()
 		bValid = bValid && m_Cascades[i].m_bValid;
 
 	static ConVarRef s_SunBaked( "dodsp_sun_baked" );
-	const bool bDynamic = bValid && s_SunBaked.IsValid() && !s_SunBaked.GetBool() && CanDrawDynamicSun( NULL );
+	const bool bCanDraw = bValid && CanDrawDynamicSun( NULL );
+	const bool bDynamic = bCanDraw && s_SunBaked.IsValid() && !s_SunBaked.GetBool();
+	const bool bStaticProps = bCanDraw && m_bPropsNoSun;	// both sun modes (see the top of this file)
+	const int nModes = ( bDynamic ? DODSP_SUNMODE_DYNAMIC : 0 ) | ( bStaticProps ? DODSP_SUNMODE_STATICPROPS : 0 );
 
 	Vector vecSun( 0.0f, 0.0f, 0.0f );
-	if ( bDynamic )
+	if ( nModes )
 	{
 		const bool bHDR = g_pMaterialSystemHardwareConfig->GetHDREnabled() && engine->MapHasHDRLighting();
 		Vector vecIntensity;
@@ -380,6 +498,9 @@ void CDoDSPSunCascades::PublishSun()
 
 	CMatRenderContextPtr pRenderContext( materials );
 	pRenderContext->SetVectorRenderingParameter( DODSP_RP_VEC_SUNCOLOR, vecSun );
+	// the modes go with the filter values (no free slot left); set here too so "no sun" clears them
+	pRenderContext->SetVectorRenderingParameter( DODSP_RP_VEC_FILTER,
+		Vector( MAX( dodsp_sun_filter.GetFloat(), 0.0f ), MAX( dodsp_sun_normaloffset.GetFloat(), 0.0f ), (float)nModes ) );
 	for ( int i = 0; i < DODSP_CASCADE_COUNT; i++ )
 		pRenderContext->SetIntRenderingParameter( DODSP_RP_INT_CASCADE0 + i, bValid ? (int)(intp)(ITexture *)m_Cascades[i].m_Depth : 0 );
 	if ( !bValid )
@@ -407,8 +528,6 @@ void CDoDSPSunCascades::PublishSun()
 		float flScale = Vector( m[0][0], m[0][1], m[0][2] ).Length();
 		pRenderContext->SetVectorRenderingParameter( DODSP_RP_VEC_CASCADE0 + i, Vector( flScale, m[0][3], m[1][3] ) );
 	}
-	pRenderContext->SetVectorRenderingParameter( DODSP_RP_VEC_FILTER,
-		Vector( MAX( dodsp_sun_filter.GetFloat(), 0.0f ), MAX( dodsp_sun_normaloffset.GetFloat(), 0.0f ), 0.0f ) );
 }
 
 void CDoDSPSunCascades::DrawDebug( const CViewSetup &mainView )
@@ -522,8 +641,36 @@ void CDoDSPSunCascades::DrawView( const CViewSetup &mainView )
 												  0, 0, m_nRes - 1, m_nRes - 1, m_nRes, m_nRes );
 	}
 
-	engine->Con_NPrintf( 6, "DOD-SP sun cascades on screen (top-right): near | mid | far. Ring = your aim point: green sunlit, red shadowed%s",
-						 bHit ? "" : " (aim at something)" );
+	// 4b probe: the near cascade's view drawn into INTZ, read as raw depth, left of the near panel
+	if ( m_bProbe && m_Cascades[DODSP_CASCADE_NEAR].m_bValid )
+	{
+		if ( !m_ProbeMat.IsValid() )
+		{
+			KeyValues *pKV = new KeyValues( DODSP_SHADER_CASCADE_DEBUG );
+			pKV->SetString( "$basetexture", "_rt_DODSP_SunProbeINTZ" );
+			pKV->SetInt( "$rawdepth", 1 );
+			m_ProbeMat.Init( "__dodsp_csm_probe", pKV );
+			bool bFound;
+			m_pProbeMarker = m_ProbeMat->FindVar( "$marker", &bFound, false );
+			if ( !bFound ) m_pProbeMarker = NULL;
+			m_pProbeParams = m_ProbeMat->FindVar( "$params", &bFound, false );
+			if ( !bFound ) m_pProbeParams = NULL;
+		}
+		const Cascade_t &c = m_Cascades[DODSP_CASCADE_NEAR];
+		Vector vecTex = c.m_matWorldToTexture.VMul4x3( tr.endpos );
+		bool bInside = bHit && vecTex.x >= 0.0f && vecTex.x <= 1.0f && vecTex.y >= 0.0f && vecTex.y <= 1.0f &&
+					   vecTex.z >= 0.0f && vecTex.z <= 1.0f;
+		if ( m_pProbeMarker )
+			m_pProbeMarker->SetVecValue( vecTex.x, vecTex.y, vecTex.z, bInside ? 1.0f : 0.0f );
+		if ( m_pProbeParams )
+			m_pProbeParams->SetVecValue( 1.0f / nSize, dodsp_csm_view_bias.GetFloat(), 0.0f, 0.0f );
+		int xProbe = mainView.x + mainView.width - ( DODSP_CASCADE_COUNT + 1 ) * ( nSize + nGap );
+		pRenderContext->DrawScreenSpaceRectangle( m_ProbeMat, xProbe, y, nSize, nSize,
+												  0, 0, m_nRes - 1, m_nRes - 1, m_nRes, m_nRes );
+	}
+
+	engine->Con_NPrintf( 6, "DOD-SP sun cascades on screen (top-right): %snear | mid | far. Ring = your aim point: green sunlit, red shadowed%s",
+						 m_bProbe ? "INTZ probe | " : "", bHit ? "" : " (aim at something)" );
 }
 
 bool CDoDSPSunCascades::Get( int n, ITexture **ppDepth, VMatrix *pMat )

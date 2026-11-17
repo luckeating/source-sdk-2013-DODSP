@@ -983,9 +983,11 @@ void ComputeDirectLightingAtPoint( Vector &position, Vector &normal, Vector &out
 	int cluster = ClusterFromPoint( position );
 	for ( directlight_t *dl = activelights; dl != NULL; dl = dl->next )
 	{
-		// skip lights with style - except the DOD-SP sun (-dodsp_sunstyle): static prop vertex
-		// lighting has no light styles, so the sun stays baked into it as before
-		if ( dl->light.style && !( g_bDoDSPSunStyle && dl->light.style == DODSP_LIGHTSTYLE_SUN ) )
+		// skip lights with style. DOD-SP (-dodsp_sunstyle, stage 4d): that includes the sun's direct
+		// light - vertex lighting has no light styles, so the game adds the sun to static props per
+		// pixel instead (vrad.cpp marks the map: DODSP_LVLFLAGS_PROPS_NOSUN_*). Its bounce stays,
+		// because the indirect light comes from the style-0 lightmaps.
+		if ( dl->light.style )
 		{
 			continue;
 		}

@@ -75,14 +75,27 @@ static bool DoDSP_BindCascades( CBaseVSShader *pShader, IShaderDynamicAPI *pShad
 	return bAll;
 }
 
+// One reader of who takes the per-pixel sun (public/dodsp_shaders.h DODSP_SUNMODE_*). Nothing takes
+// it without all three cascades bound and a sun colour.
+static void DoDSP_SunModes( IShaderDynamicAPI *pShaderAPI, bool bAllCascades, bool *pbDynamic, bool *pbStaticProps )
+{
+	const Vector &vecSun = pShaderAPI->GetVectorRenderingParameter( DODSP_RP_VEC_SUNCOLOR );
+	const int nModes = (int)( pShaderAPI->GetVectorRenderingParameter( DODSP_RP_VEC_FILTER ).z + 0.5f );
+	const bool bSun = bAllCascades && ( vecSun.x > 0.0f || vecSun.y > 0.0f || vecSun.z > 0.0f );
+	*pbDynamic = bSun && ( nModes & DODSP_SUNMODE_DYNAMIC ) != 0;
+	*pbStaticProps = bSun && ( nModes & DODSP_SUNMODE_STATICPROPS ) != 0;
+}
+
 void DoDSP_SunDynamicState( CBaseVSShader *pShader, IShaderDynamicAPI *pShaderAPI, float flLightmapScale )
 {
 	const bool bAll = DoDSP_BindCascades( pShader, pShaderAPI, 13 );	// the brush shaders: s13..s15
+	bool bDynamic, bStaticProps;
+	DoDSP_SunModes( pShaderAPI, bAll, &bDynamic, &bStaticProps );
 
 	const Vector &vecSun = pShaderAPI->GetVectorRenderingParameter( DODSP_RP_VEC_SUNCOLOR );
 	float vSunColor[4] = { vecSun.x, vecSun.y, vecSun.z, flLightmapScale > 0.0f ? 1.0f / flLightmapScale : 1.0f };
-	if ( !bAll )
-		vSunColor[0] = vSunColor[1] = vSunColor[2] = 0.0f;	// no maps = no dynamic sun (the client then keeps the baked one)
+	if ( !bDynamic )
+		vSunColor[0] = vSunColor[1] = vSunColor[2] = 0.0f;	// brushes have the baked sun (or no maps to draw one)
 
 	const Vector &vecR = pShaderAPI->GetVectorRenderingParameter( DODSP_RP_VEC_AXIS_R );
 	const Vector &vecU = pShaderAPI->GetVectorRenderingParameter( DODSP_RP_VEC_AXIS_U );
@@ -171,8 +184,8 @@ void DoDSP_ModelSunDynamicState( CBaseVSShader *pShader, IShaderDynamicAPI *pSha
 	if ( !DoDSP_ModelSunConstantsFit( nPsReg ) )
 		return;
 
-	float v[3][4];
-	Q_memset( v, 0, sizeof( v ) );	// flag 0: the engine's lights are untouched
+	float v[DODSP_MSUN_VSREG_COUNT][4];
+	Q_memset( v, 0, sizeof( v ) );	// flags 0: no per-pixel sun, the engine's lights are untouched
 	if ( !bBasePass )
 	{
 		pShaderAPI->SetVertexShaderConstant( DODSP_MSUN_VSREG, v[0], DODSP_MSUN_VSREG_COUNT );
@@ -180,8 +193,10 @@ void DoDSP_ModelSunDynamicState( CBaseVSShader *pShader, IShaderDynamicAPI *pSha
 	}
 
 	const bool bAll = DoDSP_BindCascades( pShader, pShaderAPI, nFirstSampler );
+	bool bDynamic, bStaticProps;
+	DoDSP_SunModes( pShaderAPI, bAll, &bDynamic, &bStaticProps );
+	const bool bSun = bDynamic || bStaticProps;
 	const Vector &vecSun = pShaderAPI->GetVectorRenderingParameter( DODSP_RP_VEC_SUNCOLOR );
-	const bool bSun = bAll && ( vecSun.x > 0.0f || vecSun.y > 0.0f || vecSun.z > 0.0f );
 
 	const Vector &vecR = pShaderAPI->GetVectorRenderingParameter( DODSP_RP_VEC_AXIS_R );
 	const Vector &vecU = pShaderAPI->GetVectorRenderingParameter( DODSP_RP_VEC_AXIS_U );
@@ -193,10 +208,11 @@ void DoDSP_ModelSunDynamicState( CBaseVSShader *pShader, IShaderDynamicAPI *pSha
 		vecCascade[i] = pShaderAPI->GetVectorRenderingParameter( DODSP_RP_VEC_CASCADE0 + i );
 
 	// Vertex shader: light-space axes; one normal offset for all cascades, sized for the mid one
-	v[0][0] = vecR.x;  v[0][1] = vecR.y;  v[0][2] = vecR.z;  v[0][3] = bSun ? 1.0f : 0.0f;
+	v[0][0] = vecR.x;  v[0][1] = vecR.y;  v[0][2] = vecR.z;  v[0][3] = bDynamic ? 1.0f : 0.0f;
 	v[1][0] = -vecU.x; v[1][1] = -vecU.y; v[1][2] = -vecU.z;
 	v[1][3] = ( vecCascade[1].x > 0.0f ) ? vecFilter.y * vecDepth.y / vecCascade[1].x : 0.0f;
 	v[2][0] = vecF.x;  v[2][1] = vecF.y;  v[2][2] = vecF.z;  v[2][3] = vecDepth.x - vecDepth.z;
+	v[3][0] = bStaticProps ? 1.0f : 0.0f;	// vertices with VRAD's baked lighting take the per-pixel sun
 	pShaderAPI->SetVertexShaderConstant( DODSP_MSUN_VSREG, v[0], DODSP_MSUN_VSREG_COUNT );
 
 	// Pixel shader: per cascade scale and offsets, filter offset, direction to the sun, colour
@@ -211,6 +227,7 @@ void DoDSP_ModelSunDynamicState( CBaseVSShader *pShader, IShaderDynamicAPI *pSha
 	c[1][3] = vecToSun.x;
 	c[2][3] = vecToSun.y;
 	c[3][0] = bSun ? vecSun.x : 0.0f;			// the engine's light units: what it would give the model for the sun
+												// (each vertex decides whether it takes it: the VS flags above)
 	c[3][1] = bSun ? vecSun.y : 0.0f;
 	c[3][2] = bSun ? vecSun.z : 0.0f;
 	c[3][3] = vecToSun.z;
