@@ -82,6 +82,10 @@ If you learn something like this, add it here in the same commit as the fix.
 
 ### Content / game
 - `buildcubemaps` ends with `mat_reloadallmaterials`. Crash tests use that command, which is faster.
+- Every map compile throws away the built cubemaps, so envmapped surfaces look wrong until
+  `buildcubemaps` runs again. After any recompile (even a test one), run it before judging
+  reflections. Build them in the sun mode you'll play in (`dodsp_sun_baked 0`): what's on screen is
+  what the cubemaps capture.
 - Mapbase's patched HL2 materials use `SDK_LightmappedGeneric` and need Mapbase's shader DLL. The
   client swaps DoD:S world materials onto the SDK_ shaders at runtime (c_dodsp_sdkshaders),
   because the stock 2013 shaders draw envmapped props as noise and floor decals fullbright.
