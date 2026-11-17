@@ -16,8 +16,6 @@ class IMaterialVar;
 struct LightmappedGeneric_DX9_Vars_t;
 struct VertexLitGeneric_DX9_Vars_t;
 
-// DODSP_SUNFILTER combo: 0 = hardware depth compare (NVIDIA), 1 = raw depth compared in the shader
-int DoDSP_SunFilterMode();
 
 // Shadow state: samplers nFirstSampler..+2 hold the near/mid/far cascades (13..15; the skin shader 9..11)
 void DoDSP_SunShadowState( IShaderShadow *pShaderShadow, int nFirstSampler = 13 );

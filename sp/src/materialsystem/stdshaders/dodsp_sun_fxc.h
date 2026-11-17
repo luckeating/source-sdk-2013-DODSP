@@ -17,10 +17,10 @@
 //   s13..s15  the three cascade depth maps (near, mid, far)
 //   c13       rgb = sun colour in lightmap units, 0 = no dynamic sun; w = 1 / lightmap scale
 //   c14       light-space right axis, w = depth offset
-//   c15       light-space up axis, w = 1 / cascade texels
+//   c15       light-space up axis, w = tan( sun's angular radius ) (stage 4b soft shadows)
 //   c16       light-space forward axis (scaled to 0..1 over the depth range), w = depth bias
 //   c17..c19  per cascade: x = scale (1 / width), y = u offset, z = v offset, w = normal offset (units)
-//   c20       xyz = direction TOWARD the sun, w = filter spread in texels
+//   c20       xyz = direction TOWARD the sun, w = smallest filter radius (cascade texture units)
 //
 // INVARIANT: pixel shader constants c0..c31 only. The 2013 engine keeps 32 pixel constants per draw;
 // writing above c31 overflows its storage and corrupts unrelated memory (stage 3b-2 used c32..c39 and
@@ -28,14 +28,13 @@
 // Xbox-360-only flashlight constants, which the PC build never uses. The CI fails on any register above
 // c31 in a dodsp_ shader, and the C++ side checks the hardware's count before setting them.
 //
-// DODSP_SUNFILTER (static combo): 0 = the card compares depth in hardware (NVIDIA),
-//                                 1 = raw depth, compared here (ATI/AMD paths).
+// The cascades are raw depth maps read with a compare in the shader (dodsp_sun_common_fxc.h).
 //
 //=====================================================================//
 #ifndef DODSP_SUN_FXC_H
 #define DODSP_SUN_FXC_H
 
-#include "dodsp_sun_common_fxc.h"	// samplers s13..s15, depth compare, filter, cascade pick
+#include "dodsp_sun_common_fxc.h"	// samplers s13..s15, soft shadow, cascade pick
 
 const float4 g_DoDSP_SunColor		: register( c13 );
 const float4 g_DoDSP_AxisR			: register( c14 );
@@ -63,7 +62,13 @@ float DoDSP_SunShadow( float3 worldPos, float3 geoNormal )
 	float4 cm = DoDSP_CascadeCoord( g_DoDSP_CascadeMid, worldPos, geoNormal );
 	float4 cf = DoDSP_CascadeCoord( g_DoDSP_CascadeFar, worldPos, geoNormal );
 
-	return DoDSP_ShadowFromCascades( cn, cm, cf, 0.5f * g_DoDSP_ToSun.w * g_DoDSP_AxisU.w );
+	DoDSP_Soft_t soft;
+	soft.flRange = 1.0f / max( length( g_DoDSP_AxisF.xyz ), 1e-6f );	// the forward axis is scaled by 1 / range
+	soft.flTanSun = g_DoDSP_AxisU.w;
+	soft.flMinRadius = g_DoDSP_ToSun.w;
+	return DoDSP_ShadowFromCascades( cn, cm, cf,
+		float3( g_DoDSP_CascadeNear.x, g_DoDSP_CascadeMid.x, g_DoDSP_CascadeFar.x ), soft,
+		( dot( g_DoDSP_SunColor.rgb, float3( 1.0f, 1.0f, 1.0f ) ) > 0.0f ) ? 1.0f : 0.0f );
 }
 
 // The sun's light at a pixel, in the same units as the lightmap colour it is added to.
@@ -73,8 +78,7 @@ float3 DoDSP_SunLight( float3 worldPos, float3 bumpNormal, float3 geoNormal )
 	float3 toSun = g_DoDSP_ToSun.xyz;
 	float nDotL = saturate( dot( normalize( bumpNormal ), toSun ) );
 	float facing = saturate( dot( geoNormal, toSun ) * 8.0f );		// faces turned from the sun get none
-	// (no early-out when the sun is off: the colour is 0 then, and a branch around the texture
-	// reads would not compile)
+	// (no early-out when the sun is off: the colour is 0 then, and the cascades are bound black)
 	return g_DoDSP_SunColor.rgb * ( nDotL * facing * DoDSP_SunShadow( worldPos, geoNormal ) );
 }
 

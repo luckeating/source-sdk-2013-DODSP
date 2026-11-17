@@ -31,7 +31,6 @@
 // STATIC: "DEPTHBLEND"					"0..0"
 // STATIC: "BLENDTINTBYBASEALPHA"       "0..1"
 // STATIC: "ENVMAPFRESNEL"				"0..1"
-// STATIC: "DODSP_SUNFILTER"			"0..1"
 
 // DYNAMIC: "LIGHTING_PREVIEW"          "0..0"
 // DYNAMIC: "FLASHLIGHTSHADOWS"			"0..1"
@@ -48,7 +47,6 @@
 // SKIP: ( $FLASHLIGHT == 0 ) && ( $FLASHLIGHTDEPTHFILTERMODE != 0 )
 // SKIP: ($BLENDTINTBYBASEALPHA) && ($SELFILLUM || $BASEALPHAENVMAPMASK)
 // SKIP: $FLASHLIGHT && $CUBEMAP
-// SKIP: $FLASHLIGHT && $DODSP_SUNFILTER
 
 #include "common_flashlight_fxc.h"
 #include "common_vertexlitgeneric_dx9.h"
@@ -353,7 +351,7 @@ float4 main( PS_INPUT i ) : COLOR
 	// DOD-SP: the sun per pixel (stage 4). Lit models only; vertex-coloured lit models (lighting
 	// multiplied into the vertex colour) keep the engine's sun.
 	if ( bDiffuseLighting && !bVertexColor )
-		diffuseLighting += DoDSP_ModelSunDiffuse( i.dodspSun, i.worldSpaceNormal, DoDSP_ModelSunShadow( i.dodspSun.xyz ) );
+		diffuseLighting += DoDSP_ModelSunDiffuse( i.dodspSun, i.worldSpaceNormal, DoDSP_ModelSunShadow( i.dodspSun ) );
 #endif
 
 	float3 albedo = baseColor;

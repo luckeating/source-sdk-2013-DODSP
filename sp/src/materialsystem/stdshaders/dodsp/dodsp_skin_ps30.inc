@@ -338,27 +338,6 @@ public:
 		m_bENVMAPMASK = true;
 #endif
 	}
-private:
-	int m_nDODSP_SUNFILTER;
-#ifdef _DEBUG
-	bool m_bDODSP_SUNFILTER;
-#endif
-public:
-	void SetDODSP_SUNFILTER( int i )
-	{
-		Assert( i >= 0 && i <= 1 );
-		m_nDODSP_SUNFILTER = i;
-#ifdef _DEBUG
-		m_bDODSP_SUNFILTER = true;
-#endif
-	}
-	void SetDODSP_SUNFILTER( bool i )
-	{
-		m_nDODSP_SUNFILTER = i ? 1 : 0;
-#ifdef _DEBUG
-		m_bDODSP_SUNFILTER = true;
-#endif
-	}
 public:
 	dodsp_skin_ps30_Static_Index()
 	{
@@ -426,21 +405,17 @@ public:
 		m_bENVMAPMASK = false;
 #endif // _DEBUG
 		m_nENVMAPMASK = 0;
-#ifdef _DEBUG
-		m_bDODSP_SUNFILTER = false;
-#endif // _DEBUG
-		m_nDODSP_SUNFILTER = 0;
 	}
 	int GetIndex()
 	{
 #ifdef _DEBUG
-		bool bAllStaticVarsDefined = m_bCONVERT_TO_SRGB && m_bCUBEMAP && m_bSELFILLUM && m_bSELFILLUMFRESNEL && m_bFLASHLIGHT && m_bLIGHTWARPTEXTURE && m_bPHONGWARPTEXTURE && m_bWRINKLEMAP && m_bDETAIL_BLEND_MODE && m_bDETAILTEXTURE && m_bRIMLIGHT && m_bFLASHLIGHTDEPTHFILTERMODE && m_bFASTPATH_NOBUMP && m_bBLENDTINTBYBASEALPHA && m_bPHONG_HALFLAMBERT && m_bENVMAPMASK && m_bDODSP_SUNFILTER;
+		bool bAllStaticVarsDefined = m_bCONVERT_TO_SRGB && m_bCUBEMAP && m_bSELFILLUM && m_bSELFILLUMFRESNEL && m_bFLASHLIGHT && m_bLIGHTWARPTEXTURE && m_bPHONGWARPTEXTURE && m_bWRINKLEMAP && m_bDETAIL_BLEND_MODE && m_bDETAILTEXTURE && m_bRIMLIGHT && m_bFLASHLIGHTDEPTHFILTERMODE && m_bFASTPATH_NOBUMP && m_bBLENDTINTBYBASEALPHA && m_bPHONG_HALFLAMBERT && m_bENVMAPMASK;
 		Assert( bAllStaticVarsDefined );
 #endif // _DEBUG
-		return ( 80 * m_nCONVERT_TO_SRGB ) + ( 80 * m_nCUBEMAP ) + ( 160 * m_nSELFILLUM ) + ( 320 * m_nSELFILLUMFRESNEL ) + ( 320 * m_nFLASHLIGHT ) + ( 640 * m_nLIGHTWARPTEXTURE ) + ( 640 * m_nPHONGWARPTEXTURE ) + ( 640 * m_nWRINKLEMAP ) + ( 640 * m_nDETAIL_BLEND_MODE ) + ( 1280 * m_nDETAILTEXTURE ) + ( 2560 * m_nRIMLIGHT ) + ( 5120 * m_nFLASHLIGHTDEPTHFILTERMODE ) + ( 15360 * m_nFASTPATH_NOBUMP ) + ( 30720 * m_nBLENDTINTBYBASEALPHA ) + ( 61440 * m_nPHONG_HALFLAMBERT ) + ( 122880 * m_nENVMAPMASK ) + ( 245760 * m_nDODSP_SUNFILTER ) + 0;
+		return ( 80 * m_nCONVERT_TO_SRGB ) + ( 80 * m_nCUBEMAP ) + ( 160 * m_nSELFILLUM ) + ( 320 * m_nSELFILLUMFRESNEL ) + ( 320 * m_nFLASHLIGHT ) + ( 640 * m_nLIGHTWARPTEXTURE ) + ( 640 * m_nPHONGWARPTEXTURE ) + ( 640 * m_nWRINKLEMAP ) + ( 640 * m_nDETAIL_BLEND_MODE ) + ( 1280 * m_nDETAILTEXTURE ) + ( 2560 * m_nRIMLIGHT ) + ( 5120 * m_nFLASHLIGHTDEPTHFILTERMODE ) + ( 15360 * m_nFASTPATH_NOBUMP ) + ( 30720 * m_nBLENDTINTBYBASEALPHA ) + ( 61440 * m_nPHONG_HALFLAMBERT ) + ( 122880 * m_nENVMAPMASK ) + 0;
 	}
 };
-#define shaderStaticTest_dodsp_skin_ps30 psh_forgot_to_set_static_CONVERT_TO_SRGB + psh_forgot_to_set_static_CUBEMAP + psh_forgot_to_set_static_SELFILLUM + psh_forgot_to_set_static_SELFILLUMFRESNEL + psh_forgot_to_set_static_FLASHLIGHT + psh_forgot_to_set_static_LIGHTWARPTEXTURE + psh_forgot_to_set_static_PHONGWARPTEXTURE + psh_forgot_to_set_static_WRINKLEMAP + psh_forgot_to_set_static_DETAIL_BLEND_MODE + psh_forgot_to_set_static_DETAILTEXTURE + psh_forgot_to_set_static_RIMLIGHT + psh_forgot_to_set_static_FLASHLIGHTDEPTHFILTERMODE + psh_forgot_to_set_static_FASTPATH_NOBUMP + psh_forgot_to_set_static_BLENDTINTBYBASEALPHA + psh_forgot_to_set_static_PHONG_HALFLAMBERT + psh_forgot_to_set_static_ENVMAPMASK + psh_forgot_to_set_static_DODSP_SUNFILTER + 0
+#define shaderStaticTest_dodsp_skin_ps30 psh_forgot_to_set_static_CONVERT_TO_SRGB + psh_forgot_to_set_static_CUBEMAP + psh_forgot_to_set_static_SELFILLUM + psh_forgot_to_set_static_SELFILLUMFRESNEL + psh_forgot_to_set_static_FLASHLIGHT + psh_forgot_to_set_static_LIGHTWARPTEXTURE + psh_forgot_to_set_static_PHONGWARPTEXTURE + psh_forgot_to_set_static_WRINKLEMAP + psh_forgot_to_set_static_DETAIL_BLEND_MODE + psh_forgot_to_set_static_DETAILTEXTURE + psh_forgot_to_set_static_RIMLIGHT + psh_forgot_to_set_static_FLASHLIGHTDEPTHFILTERMODE + psh_forgot_to_set_static_FASTPATH_NOBUMP + psh_forgot_to_set_static_BLENDTINTBYBASEALPHA + psh_forgot_to_set_static_PHONG_HALFLAMBERT + psh_forgot_to_set_static_ENVMAPMASK + 0
 class dodsp_skin_ps30_Dynamic_Index
 {
 private:

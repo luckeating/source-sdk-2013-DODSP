@@ -106,8 +106,22 @@ If you learn something like this, add it here in the same commit as the fix.
   integer light count fails (X4509, read the light-enabled booleans instead).
 - SM3: texture reads that use gradients (tex2D, tex2Dproj) can't sit inside dynamic branches.
   Sample everything and select without branching.
-- Shadow compare: on NVIDIA (`GetShadowFilterMode() == 0`) `tex2Dproj` does the depth compare in
-  hardware. Elsewhere, read raw depth and compare in the shader (static combo `DODSP_SUNFILTER`).
+- **Sun cascades are RAW depth (stage 4b).** On NVIDIA (`GetShadowFilterMode() == 0`) the client makes them
+  INTZ, elsewhere the card's own shadow depth format; always point sampled (TEXTUREFLAGS_POINTSAMPLE), read
+  with `tex2Dlod` and compared in the shader. No `tex2Dproj`, no `SetShadowDepthFiltering` on a cascade
+  sampler (Mapbase's brush helper had one on s14 = our mid cascade; removed). Guard: build script
+  `check_raw_depth`. The old `DODSP_SUNFILTER` combo is gone. Watchdog INVARIANT if a cascade didn't come
+  out in the readable format (the dynamic sun then stays off).
+- **Soft shadows (4b, dodsp_sun_common_fxc.h):** blocker search (12 taps) -> penumbra = (receiver -
+  blocker depth) x depth range x tan(sun radius) -> 16-tap filter, golden-angle spiral turned per texel,
+  receiver-plane bias from ddx/ddy (taken BEFORE any branch). One loop body reads whichever cascade
+  holds the point (`DoDSP_ReadCascade`): three inlined copies would blow the ps_3_0 512-slot limit next
+  to Mapbase's skin shader. Constants: brush c15.w = tan, c20.w = min radius; model PS MSun0.w = min
+  radius, MSun3.w = tan, to-sun z rebuilt from x/y (watchdog: sun must shine down); model VS c224.y =
+  depth range, passed to the PS in the sun coordinate's .w (0 = takes no sun). Render parms: DEPTH.y =
+  tan, FILTER.x/.y now in cascade texture units. Sun size: light_environment `SunSpreadAngle` (client
+  parses the entity string; VRAD reads the same key), x `dodsp_sun_softness`; none in the map ->
+  `dodsp_sun_spread_default` (2 degrees).
 - Valve's `BuildOrthoWorldToFlashlightMatrix` gives depth (d + near)/(far - near), but the ortho
   shadow map stores (d - near)/(far - near). If you ever use Valve's ortho matrix, fix the depth
   (5cd6ea4). Our cascades build their own matrix.
@@ -201,7 +215,11 @@ If you learn something like this, add it here in the same commit as the fix.
   format 32 (INTZ = 32, cascades use 30)`, the raw-depth panel matched the near cascade picture and ring
   colours exactly (sunlit and shadowed aim points). So 4b can move the cascades to INTZ and read raw depth
   on NVIDIA (the blocker search), with the compare done in the shader like the ATI path.
-- **Stage 4b - soft sun shadows (contact hardening, PCSS)**, agreed 2026-11-17. Replaces the saved 3x3 PCF
+- **Stage 4b - soft sun shadows (contact hardening, PCSS)**, agreed 2026-11-17. BUILT 2026-11-17 (see
+  Engine facts "Soft shadows"; the INTZ probe code was removed - the cascades are INTZ now). Files:
+  dodsp_sun_common_fxc.h, dodsp_sun_fxc.h, dodsp_modelsun_{vs,ps}_fxc.h, the four sun PS .fxc + .inc
+  (combo removed), dodsp_sun_shader.cpp/.h, the three helpers, c_dodsp_sun_cascades.cpp, dodsp_shaders.h
+  ("4b"), dodsp_build_shaders.py. Undo: the 4d shader DLL/.vcs + client.dll (build 44168681578). Replaces the saved 3x3 PCF
   fix (`dodsp_sun_filter 3` made the saw-tooth worse). Per pixel: blocker search in the cascade ->
   penumbra width = (receiver - blocker depth) x sun angular size -> ~16-tap rotated Poisson PCF.
   Sharp at contact, soft far from the caster, no stair-steps. The sun's size has ONE owner: the

@@ -18,7 +18,6 @@
 // STATIC: "FLASHLIGHTDEPTHFILTERMODE"	"0..2"
 // STATIC: "BLENDTINTBYBASEALPHA"		"0..1"
 // STATIC: "ENVMAPMASK"					"0..1"
-// STATIC: "DODSP_SUNFILTER"			"0..1"
 
 // DYNAMIC: "NUM_LIGHTS"				"0..4"
 // DYNAMIC: "AMBIENT_LIGHT"				"0..1"
@@ -34,7 +33,6 @@
 // SKIP: $NORMALMAPALPHAENVMAPMASK && !$CUBEMAP
 // SKIP: $NORMALMAPALPHAENVMAPMASK && $ENVMAPMASK
 // SKIP: $ENVMAPMASK && !$CUBEMAP
-// SKIP: $FLASHLIGHT && $DODSP_SUNFILTER
 
 #include "common_flashlight_fxc.h"
 #include "common_vertexlitgeneric_dx9.h"
@@ -237,7 +235,7 @@ float4 main( PS_INPUT i ) : COLOR
 				false, 1.0f, bDoDiffuseWarp, DiffuseWarpSampler );
 #if !FLASHLIGHT
 		// DOD-SP: the sun per pixel (stage 4) - its N.L on the bumped normal
-		diffuseLighting += DoDSP_ModelSunDiffuse( i.dodspSun, worldSpaceNormal, DoDSP_ModelSunShadow( i.dodspSun.xyz ) );
+		diffuseLighting += DoDSP_ModelSunDiffuse( i.dodspSun, worldSpaceNormal, DoDSP_ModelSunShadow( i.dodspSun ) );
 #endif
 	}
 

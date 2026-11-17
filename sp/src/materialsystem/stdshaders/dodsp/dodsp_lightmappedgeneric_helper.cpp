@@ -5,7 +5,7 @@
 // by hand; the only changes from Mapbase:
 //   - shader model 3.0 paths only (anything else is sent to Mapbase's SDK_ shader by SHADER_FALLBACK)
 //   - DOD-SP's own compiled shaders (dodsp_lightmappedgeneric_*), never Mapbase's .vcs files
-//   - the sun: DODSP_SUNFILTER combo, cascade samplers, sun constants (search "DOD-SP")
+//   - the sun: cascade samplers, sun constants (search "DOD-SP")
 //
 //
 // Purpose: Lightmap only shader
@@ -1001,13 +1001,14 @@ void DrawLightmappedGeneric_DX9_Internal(CBaseVSShader *pShader, IMaterialVar** 
 				{
 					pShaderShadow->EnableTexture( SHADER_SAMPLER13, true );
 					pShaderShadow->EnableTexture( SHADER_SAMPLER14, true );
-					pShaderShadow->SetShadowDepthFiltering( SHADER_SAMPLER14 );
+					pShaderShadow->SetShadowDepthFiltering( SHADER_SAMPLER14 );	// dodsp-lint: x360 only
 					pShaderShadow->EnableTexture( SHADER_SAMPLER15, true );
 				}
 				else if ( !hasFlashlight )
 				{
+					// DOD-SP (stage 4b): s13..s15 are the sun cascades here - raw depth, point sampled, set up
+					// by DoDSP_SunShadowState below. Mapbase's shadow-depth filtering on s14 is gone.
 					pShaderShadow->EnableTexture( SHADER_SAMPLER14, true );
-					pShaderShadow->SetShadowDepthFiltering( SHADER_SAMPLER14 );
 					pShaderShadow->EnableSRGBRead( SHADER_SAMPLER14, false );
 					pShaderShadow->EnableTexture( SHADER_SAMPLER15, true );
 				}
@@ -1098,7 +1099,6 @@ void DrawLightmappedGeneric_DX9_Internal(CBaseVSShader *pShader, IMaterialVar** 
 #else
 					SET_STATIC_PIXEL_SHADER_COMBO( PARALLAXCORRECT, false );
 #endif
-					SET_STATIC_PIXEL_SHADER_COMBO( DODSP_SUNFILTER, DoDSP_SunFilterMode() );	// DOD-SP
 					DoDSP_SunShadowState( pShaderShadow, 13 );									// DOD-SP: cascade samplers
 					SET_STATIC_PIXEL_SHADER( dodsp_lightmappedgeneric_ps30 );
 				}

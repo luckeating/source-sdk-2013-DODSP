@@ -15,7 +15,8 @@
 //   c222  xyz = MINUS the light-space up axis (so v needs no sign), w = normal offset in units
 //   c223  xyz = light-space forward axis (0..1 over the depth range), w = depth offset - bias
 //   c224  x = 1 when vertices with VRAD's baked lighting (STATIC_LIGHT: static props) take the per-pixel
-//         sun - the map's static props were baked without it (stage 4d); yzw unused
+//         sun - the map's static props were baked without it (stage 4d); y = the cascades' depth range
+//         in world units (stage 4b, for the soft shadow); zw unused
 // Which flag a vertex follows: baked-lit vertices c224.x, every other vertex c221.w. A vertex that
 // takes our sun drops the engine's directional lights, so it never gets two suns.
 // INVARIANT: c217..c220 are the engine's (clip planes), bones end at c216; c221..c224 are free in
@@ -37,13 +38,14 @@ float DoDSP_TakesSun( bool bStaticLit )
 	return bStaticLit ? g_DoDSP_VSun3.x : g_DoDSP_VSun0.w;
 }
 
-// xy = light-space position across the sun, z = depth, w = 1 if this vertex takes the per-pixel sun
+// xy = light-space position across the sun, z = depth, w = the depth range (world units) if this
+// vertex takes the per-pixel sun, 0 if not - the pixel shader needs both and has no constant left
 float4 DoDSP_ModelSunCoord( float3 worldPos, float3 worldNormal, bool bStaticLit )
 {
 	float3 p = worldPos + worldNormal * g_DoDSP_VSun1.w;	// normal offset: off the surface by about a texel
 	return float4( dot( p, g_DoDSP_VSun0.xyz ), dot( p, g_DoDSP_VSun1.xyz ),
 				   dot( p, g_DoDSP_VSun2.xyz ) + g_DoDSP_VSun2.w,
-				   DoDSP_TakesSun( bStaticLit ) );
+				   DoDSP_TakesSun( bStaticLit ) * g_DoDSP_VSun3.y );
 }
 
 // 0 for the engine's directional lights on a vertex that takes our sun, 1 otherwise

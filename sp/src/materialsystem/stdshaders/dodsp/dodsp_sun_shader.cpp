@@ -40,17 +40,15 @@ static Sampler_t DoDSP_CascadeSampler( int nFirstSampler, int i )
 }
 COMPILE_TIME_ASSERT( SHADER_SAMPLER13 == SHADER_SAMPLER0 + 13 );
 
-int DoDSP_SunFilterMode()
-{
-	return ( g_pHardwareConfig->GetShadowFilterMode() == 0 ) ? 0 : 1;	// 0 = NVIDIA_PCF_POISSON
-}
-
+// Stage 4b. INVARIANT: the cascades are raw depth maps (the client makes them readable and point
+// sampled), read with tex2Dlod and compared in the shader - never the hardware's depth compare,
+// which can't hand the soft shadow's blocker search a depth (dodsp_sun_common_fxc.h; the CI fails
+// the build on a shadow-depth-filtering call in this file).
 void DoDSP_SunShadowState( IShaderShadow *pShaderShadow, int nFirstSampler )
 {
 	for ( int i = 0; i < 3; i++ )
 	{
 		pShaderShadow->EnableTexture( DoDSP_CascadeSampler( nFirstSampler, i ), true );
-		pShaderShadow->SetShadowDepthFiltering( DoDSP_CascadeSampler( nFirstSampler, i ) );
 		pShaderShadow->EnableSRGBRead( DoDSP_CascadeSampler( nFirstSampler, i ), false );
 	}
 }
@@ -106,7 +104,7 @@ void DoDSP_SunDynamicState( CBaseVSShader *pShader, IShaderDynamicAPI *pShaderAP
 	float c[8][4];
 	Q_memcpy( c[0], vSunColor, sizeof( c[0] ) );
 	c[1][0] = vecR.x; c[1][1] = vecR.y; c[1][2] = vecR.z; c[1][3] = vecDepth.x;		// axis R, depth offset
-	c[2][0] = vecU.x; c[2][1] = vecU.y; c[2][2] = vecU.z; c[2][3] = vecDepth.y;		// axis U, 1 / texels
+	c[2][0] = vecU.x; c[2][1] = vecU.y; c[2][2] = vecU.z; c[2][3] = vecDepth.y;		// axis U, tan( sun radius )
 	c[3][0] = vecF.x; c[3][1] = vecF.y; c[3][2] = vecF.z; c[3][3] = vecDepth.z;		// axis F, depth bias
 	for ( int i = 0; i < 3; i++ )
 	{
@@ -114,12 +112,12 @@ void DoDSP_SunDynamicState( CBaseVSShader *pShader, IShaderDynamicAPI *pShaderAP
 		c[4 + i][0] = vecC.x;
 		c[4 + i][1] = vecC.y;
 		c[4 + i][2] = vecC.z;
-		// normal offset in world units: N texels of this cascade
-		c[4 + i][3] = ( vecC.x > 0.0f ) ? vecFilter.y * vecDepth.y / vecC.x : 0.0f;
+		// normal offset in world units (the client sends it in cascade texture units)
+		c[4 + i][3] = ( vecC.x > 0.0f ) ? vecFilter.y / vecC.x : 0.0f;
 	}
 	Vector vecToSun = -vecF;
 	VectorNormalize( vecToSun );
-	c[7][0] = vecToSun.x; c[7][1] = vecToSun.y; c[7][2] = vecToSun.z; c[7][3] = vecFilter.x;
+	c[7][0] = vecToSun.x; c[7][1] = vecToSun.y; c[7][2] = vecToSun.z; c[7][3] = vecFilter.x;	// smallest filter radius
 	// INVARIANT: never write past the constants the hardware layer actually keeps
 	if ( g_pHardwareConfig->NumPixelShaderConstants() < DODSP_PSREG_SUNCOLOR + DODSP_PSREG_COUNT )
 	{
@@ -201,8 +199,8 @@ void DoDSP_ModelSunDynamicState( CBaseVSShader *pShader, IShaderDynamicAPI *pSha
 	const Vector &vecR = pShaderAPI->GetVectorRenderingParameter( DODSP_RP_VEC_AXIS_R );
 	const Vector &vecU = pShaderAPI->GetVectorRenderingParameter( DODSP_RP_VEC_AXIS_U );
 	const Vector &vecF = pShaderAPI->GetVectorRenderingParameter( DODSP_RP_VEC_AXIS_F );
-	const Vector &vecDepth = pShaderAPI->GetVectorRenderingParameter( DODSP_RP_VEC_DEPTH );	// offset, 1/texels, bias
-	const Vector &vecFilter = pShaderAPI->GetVectorRenderingParameter( DODSP_RP_VEC_FILTER );	// spread, normal offset (texels)
+	const Vector &vecDepth = pShaderAPI->GetVectorRenderingParameter( DODSP_RP_VEC_DEPTH );	// offset, tan( sun radius ), bias
+	const Vector &vecFilter = pShaderAPI->GetVectorRenderingParameter( DODSP_RP_VEC_FILTER );	// min radius, normal offset (texture units)
 	Vector vecCascade[3];
 	for ( int i = 0; i < 3; i++ )
 		vecCascade[i] = pShaderAPI->GetVectorRenderingParameter( DODSP_RP_VEC_CASCADE0 + i );
@@ -210,9 +208,11 @@ void DoDSP_ModelSunDynamicState( CBaseVSShader *pShader, IShaderDynamicAPI *pSha
 	// Vertex shader: light-space axes; one normal offset for all cascades, sized for the mid one
 	v[0][0] = vecR.x;  v[0][1] = vecR.y;  v[0][2] = vecR.z;  v[0][3] = bDynamic ? 1.0f : 0.0f;
 	v[1][0] = -vecU.x; v[1][1] = -vecU.y; v[1][2] = -vecU.z;
-	v[1][3] = ( vecCascade[1].x > 0.0f ) ? vecFilter.y * vecDepth.y / vecCascade[1].x : 0.0f;
+	v[1][3] = ( vecCascade[1].x > 0.0f ) ? vecFilter.y / vecCascade[1].x : 0.0f;
 	v[2][0] = vecF.x;  v[2][1] = vecF.y;  v[2][2] = vecF.z;  v[2][3] = vecDepth.x - vecDepth.z;
 	v[3][0] = bStaticProps ? 1.0f : 0.0f;	// vertices with VRAD's baked lighting take the per-pixel sun
+	const float flF = vecF.Length();
+	v[3][1] = ( flF > 0.0f ) ? 1.0f / flF : 0.0f;	// the cascades' depth range, world units (soft shadow)
 	pShaderAPI->SetVertexShaderConstant( DODSP_MSUN_VSREG, v[0], DODSP_MSUN_VSREG_COUNT );
 
 	// Pixel shader: per cascade scale and offsets, filter offset, direction to the sun, colour
@@ -223,14 +223,14 @@ void DoDSP_ModelSunDynamicState( CBaseVSShader *pShader, IShaderDynamicAPI *pSha
 	{
 		c[i][0] = vecCascade[i].x; c[i][1] = vecCascade[i].y; c[i][2] = vecCascade[i].z;
 	}
-	c[0][3] = 0.5f * vecFilter.x * vecDepth.y;		// same filter spread as the brushes
+	c[0][3] = vecFilter.x;			// smallest filter radius, cascade texture units (as the brushes)
 	c[1][3] = vecToSun.x;
-	c[2][3] = vecToSun.y;
+	c[2][3] = vecToSun.y;			// .z is rebuilt in the shader: the sun shines down (client watchdog)
 	c[3][0] = bSun ? vecSun.x : 0.0f;			// the engine's light units: what it would give the model for the sun
 												// (each vertex decides whether it takes it: the VS flags above)
 	c[3][1] = bSun ? vecSun.y : 0.0f;
 	c[3][2] = bSun ? vecSun.z : 0.0f;
-	c[3][3] = vecToSun.z;
+	c[3][3] = vecDepth.y;			// tan( sun's angular radius )
 	pShaderAPI->SetPixelShaderConstant( nPsReg, c[0], DODSP_MSUN_PSREG_COUNT );
 }
 

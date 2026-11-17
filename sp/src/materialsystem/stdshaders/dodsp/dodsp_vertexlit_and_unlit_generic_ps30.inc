@@ -443,27 +443,6 @@ public:
 		m_bENVMAPFRESNEL = true;
 #endif
 	}
-private:
-	int m_nDODSP_SUNFILTER;
-#ifdef _DEBUG
-	bool m_bDODSP_SUNFILTER;
-#endif
-public:
-	void SetDODSP_SUNFILTER( int i )
-	{
-		Assert( i >= 0 && i <= 1 );
-		m_nDODSP_SUNFILTER = i;
-#ifdef _DEBUG
-		m_bDODSP_SUNFILTER = true;
-#endif
-	}
-	void SetDODSP_SUNFILTER( bool i )
-	{
-		m_nDODSP_SUNFILTER = i ? 1 : 0;
-#ifdef _DEBUG
-		m_bDODSP_SUNFILTER = true;
-#endif
-	}
 public:
 	dodsp_vertexlit_and_unlit_generic_ps30_Static_Index()
 	{
@@ -551,21 +530,17 @@ public:
 		m_bENVMAPFRESNEL = false;
 #endif // _DEBUG
 		m_nENVMAPFRESNEL = 0;
-#ifdef _DEBUG
-		m_bDODSP_SUNFILTER = false;
-#endif // _DEBUG
-		m_nDODSP_SUNFILTER = 0;
 	}
 	int GetIndex()
 	{
 #ifdef _DEBUG
-		bool bAllStaticVarsDefined = m_bDETAILTEXTURE && m_bCUBEMAP && m_bDIFFUSELIGHTING && m_bENVMAPMASK && m_bBASEALPHAENVMAPMASK && m_bSELFILLUM && m_bVERTEXCOLOR && m_bFLASHLIGHT && m_bSELFILLUM_ENVMAPMASK_ALPHA && m_bDETAIL_BLEND_MODE && m_bSEAMLESS_BASE && m_bSEAMLESS_DETAIL && m_bDISTANCEALPHA && m_bDISTANCEALPHAFROMDETAIL && m_bSOFT_MASK && m_bOUTLINE && m_bOUTER_GLOW && m_bFLASHLIGHTDEPTHFILTERMODE && m_bDEPTHBLEND && m_bBLENDTINTBYBASEALPHA && m_bENVMAPFRESNEL && m_bDODSP_SUNFILTER;
+		bool bAllStaticVarsDefined = m_bDETAILTEXTURE && m_bCUBEMAP && m_bDIFFUSELIGHTING && m_bENVMAPMASK && m_bBASEALPHAENVMAPMASK && m_bSELFILLUM && m_bVERTEXCOLOR && m_bFLASHLIGHT && m_bSELFILLUM_ENVMAPMASK_ALPHA && m_bDETAIL_BLEND_MODE && m_bSEAMLESS_BASE && m_bSEAMLESS_DETAIL && m_bDISTANCEALPHA && m_bDISTANCEALPHAFROMDETAIL && m_bSOFT_MASK && m_bOUTLINE && m_bOUTER_GLOW && m_bFLASHLIGHTDEPTHFILTERMODE && m_bDEPTHBLEND && m_bBLENDTINTBYBASEALPHA && m_bENVMAPFRESNEL;
 		Assert( bAllStaticVarsDefined );
 #endif // _DEBUG
-		return ( 2 * m_nDETAILTEXTURE ) + ( 4 * m_nCUBEMAP ) + ( 8 * m_nDIFFUSELIGHTING ) + ( 16 * m_nENVMAPMASK ) + ( 32 * m_nBASEALPHAENVMAPMASK ) + ( 64 * m_nSELFILLUM ) + ( 128 * m_nVERTEXCOLOR ) + ( 256 * m_nFLASHLIGHT ) + ( 512 * m_nSELFILLUM_ENVMAPMASK_ALPHA ) + ( 1024 * m_nDETAIL_BLEND_MODE ) + ( 2048 * m_nSEAMLESS_BASE ) + ( 2048 * m_nSEAMLESS_DETAIL ) + ( 2048 * m_nDISTANCEALPHA ) + ( 2048 * m_nDISTANCEALPHAFROMDETAIL ) + ( 2048 * m_nSOFT_MASK ) + ( 2048 * m_nOUTLINE ) + ( 2048 * m_nOUTER_GLOW ) + ( 2048 * m_nFLASHLIGHTDEPTHFILTERMODE ) + ( 6144 * m_nDEPTHBLEND ) + ( 6144 * m_nBLENDTINTBYBASEALPHA ) + ( 12288 * m_nENVMAPFRESNEL ) + ( 24576 * m_nDODSP_SUNFILTER ) + 0;
+		return ( 2 * m_nDETAILTEXTURE ) + ( 4 * m_nCUBEMAP ) + ( 8 * m_nDIFFUSELIGHTING ) + ( 16 * m_nENVMAPMASK ) + ( 32 * m_nBASEALPHAENVMAPMASK ) + ( 64 * m_nSELFILLUM ) + ( 128 * m_nVERTEXCOLOR ) + ( 256 * m_nFLASHLIGHT ) + ( 512 * m_nSELFILLUM_ENVMAPMASK_ALPHA ) + ( 1024 * m_nDETAIL_BLEND_MODE ) + ( 2048 * m_nSEAMLESS_BASE ) + ( 2048 * m_nSEAMLESS_DETAIL ) + ( 2048 * m_nDISTANCEALPHA ) + ( 2048 * m_nDISTANCEALPHAFROMDETAIL ) + ( 2048 * m_nSOFT_MASK ) + ( 2048 * m_nOUTLINE ) + ( 2048 * m_nOUTER_GLOW ) + ( 2048 * m_nFLASHLIGHTDEPTHFILTERMODE ) + ( 6144 * m_nDEPTHBLEND ) + ( 6144 * m_nBLENDTINTBYBASEALPHA ) + ( 12288 * m_nENVMAPFRESNEL ) + 0;
 	}
 };
-#define shaderStaticTest_dodsp_vertexlit_and_unlit_generic_ps30 psh_forgot_to_set_static_DETAILTEXTURE + psh_forgot_to_set_static_CUBEMAP + psh_forgot_to_set_static_DIFFUSELIGHTING + psh_forgot_to_set_static_ENVMAPMASK + psh_forgot_to_set_static_BASEALPHAENVMAPMASK + psh_forgot_to_set_static_SELFILLUM + psh_forgot_to_set_static_VERTEXCOLOR + psh_forgot_to_set_static_FLASHLIGHT + psh_forgot_to_set_static_SELFILLUM_ENVMAPMASK_ALPHA + psh_forgot_to_set_static_DETAIL_BLEND_MODE + psh_forgot_to_set_static_SEAMLESS_BASE + psh_forgot_to_set_static_SEAMLESS_DETAIL + psh_forgot_to_set_static_DISTANCEALPHA + psh_forgot_to_set_static_DISTANCEALPHAFROMDETAIL + psh_forgot_to_set_static_SOFT_MASK + psh_forgot_to_set_static_OUTLINE + psh_forgot_to_set_static_OUTER_GLOW + psh_forgot_to_set_static_FLASHLIGHTDEPTHFILTERMODE + psh_forgot_to_set_static_DEPTHBLEND + psh_forgot_to_set_static_BLENDTINTBYBASEALPHA + psh_forgot_to_set_static_ENVMAPFRESNEL + psh_forgot_to_set_static_DODSP_SUNFILTER + 0
+#define shaderStaticTest_dodsp_vertexlit_and_unlit_generic_ps30 psh_forgot_to_set_static_DETAILTEXTURE + psh_forgot_to_set_static_CUBEMAP + psh_forgot_to_set_static_DIFFUSELIGHTING + psh_forgot_to_set_static_ENVMAPMASK + psh_forgot_to_set_static_BASEALPHAENVMAPMASK + psh_forgot_to_set_static_SELFILLUM + psh_forgot_to_set_static_VERTEXCOLOR + psh_forgot_to_set_static_FLASHLIGHT + psh_forgot_to_set_static_SELFILLUM_ENVMAPMASK_ALPHA + psh_forgot_to_set_static_DETAIL_BLEND_MODE + psh_forgot_to_set_static_SEAMLESS_BASE + psh_forgot_to_set_static_SEAMLESS_DETAIL + psh_forgot_to_set_static_DISTANCEALPHA + psh_forgot_to_set_static_DISTANCEALPHAFROMDETAIL + psh_forgot_to_set_static_SOFT_MASK + psh_forgot_to_set_static_OUTLINE + psh_forgot_to_set_static_OUTER_GLOW + psh_forgot_to_set_static_FLASHLIGHTDEPTHFILTERMODE + psh_forgot_to_set_static_DEPTHBLEND + psh_forgot_to_set_static_BLENDTINTBYBASEALPHA + psh_forgot_to_set_static_ENVMAPFRESNEL + 0
 class dodsp_vertexlit_and_unlit_generic_ps30_Dynamic_Index
 {
 private:

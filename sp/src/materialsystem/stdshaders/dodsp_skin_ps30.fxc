@@ -20,7 +20,6 @@
 // STATIC: "BLENDTINTBYBASEALPHA"       "0..1"
 // STATIC: "PHONG_HALFLAMBERT"          "0..1"
 // STATIC: "ENVMAPMASK"					"0..1"
-// STATIC: "DODSP_SUNFILTER"			"0..1"
 
 // DYNAMIC: "WRITEWATERFOGTODESTALPHA"  "0..1"
 // DYNAMIC: "PIXELFOGTYPE"				"0..1"
@@ -36,7 +35,6 @@
 // SKIP: ( $BLENDTINTBYBASEALPHA ) && ( $SELFILLUM )
 // SKIP: $ENVMAPMASK && !$CUBEMAP
 // SKIP: $FASTPATH_NOBUMP && ( $RIMLIGHT || $DETAILTEXTURE || $SELFILLUM || $BLENDTINTBYBASEALPHA )
-// SKIP: $FLASHLIGHT && $DODSP_SUNFILTER
 
 #include "common_flashlight_fxc.h"
 #include "shader_constant_register_map.h"
@@ -235,7 +233,7 @@ float4 main( PS_INPUT i ) : COLOR
 	float3 diffuseLighting = float3( 1.0f, 1.0f, 1.0f );
 	float3 envMapColor = float3( 0.0f, 0.0f, 0.0f );
 #if !FLASHLIGHT
-	float flDoDSPSunShadow = DoDSP_ModelSunShadow( i.dodspSun.xyz ) * i.dodspSun.w;	// DOD-SP: once, for diffuse and specular
+	float flDoDSPSunShadow = DoDSP_ModelSunShadow( i.dodspSun ) * DoDSP_ModelTakesSun( i.dodspSun );	// DOD-SP: once, for diffuse and specular
 #endif
 	if( !bFlashlight )
 	{

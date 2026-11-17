@@ -512,7 +512,6 @@ void DrawSkin_DX9_Internal( CBaseVSShader *pShader, IMaterialVar** params, IShad
 			SET_STATIC_PIXEL_SHADER_COMBO( PHONG_HALFLAMBERT, bPhongHalfLambert );
 			SET_STATIC_PIXEL_SHADER_COMBO( ENVMAPMASK, bHasEnvmapMask );
 #endif
-			SET_STATIC_PIXEL_SHADER_COMBO( DODSP_SUNFILTER, bHasFlashlight ? 0 : DoDSP_SunFilterMode() );	// DOD-SP
 			if ( !bHasFlashlight )
 				DoDSP_SunShadowState( pShaderShadow, DODSP_MSUN_SAMPLER_SKIN );									// DOD-SP: cascade samplers
 			SET_STATIC_PIXEL_SHADER( dodsp_skin_ps30 );

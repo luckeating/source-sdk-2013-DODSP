@@ -275,27 +275,6 @@ public:
 		m_bENVMAPMASK = true;
 #endif
 	}
-private:
-	int m_nDODSP_SUNFILTER;
-#ifdef _DEBUG
-	bool m_bDODSP_SUNFILTER;
-#endif
-public:
-	void SetDODSP_SUNFILTER( int i )
-	{
-		Assert( i >= 0 && i <= 1 );
-		m_nDODSP_SUNFILTER = i;
-#ifdef _DEBUG
-		m_bDODSP_SUNFILTER = true;
-#endif
-	}
-	void SetDODSP_SUNFILTER( bool i )
-	{
-		m_nDODSP_SUNFILTER = i ? 1 : 0;
-#ifdef _DEBUG
-		m_bDODSP_SUNFILTER = true;
-#endif
-	}
 public:
 	dodsp_vertexlit_and_unlit_generic_bump_ps30_Static_Index()
 	{
@@ -351,21 +330,17 @@ public:
 		m_bENVMAPMASK = false;
 #endif // _DEBUG
 		m_nENVMAPMASK = 0;
-#ifdef _DEBUG
-		m_bDODSP_SUNFILTER = false;
-#endif // _DEBUG
-		m_nDODSP_SUNFILTER = 0;
 	}
 	int GetIndex()
 	{
 #ifdef _DEBUG
-		bool bAllStaticVarsDefined = m_bCUBEMAP && m_bDIFFUSELIGHTING && m_bLIGHTWARPTEXTURE && m_bSELFILLUM && m_bSELFILLUMFRESNEL && m_bNORMALMAPALPHAENVMAPMASK && m_bHALFLAMBERT && m_bFLASHLIGHT && m_bDETAILTEXTURE && m_bDETAIL_BLEND_MODE && m_bFLASHLIGHTDEPTHFILTERMODE && m_bBLENDTINTBYBASEALPHA && m_bENVMAPMASK && m_bDODSP_SUNFILTER;
+		bool bAllStaticVarsDefined = m_bCUBEMAP && m_bDIFFUSELIGHTING && m_bLIGHTWARPTEXTURE && m_bSELFILLUM && m_bSELFILLUMFRESNEL && m_bNORMALMAPALPHAENVMAPMASK && m_bHALFLAMBERT && m_bFLASHLIGHT && m_bDETAILTEXTURE && m_bDETAIL_BLEND_MODE && m_bFLASHLIGHTDEPTHFILTERMODE && m_bBLENDTINTBYBASEALPHA && m_bENVMAPMASK;
 		Assert( bAllStaticVarsDefined );
 #endif // _DEBUG
-		return ( 20 * m_nCUBEMAP ) + ( 40 * m_nDIFFUSELIGHTING ) + ( 80 * m_nLIGHTWARPTEXTURE ) + ( 80 * m_nSELFILLUM ) + ( 160 * m_nSELFILLUMFRESNEL ) + ( 160 * m_nNORMALMAPALPHAENVMAPMASK ) + ( 320 * m_nHALFLAMBERT ) + ( 640 * m_nFLASHLIGHT ) + ( 1280 * m_nDETAILTEXTURE ) + ( 2560 * m_nDETAIL_BLEND_MODE ) + ( 5120 * m_nFLASHLIGHTDEPTHFILTERMODE ) + ( 15360 * m_nBLENDTINTBYBASEALPHA ) + ( 30720 * m_nENVMAPMASK ) + ( 61440 * m_nDODSP_SUNFILTER ) + 0;
+		return ( 20 * m_nCUBEMAP ) + ( 40 * m_nDIFFUSELIGHTING ) + ( 80 * m_nLIGHTWARPTEXTURE ) + ( 80 * m_nSELFILLUM ) + ( 160 * m_nSELFILLUMFRESNEL ) + ( 160 * m_nNORMALMAPALPHAENVMAPMASK ) + ( 320 * m_nHALFLAMBERT ) + ( 640 * m_nFLASHLIGHT ) + ( 1280 * m_nDETAILTEXTURE ) + ( 2560 * m_nDETAIL_BLEND_MODE ) + ( 5120 * m_nFLASHLIGHTDEPTHFILTERMODE ) + ( 15360 * m_nBLENDTINTBYBASEALPHA ) + ( 30720 * m_nENVMAPMASK ) + 0;
 	}
 };
-#define shaderStaticTest_dodsp_vertexlit_and_unlit_generic_bump_ps30 psh_forgot_to_set_static_CUBEMAP + psh_forgot_to_set_static_DIFFUSELIGHTING + psh_forgot_to_set_static_LIGHTWARPTEXTURE + psh_forgot_to_set_static_SELFILLUM + psh_forgot_to_set_static_SELFILLUMFRESNEL + psh_forgot_to_set_static_NORMALMAPALPHAENVMAPMASK + psh_forgot_to_set_static_HALFLAMBERT + psh_forgot_to_set_static_FLASHLIGHT + psh_forgot_to_set_static_DETAILTEXTURE + psh_forgot_to_set_static_DETAIL_BLEND_MODE + psh_forgot_to_set_static_FLASHLIGHTDEPTHFILTERMODE + psh_forgot_to_set_static_BLENDTINTBYBASEALPHA + psh_forgot_to_set_static_ENVMAPMASK + psh_forgot_to_set_static_DODSP_SUNFILTER + 0
+#define shaderStaticTest_dodsp_vertexlit_and_unlit_generic_bump_ps30 psh_forgot_to_set_static_CUBEMAP + psh_forgot_to_set_static_DIFFUSELIGHTING + psh_forgot_to_set_static_LIGHTWARPTEXTURE + psh_forgot_to_set_static_SELFILLUM + psh_forgot_to_set_static_SELFILLUMFRESNEL + psh_forgot_to_set_static_NORMALMAPALPHAENVMAPMASK + psh_forgot_to_set_static_HALFLAMBERT + psh_forgot_to_set_static_FLASHLIGHT + psh_forgot_to_set_static_DETAILTEXTURE + psh_forgot_to_set_static_DETAIL_BLEND_MODE + psh_forgot_to_set_static_FLASHLIGHTDEPTHFILTERMODE + psh_forgot_to_set_static_BLENDTINTBYBASEALPHA + psh_forgot_to_set_static_ENVMAPMASK + 0
 class dodsp_vertexlit_and_unlit_generic_bump_ps30_Dynamic_Index
 {
 private:

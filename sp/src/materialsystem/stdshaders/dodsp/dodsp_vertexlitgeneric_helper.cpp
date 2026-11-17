@@ -4,7 +4,7 @@
 // (lighting stage 4). Generated once by a script and then kept by hand; the only changes from Mapbase:
 //   - shader model 3.0 paths only (anything else is sent to Mapbase's SDK_ shader by SHADER_FALLBACK)
 //   - DOD-SP's own compiled shaders (dodsp_vertexlit_and_unlit_generic_*), never Mapbase's .vcs files
-//   - the sun: DODSP_SUNFILTER combo, cascade samplers, sun constants (search "DOD-SP")
+//   - the sun: cascade samplers, sun constants (search "DOD-SP")
 //   - combos DOD-SP compiled only as 0 go through DoDSP_Pinned (INVARIANT watchdog)
 //
 //
@@ -739,7 +739,6 @@ static void DrawVertexLitGeneric_DX9_Internal( CBaseVSShader *pShader, IMaterial
 					SET_STATIC_PIXEL_SHADER_COMBO( FLASHLIGHTDEPTHFILTERMODE, nShadowFilterMode );
 					SET_STATIC_PIXEL_SHADER_COMBO( BLENDTINTBYBASEALPHA, bBlendTintByBaseAlpha );
 					SET_STATIC_PIXEL_SHADER_COMBO( ENVMAPMASK, bHasEnvmapMask );
-					SET_STATIC_PIXEL_SHADER_COMBO( DODSP_SUNFILTER, bHasFlashlight ? 0 : DoDSP_SunFilterMode() );	// DOD-SP
 					if ( !bHasFlashlight )
 						DoDSP_SunShadowState( pShaderShadow, DODSP_MSUN_SAMPLER );									// DOD-SP: cascade samplers
 					SET_STATIC_PIXEL_SHADER( dodsp_vertexlit_and_unlit_generic_bump_ps30 );
@@ -812,7 +811,6 @@ static void DrawVertexLitGeneric_DX9_Internal( CBaseVSShader *pShader, IMaterial
 #ifdef MAPBASE
 					SET_STATIC_PIXEL_SHADER_COMBO( ENVMAPFRESNEL, bHasEnvMapFresnel );
 #endif
-					SET_STATIC_PIXEL_SHADER_COMBO( DODSP_SUNFILTER, bHasFlashlight ? 0 : DoDSP_SunFilterMode() );	// DOD-SP
 					if ( !bHasFlashlight )
 						DoDSP_SunShadowState( pShaderShadow, DODSP_MSUN_SAMPLER );									// DOD-SP: cascade samplers
 					SET_STATIC_PIXEL_SHADER( dodsp_vertexlit_and_unlit_generic_ps30 );

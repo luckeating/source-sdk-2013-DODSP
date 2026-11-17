@@ -219,6 +219,35 @@ def check_constants(sources):
                          % (base, n, reg, owner))
 
 
+def check_raw_depth():
+    """Stage 4b. INVARIANT: the sun cascades are raw depth maps read with tex2Dlod and compared in the
+    shader. A hardware depth compare (tex2Dproj) or SetShadowDepthFiltering on a cascade sampler hands
+    the soft shadow's blocker search compare results instead of depths - garbage shadows."""
+    for name in ("dodsp_sun_common_fxc.h", "dodsp_sun_fxc.h", "dodsp_modelsun_ps_fxc.h"):
+        path = os.path.join(STDSHADERS, name)
+        code = strip_comments(open(path, encoding="latin-1").read())
+        if re.search(r"\btex2Dproj\s*\(", code):
+            fail("%s: tex2Dproj (hardware depth compare) - the cascades are raw depth, read with tex2Dlod" % name)
+        if re.search(r"\btex2D\s*\(", code):
+            fail("%s: tex2D on the cascades - use tex2Dlod (no gradients: the reads sit in loops and branches)" % name)
+    cascade = {"SHADER_SAMPLER13", "SHADER_SAMPLER14", "SHADER_SAMPLER15",   # brush, plain and bump models
+               "SHADER_SAMPLER9", "SHADER_SAMPLER10", "SHADER_SAMPLER11"}    # skin (its wrinkle samplers)
+    for cpp in glob.glob(os.path.join(STDSHADERS, "dodsp", "*.cpp")):
+        base = os.path.basename(cpp)
+        for n, line in enumerate(open(cpp, encoding="latin-1"), 1):
+            code = line.split("//")[0]
+            m = re.search(r"SetShadowDepthFiltering\s*\(\s*(\w+)", code)
+            if not m:
+                continue
+            if base == "dodsp_sun_shader.cpp":
+                fail("%s:%d: SetShadowDepthFiltering in the sun's own code - the cascades are raw depth" % (base, n))
+            elif m.group(1) in cascade and "dodsp-lint: x360 only" not in line and \
+                    not (base == "dodsp_skin_helper.cpp" and m.group(1) not in {"SHADER_SAMPLER9", "SHADER_SAMPLER10", "SHADER_SAMPLER11"}) and \
+                    not (base != "dodsp_skin_helper.cpp" and m.group(1) not in {"SHADER_SAMPLER13", "SHADER_SAMPLER14", "SHADER_SAMPLER15"}):
+                fail("%s:%d: SetShadowDepthFiltering on %s, a sun cascade sampler - the cascades are raw depth "
+                     "(tag the line 'dodsp-lint: x360 only' if it only runs on the Xbox 360)" % (base, n, m.group(1)))
+
+
 def main():
     if len(sys.argv) != 2:
         print(__doc__)
@@ -268,6 +297,7 @@ def main():
                 fail("%s registers ConVar %s in DOD-SP's DLL - give it a dodsp_ name (or SHADER_DLL_CVAR)" % (os.path.basename(cpp), name))
 
     check_constants(sources)
+    check_raw_depth()
 
     # Combo headers: generated, up to date
     for src in sources:
