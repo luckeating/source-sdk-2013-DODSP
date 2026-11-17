@@ -188,7 +188,8 @@ If you learn something like this, add it here in the same commit as the fix.
 - Stage 5: deferred lamps (can reuse the 4b filter).
 - Stage 6: extras. **SSAO** (screen-space ambient occlusion: contact darkening from what's on screen),
   and then blob shadows OFF entirely while the per-pixel sun draws (agreed 2026-11-17). Also cubemap
-  normalization / specular occlusion (the owner's idea).
+  normalization / specular occlusion (the owner's idea). **HDR** (owner: "later"): test and fix the
+  DOD-SP shaders and sun intensity under `mat_hdr_level 2`; compiles then need both `-ldr` and `-hdr` passes.
 
 ## Open known issues (lighting)
 - The door entity doesn't cast into the sun cascades.
