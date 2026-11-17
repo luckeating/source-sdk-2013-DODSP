@@ -22,6 +22,10 @@ enum
 // scene draws, next to the stock shadow depth textures.
 void DoDSP_RenderSunCascades( const CViewSetup &mainView );
 
+// Called by the main view (viewrender.cpp RenderView) after the 2D debug overlays: draws the
+// cascades on screen when dodsp_csm_view is on (stage 3b-1 debug).
+void DoDSP_DrawSunCascadeView( const CViewSetup &mainView );
+
 // For later stages (the shadow mask): the depth texture and world -> texture matrix of a cascade.
 // Returns false while the cascade has never rendered (no sun, maps off, map just loaded).
 bool DoDSP_GetSunCascade( int nCascade, ITexture **ppDepth, VMatrix *pWorldToTexture );

@@ -1,0 +1,28 @@
+//===================== DOD-SP screen-space vertex shader =====================//
+//
+// Passes a screen-space rectangle straight through (positions already in clip space, as
+// DrawScreenSpaceRectangle gives them). Used by DOD-SP's debug and screen-space passes.
+//
+//=============================================================================//
+
+#include "common_vs_fxc.h"
+
+struct VS_INPUT
+{
+	float3 vPos				: POSITION;
+	float2 vTexCoord		: TEXCOORD0;
+};
+
+struct VS_OUTPUT
+{
+	float4 projPos			: POSITION;
+	float2 texCoord			: TEXCOORD0;
+};
+
+VS_OUTPUT main( const VS_INPUT v )
+{
+	VS_OUTPUT o = ( VS_OUTPUT )0;
+	o.projPos = float4( v.vPos, 1.0f );
+	o.texCoord = v.vTexCoord;
+	return o;
+}

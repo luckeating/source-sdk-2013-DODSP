@@ -2534,6 +2534,9 @@ void CViewRender::RenderView( const CViewSetup &view, int nClearFlags, int whatT
 
 	CDebugViewRender::Draw2DDebuggingInfo( view );
 
+	// DOD-SP: the sun cascade debug view (dodsp_csm_view), on top of everything else
+	DoDSP_DrawSunCascadeView( view );
+
 	Render2DEffectsPostHUD( view );
 
 	g_bRenderingView = false;

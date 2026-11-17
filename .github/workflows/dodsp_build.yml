@@ -11,9 +11,9 @@
 # The second artifact, maptools_win32_Release, is Mapbase's map compilers (vbsp, vvis, vrad)
 # built from this repo, so lighting work that changes VRAD ships with the game build.
 #
-# The third artifact, dodsp_shaders_win32_Release, is DOD-SP's own shader DLL,
-# game_shader_dx6.dll. It goes NEXT TO Mapbase's game_shader_dx9.dll in
-# sourcemods\DOD-SP\bin and never replaces it. Uninstall = delete that one file.
+# The third artifact, dodsp_shaders_win32_Release, is DOD-SP's own shaders, laid out like the mod
+# folder: bin\game_shader_dx6.dll (goes NEXT TO Mapbase's game_shader_dx9.dll, never replaces it)
+# and shaders\fxc\dodsp_*.vcs. Unzip into sourcemods\DOD-SP. Uninstall = delete those files.
 
 name: DOD-SP Build
 
@@ -35,6 +35,7 @@ on:
       - 'sp/src/materialsystem/**'
       - 'sp/src/public/dodsp_*.h'
       - 'sp/src/createdodspshadersprojects.bat'
+      - 'sp/src/devtools/**'
   workflow_dispatch:
 
 jobs:

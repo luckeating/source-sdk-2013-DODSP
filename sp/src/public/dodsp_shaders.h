@@ -15,9 +15,12 @@
 
 #define DODSP_SHADER_DLL_NAME		"game_shader_dx6"
 #define DODSP_SHADER_PREFIX			"DODSP_"
-#define DODSP_SHADER_DLL_VERSION	"3a"	// next change: 3b	// bumped whenever the DLL changes; see dodsp_shaders_version
+#define DODSP_SHADER_DLL_VERSION	"3b1"	// bump with every DLL change; see dodsp_shaders_version
 
 // Stage 3a: proves the DLL loads next to Mapbase's. It only falls back to UnlitGeneric.
 #define DODSP_SHADER_PROBE			"DODSP_Probe"
+
+// Stage 3b-1: draws a sun cascade with the aim-point marker (dodsp_csm_view). Uses dodsp_*.vcs.
+#define DODSP_SHADER_CASCADE_DEBUG	"DODSP_SunCascadeDebug"
 
 #endif // DODSP_SHADERS_H

@@ -96,13 +96,26 @@ jobs:
           ${{inputs.branch}}/game/mod_${{inputs.game}}/bin/*.dll
         if-no-files-found: error
 
-    - name: Publish DOD-SP shader DLL
+    # DOD-SP shaders: compile dodsp_*.vcs with ShaderCompile2 and lay out the artifact like the
+    # DOD-SP folder (bin\game_shader_dx6.dll + shaders\fxc\dodsp_*.vcs) so it unzips straight in.
+    - name: Compile DOD-SP shader files
+      if: inputs.project-group == 'dodspshaders'
+      working-directory: '${{inputs.branch}}/src'
+      shell: cmd
+      run: |
+        python devtools\dodsp_build_shaders.py ..\..\dodsp_out
+        if ERRORLEVEL 1 exit /b 1
+        mkdir ..\..\dodsp_out\bin
+        copy ..\game\mod_hl2\bin\game_shader_dx6.dll ..\..\dodsp_out\bin\
+        if ERRORLEVEL 1 exit /b 1
+        dir /s ..\..\dodsp_out
+
+    - name: Publish DOD-SP shader DLL and shader files
       if: inputs.project-group == 'dodspshaders'
       uses: actions/upload-artifact@v4
       with:
         name: 'dodsp_shaders_win32_${{ inputs.configuration }}'
-        path: |
-          ${{inputs.branch}}/game/mod_hl2/bin/game_shader_dx6.dll
+        path: dodsp_out/
         if-no-files-found: error
 
     - name: Publish map tools

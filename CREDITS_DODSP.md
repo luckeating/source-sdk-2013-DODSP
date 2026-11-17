@@ -17,7 +17,8 @@ Status: **in use** = code or tool in DOD-SP now; **planned** = picked for an upc
 
 | Who | What | Status | Licence |
 |---|---|---|---|
-| SCell555 | ShaderCompile, the standalone shader compiler for CI | planned (shader stages) | none stated |
+| SCell555 | ShaderCompile, the standalone shader compiler for CI | used (via ShaderCompile2) | none stated |
+| Joshua Ashton / Valve | ShaderCompile2 (fork of SCell555's ShaderCompile, shipped in Valve's 2025 Source SDK) - compiles DOD-SP's dodsp_*.vcs in CI (sp/src/devtools/bin) | used (stage 3b) | Source SDK repo; see ShaderCompile2_readme.txt |
 
 ## Lighting
 

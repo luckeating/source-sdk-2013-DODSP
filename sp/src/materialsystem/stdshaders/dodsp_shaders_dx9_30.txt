@@ -1,0 +1,6 @@
+//
+// DOD-SP shaders, shader model 3.0 (compiled by ShaderCompile2 in CI).
+// INVARIANT: every file here is named dodsp_*  - checked by the build.
+//
+dodsp_screenspace_vs30.fxc
+dodsp_suncascadedebug_ps30.fxc

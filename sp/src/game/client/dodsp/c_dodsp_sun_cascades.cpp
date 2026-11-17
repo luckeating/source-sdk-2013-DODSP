@@ -4,7 +4,9 @@
 //   near - around the player, every frame      (dodsp_csm_size_near, half-width in units)
 //   mid  - wider, every frame                  (dodsp_csm_size_mid)
 //   far  - the whole map, every few seconds    (dodsp_csm_far_interval)
-// Nothing reads them yet: stage 3 turns them into a screen-space shadow mask.
+// Stage 3b-1: dodsp_csm_view draws them top-right with DOD-SP's DODSP_SunCascadeDebug shader and a
+// ring on the point under the crosshair (green = the cascade says sunlit, red = in shadow), which
+// checks the world -> texture matrix, the depth range and the shadow compare against the scene.
 //
 // The sun comes from the map's light_environment (the world lights VRAD wrote): Hammer owns its
 // direction. No env_global_light, no flashlight state, no engine flashlight passes - the stock
@@ -18,7 +20,8 @@
 // Mapbase's.
 //
 // Cvars: dodsp_csm (1 = render), dodsp_csm_debug (1 = coverage boxes + stats), dodsp_csm_res,
-// dodsp_csm_size_near/mid, dodsp_csm_far_interval, dodsp_csm_slopebias, dodsp_csm_bias.
+// dodsp_csm_size_near/mid, dodsp_csm_far_interval, dodsp_csm_slopebias, dodsp_csm_bias,
+// dodsp_csm_view (1 = draw the cascades on screen), dodsp_csm_view_size, dodsp_csm_view_bias.
 // Command: dodsp_csm_report.
 //
 //===================================================================================//
@@ -29,12 +32,18 @@
 #include "view_shared.h"
 #include "iviewrender.h"
 #include "c_world.h"
+#include "c_baseplayer.h"
 #include "worldlight.h"
 #include "engine/ivdebugoverlay.h"
 #include "materialsystem/imaterialsystem.h"
 #include "materialsystem/itexture.h"
 #include "materialsystem/MaterialSystemUtil.h"
 #include "mathlib/vmatrix.h"
+#include "materialsystem/imaterialvar.h"
+#include "materialsystem/imaterialsystemhardwareconfig.h"
+#include "KeyValues.h"
+#include "dodsp_shaders.h"
+#include "c_dodsp_shaderdll.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -47,6 +56,11 @@ static ConVar dodsp_csm_size_mid( "dodsp_csm_size_mid", "1024", 0, "DOD-SP: half
 static ConVar dodsp_csm_far_interval( "dodsp_csm_far_interval", "2", 0, "DOD-SP: seconds between redraws of the whole-map sun cascade" );
 static ConVar dodsp_csm_slopebias( "dodsp_csm_slopebias", "4", 0, "DOD-SP: slope-scaled depth bias when drawing the sun cascades" );
 static ConVar dodsp_csm_bias( "dodsp_csm_bias", "0.00001", 0, "DOD-SP: constant depth bias when drawing the sun cascades" );
+static ConVar dodsp_csm_view( "dodsp_csm_view", "0", 0,
+	"DOD-SP debug: 1 = draw the sun cascades top-right (near, mid, far) with a ring on the point you aim at: "
+	"green = that cascade says sunlit, red = in shadow. Needs DOD-SP's shader DLL and shader files." );
+static ConVar dodsp_csm_view_size( "dodsp_csm_view_size", "256", 0, "DOD-SP debug: on-screen size of each cascade in dodsp_csm_view, pixels" );
+static ConVar dodsp_csm_view_bias( "dodsp_csm_view_bias", "0.002", 0, "DOD-SP debug: depth bias (0..1 of the cascade's depth) for the aim-point test in dodsp_csm_view" );
 
 namespace
 {
@@ -71,13 +85,15 @@ namespace
 class CDoDSPSunCascades : public CAutoGameSystem
 {
 public:
-	CDoDSPSunCascades() : CAutoGameSystem( "CDoDSPSunCascades" ), m_bAllocated( false ), m_nRes( 0 ), m_bHaveSun( false ), m_nLastFrame( -1 ) {}
+	CDoDSPSunCascades() : CAutoGameSystem( "CDoDSPSunCascades" ), m_bAllocated( false ), m_nRes( 0 ), m_bHaveSun( false ), m_nLastFrame( -1 ),
+		m_bViewMaterials( false ), m_bViewWarned( false ) {}
 
 	virtual void LevelInitPostEntity()	{ Reset(); EnsureTargets(); FindSun(); }
 	virtual void LevelShutdownPreEntity() { Reset(); m_bHaveSun = false; }
-	virtual void Shutdown()				{ FreeTargets(); }
+	virtual void Shutdown()				{ FreeTargets(); FreeViewMaterials(); }
 
 	void Render( const CViewSetup &mainView );
+	void DrawView( const CViewSetup &mainView );
 	bool Get( int n, ITexture **ppDepth, VMatrix *pMat );
 	void Report() const;
 
@@ -97,6 +113,8 @@ private:
 	void FindSun();
 	bool SetupCascade( Cascade_t &c, float flHalfSize, const Vector2D &vecCentreLS );
 	void DrawDebug( const CViewSetup &mainView );
+	bool EnsureViewMaterials();
+	void FreeViewMaterials();
 
 	bool				m_bAllocated;
 	int					m_nRes;
@@ -110,6 +128,14 @@ private:
 	float				m_flWorldMinF, m_flWorldMaxF;	// world bounds along the sun
 	Vector2D			m_vecWorldMinLS, m_vecWorldMaxLS;	// world bounds across the sun
 	int					m_nLastFrame;
+
+	// dodsp_csm_view: one material per cascade (queued rendering reads material values late, so
+	// the three draws must not share one material)
+	CMaterialReference	m_ViewMat[DODSP_CASCADE_COUNT];
+	IMaterialVar		*m_pViewMarker[DODSP_CASCADE_COUNT];
+	IMaterialVar		*m_pViewParams[DODSP_CASCADE_COUNT];
+	bool				m_bViewMaterials;
+	bool				m_bViewWarned;
 };
 
 static CDoDSPSunCascades s_DoDSPSunCascades;
@@ -293,6 +319,101 @@ void CDoDSPSunCascades::DrawDebug( const CViewSetup &mainView )
 	}
 }
 
+bool CDoDSPSunCascades::EnsureViewMaterials()
+{
+	if ( m_bViewMaterials )
+		return true;
+	if ( !m_bAllocated )
+		return false;
+
+	const char *pszWhy = NULL;
+	if ( !g_pMaterialSystemHardwareConfig->SupportsShaderModel_3_0() )
+		pszWhy = "this graphics card has no shader model 3.0";
+	else if ( !DoDSP_ShaderExists( DODSP_SHADER_CASCADE_DEBUG ) )
+		pszWhy = "DOD-SP's shader DLL (" DODSP_SHADER_DLL_NAME ".dll) with " DODSP_SHADER_CASCADE_DEBUG " is not loaded";
+	if ( pszWhy )
+	{
+		if ( !m_bViewWarned )
+			Warning( "dodsp_csm_view: can't draw the sun cascades - %s\n", pszWhy );
+		m_bViewWarned = true;
+		return false;
+	}
+
+	for ( int i = 0; i < DODSP_CASCADE_COUNT; i++ )
+	{
+		char szMat[64], szTex[64];
+		Q_snprintf( szMat, sizeof( szMat ), "__dodsp_csm_view%d", i );
+		Q_snprintf( szTex, sizeof( szTex ), "_rt_DODSP_SunCascade%d", i );
+		KeyValues *pKV = new KeyValues( DODSP_SHADER_CASCADE_DEBUG );
+		pKV->SetString( "$basetexture", szTex );
+		m_ViewMat[i].Init( szMat, pKV );
+		bool bFound;
+		m_pViewMarker[i] = m_ViewMat[i]->FindVar( "$marker", &bFound, false );
+		if ( !bFound ) m_pViewMarker[i] = NULL;
+		m_pViewParams[i] = m_ViewMat[i]->FindVar( "$params", &bFound, false );
+		if ( !bFound ) m_pViewParams[i] = NULL;
+	}
+	m_bViewMaterials = true;
+	return true;
+}
+
+void CDoDSPSunCascades::FreeViewMaterials()
+{
+	for ( int i = 0; i < DODSP_CASCADE_COUNT; i++ )
+	{
+		m_ViewMat[i].Shutdown();
+		m_pViewMarker[i] = m_pViewParams[i] = NULL;
+	}
+	m_bViewMaterials = false;
+}
+
+// Draws the three cascades side by side, top-right: near, mid, far. The ring marks the point
+// under the crosshair, put into each cascade with the same matrix the shadow will use.
+void CDoDSPSunCascades::DrawView( const CViewSetup &mainView )
+{
+	if ( !dodsp_csm_view.GetBool() )
+	{
+		m_bViewWarned = false;
+		return;
+	}
+	if ( !dodsp_csm.GetBool() || !m_bHaveSun || !EnsureViewMaterials() )
+		return;
+
+	Vector vecForward;
+	AngleVectors( mainView.angles, &vecForward );
+	trace_t tr;
+	UTIL_TraceLine( mainView.origin, mainView.origin + vecForward * MAX_TRACE_LENGTH, MASK_OPAQUE,
+					C_BasePlayer::GetLocalPlayer(), COLLISION_GROUP_NONE, &tr );
+	bool bHit = tr.fraction < 1.0f && !tr.startsolid && !tr.allsolid && !( tr.surface.flags & SURF_SKY );
+
+	int nSize = clamp( dodsp_csm_view_size.GetInt(), 64, 1024 );
+	int nGap = 8;
+	int x = mainView.x + mainView.width - DODSP_CASCADE_COUNT * ( nSize + nGap );
+	int y = mainView.y + nGap + 64;	// below the console notify lines
+
+	CMatRenderContextPtr pRenderContext( materials );
+	for ( int i = 0; i < DODSP_CASCADE_COUNT; i++, x += nSize + nGap )
+	{
+		const Cascade_t &c = m_Cascades[i];
+		if ( !c.m_bValid || !m_ViewMat[i].IsValid() )
+			continue;
+
+		Vector vecTex = c.m_matWorldToTexture.VMul4x3( tr.endpos );
+		bool bInside = bHit && vecTex.x >= 0.0f && vecTex.x <= 1.0f && vecTex.y >= 0.0f && vecTex.y <= 1.0f &&
+					   vecTex.z >= 0.0f && vecTex.z <= 1.0f;
+		if ( m_pViewMarker[i] )
+			m_pViewMarker[i]->SetVecValue( vecTex.x, vecTex.y, vecTex.z, bInside ? 1.0f : 0.0f );
+		if ( m_pViewParams[i] )
+			m_pViewParams[i]->SetVecValue( 1.0f / nSize, dodsp_csm_view_bias.GetFloat(), 0.0f, 0.0f );
+
+		pRenderContext->DrawScreenSpaceRectangle( m_ViewMat[i], x, y, nSize, nSize,
+												  0, 0, m_nRes - 1, m_nRes - 1, m_nRes, m_nRes );
+	}
+
+	engine->Con_NPrintf( 6, "DOD-SP sun cascades on screen (top-right): near | mid | far. Ring = your aim point: green sunlit, red shadowed%s",
+						 bHit ? "" : " (aim at something)" );
+}
+
 bool CDoDSPSunCascades::Get( int n, ITexture **ppDepth, VMatrix *pMat )
 {
 	if ( n < 0 || n >= DODSP_CASCADE_COUNT || !m_bAllocated || !m_Cascades[n].m_bValid )
@@ -326,6 +447,11 @@ void CDoDSPSunCascades::Report() const
 void DoDSP_RenderSunCascades( const CViewSetup &mainView )
 {
 	s_DoDSPSunCascades.Render( mainView );
+}
+
+void DoDSP_DrawSunCascadeView( const CViewSetup &mainView )
+{
+	s_DoDSPSunCascades.DrawView( mainView );
 }
 
 bool DoDSP_GetSunCascade( int nCascade, ITexture **ppDepth, VMatrix *pWorldToTexture )

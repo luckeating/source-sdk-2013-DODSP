@@ -1,0 +1,58 @@
+//===================== DOD-SP sun cascade debug view =====================//
+//
+// Lighting stage 3b-1. Draws one sun cascade (a shadow depth map) as a grey picture, using only
+// depth COMPARISONS - the same kind of read the sun shadow in the brush shader will do. A depth
+// map can't be shown directly on every card (NVIDIA returns compare results, not depths), so the
+// picture is built from 32 compares: dark = close to the sun (roofs), white = far / empty.
+//
+// The marker (c0) is the point under the crosshair, put into this cascade by the C++ side with the
+// same world -> texture matrix the real shadow will use. It is drawn as a ring at that spot:
+//   green  = the cascade says that point is in sunlight
+//   red    = the cascade says that point is in shadow
+// If the ring sits on the thing you aim at and its colour matches what you see, the matrix, the
+// depth range and the compare are all right.
+//
+//=============================================================================//
+
+// STATIC: "FILTERMODE" "0..2"
+
+#include "common_ps_fxc.h"
+
+sampler DepthSampler	: register( s0 );
+const float4 g_vMarker	: register( c0 );	// u, v, depth (0..1), w = 1 to draw
+const float4 g_vParams	: register( c1 );	// x = texture units per screen pixel of this view, y = depth bias
+
+struct PS_INPUT
+{
+	float2 texCoord		: TEXCOORD0;
+};
+
+// 1 = lit (the point at depth flRef is not behind anything stored at uv), 0 = shadowed
+float SunCompare( float2 uv, float flRef )
+{
+#if FILTERMODE == NVIDIA_PCF_POISSON
+	return tex2Dproj( DepthSampler, float4( uv, flRef, 1.0f ) ).x;	// hardware compare
+#else
+	return ( flRef <= tex2D( DepthSampler, uv ).x ) ? 1.0f : 0.0f;	// raw depth (ATI paths)
+#endif
+}
+
+float4 main( PS_INPUT i ) : COLOR
+{
+	float flLit = 0.0f;
+	for ( int k = 0; k < 32; k++ )
+		flLit += SunCompare( i.texCoord, ( k + 0.5f ) / 32.0f );
+	float3 vColor = ( flLit / 32.0f ).xxx;
+
+	if ( g_vMarker.w > 0.5f )
+	{
+		float flDist = length( i.texCoord - g_vMarker.xy ) / g_vParams.x;	// in screen pixels
+		float flRing = saturate( 1.5f - abs( flDist - 10.0f ) );			// a ring 10 pixels out
+		float flDot = saturate( 2.5f - flDist );
+		float flSun = SunCompare( g_vMarker.xy, g_vMarker.z - g_vParams.y );
+		float3 vMark = lerp( float3( 1.0f, 0.1f, 0.1f ), float3( 0.1f, 1.0f, 0.1f ), flSun );
+		vColor = lerp( vColor, vMark, max( flRing, flDot ) );
+	}
+
+	return float4( vColor, 1.0f );
+}
