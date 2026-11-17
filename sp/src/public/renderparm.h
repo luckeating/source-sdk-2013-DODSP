@@ -30,7 +30,8 @@ enum RenderParamVector_t
 
 	VECTOR_RENDERPARM_WIND_DIRECTION,
 
-	// DOD-SP sun shadows (client: clientshadowmgr.cpp, shaders: lightmappedgeneric). The sun's
+	// DOD-SP sun shadows (client: clientshadowmgr.cpp; shaders: lightmappedgeneric, and the model
+	// shaders through dodsp_modelsun.h). The sun's
 	// world-to-shadow matrix (orthographic, rows 0-2; row 3 is 0 0 0 1) packed 4 floats per row
 	// across MATRIX_0..3, the baked sun color (linear lightmap units), the direction light travels,
 	// and params: x = 1/shadow map resolution, y = 1 when the sun maps are valid this frame.
@@ -41,7 +42,7 @@ enum RenderParamVector_t
 	VECTOR_RENDERPARM_DODSP_SUN_COLOR,
 	VECTOR_RENDERPARM_DODSP_SUN_DIR,
 	VECTOR_RENDERPARM_DODSP_SUN_PARAMS,
-	VECTOR_RENDERPARM_DODSP_SUN_TWEAKS,		// x = debug view mode (dodsp_sunshadow_debug), y = 1: tex2Dlod taps (dodsp_sunshadow_sampler)
+	VECTOR_RENDERPARM_DODSP_SUN_TWEAKS,		// x = debug view mode (dodsp_sunshadow_debug), y = 1: sun on models (dodsp_sunshadow_models), z = softness in texels (dodsp_sunshadow_softness)
 
 	MAX_VECTOR_RENDER_PARMS = 20
 };
@@ -70,10 +71,11 @@ enum RenderParamInt_t
 	INT_FLASHLIGHT_DEPTHTEXTURE_FALLBACK_FIRST,
 	INT_FLASHLIGHT_DEPTHTEXTURE_FALLBACK_LAST = INT_FLASHLIGHT_DEPTHTEXTURE_FALLBACK_FIRST + 4,
 
-	// DOD-SP sun shadows: ITexture* of the sun's static-caster and dynamic-caster depth maps
+	// DOD-SP sun shadows: ITexture* of the sun's depth maps - static casters (world + static props)
+	// and full (everything, static and dynamic)
 	// (0 = no sun shadow this frame). Same pointer-in-int convention as the fallback slots above.
 	INT_RENDERPARM_DODSP_SUN_STATIC_DEPTH,
-	INT_RENDERPARM_DODSP_SUN_DYNAMIC_DEPTH,
+	INT_RENDERPARM_DODSP_SUN_FULL_DEPTH,
 
 	MAX_INT_RENDER_PARMS = 20
 };
@@ -81,7 +83,7 @@ enum RenderParamInt_t
 // The engine stores exactly MAX_*_RENDER_PARMS slots; ours must stay inside them.
 #ifdef COMPILE_TIME_ASSERT
 COMPILE_TIME_ASSERT( VECTOR_RENDERPARM_DODSP_SUN_TWEAKS < MAX_VECTOR_RENDER_PARMS );
-COMPILE_TIME_ASSERT( INT_RENDERPARM_DODSP_SUN_DYNAMIC_DEPTH < MAX_INT_RENDER_PARMS );
+COMPILE_TIME_ASSERT( INT_RENDERPARM_DODSP_SUN_FULL_DEPTH < MAX_INT_RENDER_PARMS );
 #endif
 
 // for INT_RENDERPARM_BACK_BUFFER_INDEX

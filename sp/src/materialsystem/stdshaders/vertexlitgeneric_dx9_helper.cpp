@@ -25,6 +25,7 @@
 #endif
 
 #include "commandbuilder.h"
+#include "dodsp_modelsun.h"
 #include "convar.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
@@ -624,6 +625,10 @@ static void DrawVertexLitGeneric_DX9_Internal( CBaseVSShader *pShader, IMaterial
 				pShaderShadow->EnableTexture( SHADER_SAMPLER7, true );	// Flashlight cookie
 				pShaderShadow->EnableSRGBRead( SHADER_SAMPLER7, true );
 				userDataSize = 4; // tangent S
+			}
+			else if ( bVertexLitGeneric && DoDSP_ModelSunAvailable() )
+			{
+				DoDSP_EnableModelSunSampler( pShaderShadow, SHADER_SAMPLER8 );	// DOD-SP: the sun's full shadow map (dodsp_modelsun.h)
 			}
 
 			if ( bHasDetailTexture )
@@ -1513,6 +1518,15 @@ static void DrawVertexLitGeneric_DX9_Internal( CBaseVSShader *pShader, IMaterial
 				}
 			}
 #endif
+		}
+
+		// DOD-SP: the sun per pixel (dodsp_modelsun.h). Every shader model 3 base-pass draw writes the
+		// state, lit or not, so the vertex shader's sun flag is never left over from another draw.
+		// Off for unlit, ambient-only and static-lit draws (their baked vertex light has the sun).
+		if ( !bHasFlashlight && DoDSP_ModelSunAvailable() )
+		{
+			const bool bSunLit = bVertexLitGeneric && !bAmbientOnly && !lightState.m_bStaticLight && lightState.HasDynamicLight();
+			DoDSP_SetModelSunState( pShader, pShaderAPI, 24, SHADER_SAMPLER8, bSunLit );	// c24 = g_FlashlightWorldToTexture
 		}
 
 #ifdef MAPBASE

@@ -206,43 +206,9 @@ const float4 g_DoDSPSunRow1			: register( c6 );	// world -> shadow map v
 const float4 g_DoDSPSunRow2			: register( c9 );	// world -> shadow map depth
 const float4 g_DoDSPSunColor		: register( c20 );	// rgb = baked sun, w = strength (0 = off)
 const float4 g_DoDSPSunDir			: register( c26 );	// xyz = direction light travels, w = 1/map resolution
-const float4 g_DoDSPSunTweaks		: register( c27 );	// x = 1 compare depth by hand (AMD: no hardware PCF), y = debug view (0 off, 1 verdict, 2 raw coordinates), w = 1 use the tex2Dlod taps
+const float4 g_DoDSPSunTweaks		: register( c27 );	// x = 1 compare depth by hand (AMD: no hardware PCF), y = debug view (0 off, 1 verdict, 2 raw coordinates), z = softness (texels)
 
-// One shadow map tap, read exactly the way Valve's flashlight shadows read it (common_flashlight_fxc.h):
-// tex2Dproj with w = 1. NVIDIA hardware PCF returns the comparison itself; AMD depth formats return
-// the stored depth, compared here.
-float DoDSP_SunTap( sampler DepthSampler, float2 vUV, float flDepth )
-{
-	float flTap = tex2Dproj( DepthSampler, float4( vUV, flDepth, 1.0f ) ).x;
-	return ( g_DoDSPSunTweaks.x > 0.5f ) ? ( ( flTap > flDepth ) ? 1.0f : 0.0f ) : flTap;
-}
-
-// 3x3 filtered sun visibility: 1 = lit, 0 = blocked. Gradient-based fetches, so this must stay out
-// of dynamic branches.
-float DoDSP_SunVisibility( sampler DepthSampler, float3 vPos )
-{
-	float flSum = 0.0f;
-	for ( int y = -1; y <= 1; y++ )
-		for ( int x = -1; x <= 1; x++ )
-			flSum += DoDSP_SunTap( DepthSampler, vPos.xy + float2( x, y ) * g_DoDSPSunDir.w, vPos.z );
-	return flSum * ( 1.0f / 9.0f );
-}
-
-// The first version's taps (tex2Dlod), kept selectable (dodsp_sunshadow_sampler 1) for comparison.
-float DoDSP_SunVisibilityLod( sampler DepthSampler, float3 vPos )
-{
-	float flSum = 0.0f;
-	for ( int y = -1; y <= 1; y++ )
-	{
-		for ( int x = -1; x <= 1; x++ )
-		{
-			float4 vTap = float4( vPos.xy + float2( x, y ) * g_DoDSPSunDir.w, vPos.z, 0.0f );
-			float flTap = tex2Dlod( DepthSampler, vTap ).x;
-			flSum += ( g_DoDSPSunTweaks.x > 0.5f ) ? ( ( flTap > vPos.z ) ? 1.0f : 0.0f ) : flTap;
-		}
-	}
-	return flSum * ( 1.0f / 9.0f );
-}
+#include "dodsp_sun_ps.h"
 #else
 #define DODSP_SUNSHADOW 0
 #endif
@@ -618,20 +584,17 @@ HALF4 main( PS_INPUT i ) : COLOR
 		float flInsideZ = ( vSun.z > 0.0f && vSun.z < 1.0f ) ? 1.0f : 0.0f;
 		float3 vSunTap = float3( saturate( vSun.xy ), min( vSun.z, 0.99999f ) );
 
-		// Always fetched (no sun = white textures, zero constants = nothing removed)
-		float flStatic = DoDSP_SunVisibility( DoDSPSunStaticSampler, vSunTap );
-		float flDynamic = DoDSP_SunVisibility( DoDSPSunDynamicSampler, vSunTap );
-		[branch]
-		if ( g_DoDSPSunTweaks.w > 0.5f )
-		{
-			flStatic = DoDSP_SunVisibilityLod( DoDSPSunStaticSampler, vSunTap );
-			flDynamic = DoDSP_SunVisibilityLod( DoDSPSunDynamicSampler, vSunTap );
-		}
+		// Always fetched (no sun = white textures, zero constants = nothing removed).
+		// Static map: did VRAD's sun reach here (2x2, it only gates the removal). Full map: is
+		// anything blocking it now (4x4, spaced by dodsp_sunshadow_softness = the soft edge).
+		float flStatic = DoDSP_SunVisibility2x2( DoDSPSunStaticSampler, vSunTap, g_DoDSPSunDir.w, g_DoDSPSunTweaks.x );
+		float flDynamic = DoDSP_SunVisibility4x4( DoDSPSunDynamicSampler, vSunTap, g_DoDSPSunDir.w, max( g_DoDSPSunTweaks.z, 0.25f ), g_DoDSPSunTweaks.x );
 
 		float flRemove = g_DoDSPSunColor.w * flNdotL * flInsideXY * flInsideZ * flStatic * ( 1.0f - flDynamic );
 		diffuseLighting = max( diffuseLighting - g_DoDSPSunColor.rgb * flRemove, 0.0f );
 
 		// Debug view (dodsp_sunshadow_debug), replaces the lighting:
+		// (flDynamic is the full map's visibility: 1 = nothing blocks the sun)
 		//  1 = verdict: green = sunlit (should match the baked sun patch), red = sunlit but blocked by
 		//      something dynamic (gets darkened), blue = the static map says shadowed, purple =
 		//      outside the sun map, grey = faces away from the sun

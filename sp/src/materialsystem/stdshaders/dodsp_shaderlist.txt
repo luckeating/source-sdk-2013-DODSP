@@ -11,3 +11,12 @@ SDK_lightmappedgeneric_flashlight_vs20.fxc
 // Stage 3: the brush shader with darken-only sun shadows. Shader model 3 only - the 2.0b build
 // stays Mapbase's (2.0b cards keep the baked lighting).
 SDK_lightmappedgeneric_ps20b.fxc 30
+
+// Stage 3 step 3: models take the sun per pixel (dodsp_sun_ps.h, dodsp_modelsun.h) - plain,
+// normal-mapped and phong (skin) models. Shader model 3 only, like the brush shader.
+SDK_vertexlit_and_unlit_generic_ps20b.fxc 30
+SDK_vertexlit_and_unlit_generic_vs20.fxc 30
+SDK_vertexlit_and_unlit_generic_bump_ps20b.fxc 30
+SDK_vertexlit_and_unlit_generic_bump_vs20.fxc 30
+SDK_skin_ps20b.fxc 30
+SDK_skin_vs20.fxc 30

@@ -71,7 +71,7 @@ struct VS_OUTPUT
 #endif
 	// Stuff that is seen by the pixel shader
 	float4 baseTexCoord				: TEXCOORD0;			// includes detail tex coord
-	float3 lightAtten				: TEXCOORD1;
+	float4 lightAtten				: TEXCOORD1;	// w = DOD-SP: the engine traced the sun as visible (dodsp_sun_ps.h)
 	float3 worldVertToEyeVector		: TEXCOORD2;
 	float3x3 tangentSpaceTranspose	: TEXCOORD3;
 	//	     second row				: TEXCOORD4;
@@ -156,6 +156,9 @@ VS_OUTPUT main( const VS_INPUT v )
 	o.lightAtten.y = GetVertexAttenForLight( worldPos, 1, true );
 	o.lightAtten.z = GetVertexAttenForLight( worldPos, 2, true );
 	o.worldPos_atten3.w = GetVertexAttenForLight( worldPos, 3, true );
+#endif
+#ifdef DODSP_SUN_VS
+	o.lightAtten.w = DoDSP_EngineSunVisible();
 #endif
 
 	// Base texture coordinate transform

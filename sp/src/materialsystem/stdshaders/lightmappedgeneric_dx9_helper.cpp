@@ -1779,11 +1779,11 @@ void DrawLightmappedGeneric_DX9_Internal(CBaseVSShader *pShader, IMaterialVar** 
 		if ( g_pHardwareConfig->SupportsShaderModel_3_0() && !IsX360() )
 		{
 			ITexture *pSunStatic = (ITexture *)pShaderAPI->GetIntRenderingParameter( INT_RENDERPARM_DODSP_SUN_STATIC_DEPTH );
-			ITexture *pSunDynamic = (ITexture *)pShaderAPI->GetIntRenderingParameter( INT_RENDERPARM_DODSP_SUN_DYNAMIC_DEPTH );
+			ITexture *pSunFull = (ITexture *)pShaderAPI->GetIntRenderingParameter( INT_RENDERPARM_DODSP_SUN_FULL_DEPTH );
 			Vector vParams = pShaderAPI->GetVectorRenderingParameter( VECTOR_RENDERPARM_DODSP_SUN_PARAMS );
 			Vector vTweaks = pShaderAPI->GetVectorRenderingParameter( VECTOR_RENDERPARM_DODSP_SUN_TWEAKS );
-			bool bDebug = vTweaks.x > 0.5f;		// x = debug view mode, y = 1: tex2Dlod taps
-			bool bSun = pSunStatic && pSunDynamic && vParams.y > 0.0f && ( vParams.z > 0.0f || bDebug );
+			bool bDebug = vTweaks.x > 0.5f;		// x = debug view mode, z = softness
+			bool bSun = pSunStatic && pSunFull && vParams.y > 0.0f && ( vParams.z > 0.0f || bDebug );
 
 			float row[3][4], color[4], dir[4], tweaks[4];
 			memset( row, 0, sizeof( row ) );
@@ -1793,7 +1793,7 @@ void DrawLightmappedGeneric_DX9_Internal(CBaseVSShader *pShader, IMaterialVar** 
 			if ( bSun )
 			{
 				pShader->BindTexture( SHADER_SAMPLER13, pSunStatic, 0 );
-				pShader->BindTexture( SHADER_SAMPLER14, pSunDynamic, 0 );
+				pShader->BindTexture( SHADER_SAMPLER14, pSunFull, 0 );
 
 				float m[12];
 				for ( int r = 0; r < 4; r++ )
@@ -1810,7 +1810,7 @@ void DrawLightmappedGeneric_DX9_Internal(CBaseVSShader *pShader, IMaterialVar** 
 				dir[0] = vDir.x; dir[1] = vDir.y; dir[2] = vDir.z; dir[3] = vParams.x;
 				tweaks[0] = ( g_pHardwareConfig->GetShadowFilterMode() != 0 ) ? 1.0f : 0.0f;
 				tweaks[1] = vTweaks.x;
-				tweaks[3] = vTweaks.y;
+				tweaks[2] = vTweaks.z;
 			}
 			else
 			{

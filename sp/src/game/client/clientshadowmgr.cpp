@@ -111,8 +111,9 @@ static ConVar r_shadow_shortenfactor( "r_shadow_shortenfactor", "2" , 0, "Makes 
 // with projected-texture shadows. 0 = stock behaviour (blob shadows everywhere).
 static ConVar dodsp_sunshadow_maps( "dodsp_sunshadow_maps", "1", 0, "DOD-SP: render the sun's static and dynamic shadow maps for the world shaders (needs an env_global_light with shadows)" );
 static ConVar dodsp_sun_darken( "dodsp_sun_darken", "1", FCVAR_ARCHIVE, "DOD-SP: 1 = the env_global_light only darkens (removes baked sun where something dynamic blocks it; baked bounce stays). 0 = it adds its own light on top (stock)." );
-static ConVar dodsp_sunshadow_debug( "dodsp_sunshadow_debug", "0", 0, "DOD-SP debug: world brushes show the sun shadow data instead of lighting. 1 = verdict: green = sunlit (should match the baked sun patch), red = sunlit but blocked by something dynamic (gets darkened), blue = static map says shadowed, purple = outside the sun map, grey = faces away from the sun. 2 = raw sun-map coordinates (red/green across the map, blue depth). No colours at all = the shader gets no sun data." );
-static ConVar dodsp_sunshadow_sampler( "dodsp_sunshadow_sampler", "0", 0, "DOD-SP debug: how the world shaders read the sun maps. 0 = tex2Dproj, the way Valve's flashlight shadows do (default). 1 = tex2Dlod (the first version)." );
+static ConVar dodsp_sunshadow_debug( "dodsp_sunshadow_debug", "0", 0, "DOD-SP debug: world brushes and models show the sun shadow data instead of lighting. 1 = verdict: green = sunlit (should match the baked sun patch), red = sunlit but blocked by something dynamic (gets darkened), blue = static map says shadowed, purple = outside the sun map, grey = faces away from the sun (models: purple = outside the sun map, bright where the engine's own trace says sunlit). 2 = raw sun-map coordinates (red/green across the map, blue depth). No colours at all = the shader gets no sun data." );
+static ConVar dodsp_sunshadow_models( "dodsp_sunshadow_models", "1", FCVAR_ARCHIVE, "DOD-SP: 1 = models (props, NPCs) get the sun per pixel from the sun shadow maps, so a chair half in a sunbeam is lit on that half. 0 = stock: the engine's one-trace-per-model sun." );
+static ConVar dodsp_sunshadow_softness( "dodsp_sunshadow_softness", "1", FCVAR_ARCHIVE, "DOD-SP: how soft sun shadow edges are, in shadow map texels between filter taps (0.25 = sharpest, 3 = softest)", true, 0.25f, true, 3.0f );
 // INVARIANT (one owner: BuildOrthoWorldToFlashlightMatrix): an orthographic light's lookup depth must
 // equal what its shadow map stores, (d - NearZ) / (FarZ - NearZ). Valve's ortho matrix gives
 // (d + NearZ) / (FarZ - NearZ), so every surface reads 2 x NearZ units behind itself = shadowed.
@@ -130,7 +131,7 @@ static bool DoDSP_SunDarkens( const FlashlightState_t &state )
 #endif
 }
 
-static ConVar dodsp_sunshadow_view( "dodsp_sunshadow_view", "0", 0, "DOD-SP debug: which shadow map the env_global_light's own light uses. 0 = its normal one, 1 = static casters only (world, static props), 2 = dynamic casters only (NPCs, physics props, brush entities)" );
+static ConVar dodsp_sunshadow_view( "dodsp_sunshadow_view", "0", 0, "DOD-SP debug: which shadow map the env_global_light's own light uses. 0 = its normal one, 1 = static casters only (world, static props), 2 = the full map (everything: world, static props, NPCs, physics props, brush entities)" );
 static ConVar r_shadow_sunonly( "r_shadow_sunonly", "1", FCVAR_ARCHIVE, "DOD-SP: 1 = dynamic prop/character shadows only where sunlight reaches (none indoors). 0 = everywhere (stock)." );
 static ConVar r_shadow_mincastintensity( "r_shadow_mincastintensity", "0.3", FCVAR_CHEAT, "Minimum brightness of a light to be classed as shadow casting", true, 0, false, 0 );
 #endif
@@ -1082,7 +1083,7 @@ private:
 	CUtlVector< CTextureReference > m_DepthTextureCache;
 	CUtlVector< bool > m_DepthTextureCacheLocks;
 
-	// DOD-SP sun shadows: the global light's two depth maps (static casters, dynamic casters).
+	// DOD-SP sun shadows: the global light's two depth maps (static casters, full = everything).
 	// One owner: DoDSP_RenderSunMaps() renders and publishes them; nothing else writes them.
 	CTextureReference m_DoDSPSunDepth[2];
 	void DoDSP_RenderSunMaps( ClientShadow_t &shadow, const FlashlightState_t &flashlightState, const CViewSetup &shadowView );
@@ -1621,7 +1622,7 @@ void CClientShadowMgr::InitDepthTextureShadows()
 #if !defined( _X360 )
 		// DOD-SP: the sun's two maps, same format and size as the shared ones
 		m_DoDSPSunDepth[0].InitRenderTarget( m_nDepthTextureResolution, m_nDepthTextureResolution, RT_SIZE_NO_CHANGE, dstFormat, MATERIAL_RT_DEPTH_NONE, false, "_rt_DODSP_SunStatic" );
-		m_DoDSPSunDepth[1].InitRenderTarget( m_nDepthTextureResolution, m_nDepthTextureResolution, RT_SIZE_NO_CHANGE, dstFormat, MATERIAL_RT_DEPTH_NONE, false, "_rt_DODSP_SunDynamic" );
+		m_DoDSPSunDepth[1].InitRenderTarget( m_nDepthTextureResolution, m_nDepthTextureResolution, RT_SIZE_NO_CHANGE, dstFormat, MATERIAL_RT_DEPTH_NONE, false, "_rt_DODSP_SunFull" );
 #endif
 
 		materials->EndRenderTargetAllocation();
@@ -4773,7 +4774,7 @@ void CClientShadowMgr::DoDSP_ClearSunParams()
 	m_bDoDSPSunValid = false;
 	CMatRenderContextPtr pRenderContext( materials );
 	pRenderContext->SetIntRenderingParameter( INT_RENDERPARM_DODSP_SUN_STATIC_DEPTH, 0 );
-	pRenderContext->SetIntRenderingParameter( INT_RENDERPARM_DODSP_SUN_DYNAMIC_DEPTH, 0 );
+	pRenderContext->SetIntRenderingParameter( INT_RENDERPARM_DODSP_SUN_FULL_DEPTH, 0 );
 	pRenderContext->SetVectorRenderingParameter( VECTOR_RENDERPARM_DODSP_SUN_PARAMS, vec3_origin );
 	pRenderContext->SetVectorRenderingParameter( VECTOR_RENDERPARM_DODSP_SUN_TWEAKS, vec3_origin );
 }
@@ -4797,7 +4798,9 @@ void CClientShadowMgr::DoDSP_RenderSunMaps( ClientShadow_t &shadow, const Flashl
 	m_flDoDSPSunOrtho = flashlightState.m_fOrthoRight;
 #endif
 
-	static const int s_nFilter[2] = { DODSP_CASTERS_STATIC, DODSP_CASTERS_DYNAMIC };
+	// Static map: what VRAD baked (world + static props). Full map: everything. Brushes darken
+	// where static says lit and full says blocked; models are lit where full says lit.
+	static const int s_nFilter[2] = { DODSP_CASTERS_STATIC, DODSP_CASTERS_ALL };
 	for ( int i = 0; i < 2; i++ )
 	{
 		DoDSP_SetShadowCasterFilter( s_nFilter[i] );
@@ -4823,7 +4826,7 @@ void CClientShadowMgr::DoDSP_RenderSunMaps( ClientShadow_t &shadow, const Flashl
 
 	CMatRenderContextPtr pRenderContext( materials );
 	pRenderContext->SetIntRenderingParameter( INT_RENDERPARM_DODSP_SUN_STATIC_DEPTH, int( (ITexture *)m_DoDSPSunDepth[0] ) );
-	pRenderContext->SetIntRenderingParameter( INT_RENDERPARM_DODSP_SUN_DYNAMIC_DEPTH, int( (ITexture *)m_DoDSPSunDepth[1] ) );
+	pRenderContext->SetIntRenderingParameter( INT_RENDERPARM_DODSP_SUN_FULL_DEPTH, int( (ITexture *)m_DoDSPSunDepth[1] ) );
 	pRenderContext->SetVectorRenderingParameter( VECTOR_RENDERPARM_DODSP_SUN_MATRIX_0, Vector( f[0], f[1], f[2] ) );
 	pRenderContext->SetVectorRenderingParameter( VECTOR_RENDERPARM_DODSP_SUN_MATRIX_1, Vector( f[3], f[4], f[5] ) );
 	pRenderContext->SetVectorRenderingParameter( VECTOR_RENDERPARM_DODSP_SUN_MATRIX_2, Vector( f[6], f[7], f[8] ) );
@@ -4835,7 +4838,9 @@ void CClientShadowMgr::DoDSP_RenderSunMaps( ClientShadow_t &shadow, const Flashl
 	pRenderContext->SetVectorRenderingParameter( VECTOR_RENDERPARM_DODSP_SUN_PARAMS,
 		Vector( 1.0f / (float)MAX( 1, m_DoDSPSunDepth[0]->GetActualWidth() ), 1.0f, flStrength ) );
 	m_flDoDSPSunStrength = flStrength;
-	pRenderContext->SetVectorRenderingParameter( VECTOR_RENDERPARM_DODSP_SUN_TWEAKS, Vector( (float)clamp( dodsp_sunshadow_debug.GetInt(), 0, 2 ), dodsp_sunshadow_sampler.GetBool() ? 1.0f : 0.0f, 0 ) );
+	// y: models take the sun per pixel only with the darken-only sun (in additive mode the
+	// env_global_light lights them itself, the stock way)
+	pRenderContext->SetVectorRenderingParameter( VECTOR_RENDERPARM_DODSP_SUN_TWEAKS, Vector( (float)clamp( dodsp_sunshadow_debug.GetInt(), 0, 2 ), ( dodsp_sunshadow_models.GetBool() && DoDSP_SunDarkens( flashlightState ) ) ? 1.0f : 0.0f, clamp( dodsp_sunshadow_softness.GetFloat(), 0.25f, 3.0f ) ) );
 
 	// INVARIANT: the env_global_light must shine the way the baked sun does, or the shadows it
 	// darkens won't line up with the baked sun patches (and darken where there is no sun).
@@ -4889,10 +4894,10 @@ void CClientShadowMgr::DoDSP_Report()
 			 m_DoDSPSunDepth[0]->GetActualWidth() > 0 ? 2.0f * m_flDoDSPSunOrtho / m_DoDSPSunDepth[0]->GetActualWidth() : 0.0f );
 	Msg( "  mode: %s, strength sent to shaders %.2f\n", dodsp_sun_darken.GetBool() ? "darken-only (dodsp_sun_darken 1)" : "additive (dodsp_sun_darken 0)", m_flDoDSPSunStrength );
 	Msg( "  static map:  %d static props (+ world)\n", m_nDoDSPSunCasters[0][0] );
-	Msg( "  dynamic map: %d entities\n", m_nDoDSPSunCasters[1][1] );
-	if ( m_nDoDSPSunCasters[0][1] || m_nDoDSPSunCasters[1][0] )
-		Warning( "INVARIANT: DOD-SP sun shadows: caster split leaked (static map drew %d entities, dynamic map drew %d static props)\n",
-				 m_nDoDSPSunCasters[0][1], m_nDoDSPSunCasters[1][0] );
+	Msg( "  full map:    %d static props + %d entities (+ world)\n", m_nDoDSPSunCasters[1][0], m_nDoDSPSunCasters[1][1] );
+	if ( m_nDoDSPSunCasters[0][1] )
+		Warning( "INVARIANT: DOD-SP sun shadows: caster split leaked (the static map drew %d entities - they would count as baked)\n",
+				 m_nDoDSPSunCasters[0][1] );
 	Vector c, d;
 	if ( g_pWorldLights && g_pWorldLights->GetSunColor( c ) && g_pWorldLights->GetSunDirection( d ) )
 		Msg( "  baked sun: color %.3f %.3f %.3f, direction %.2f %.2f %.2f\n", c.x, c.y, c.z, d.x, d.y, d.z );
@@ -4926,7 +4931,8 @@ void CClientShadowMgr::DoDSP_Report()
 	static const char *s_pszFilter[] = { "NVIDIA hardware PCF", "AMD depth texture, compared in the shader", "AMD Fetch4, compared in the shader" };
 	int nFilter = g_pMaterialSystemHardwareConfig ? g_pMaterialSystemHardwareConfig->GetShadowFilterMode() : -1;
 	Msg( "  card shadow mode %d: %s\n", nFilter, ( nFilter >= 0 && nFilter < 3 ) ? s_pszFilter[nFilter] : "unknown" );
-	Msg( "  debug view %d, sampler %s\n", dodsp_sunshadow_debug.GetInt(), dodsp_sunshadow_sampler.GetBool() ? "tex2Dlod (1)" : "tex2Dproj (0)" );
+	Msg( "  debug view %d, models %s (dodsp_sunshadow_models), softness %.2f texels (dodsp_sunshadow_softness)\n", dodsp_sunshadow_debug.GetInt(),
+		 dodsp_sunshadow_models.GetBool() ? "lit per pixel" : "stock", dodsp_sunshadow_softness.GetFloat() );
 }
 
 CON_COMMAND( dodsp_sunshadow_report, "DOD-SP: state of the sun's static/dynamic shadow maps" )

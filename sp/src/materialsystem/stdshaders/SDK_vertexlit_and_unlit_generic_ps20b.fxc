@@ -81,6 +81,15 @@
 
 #include "common_flashlight_fxc.h"
 #include "common_vertexlitgeneric_dx9.h"
+
+// DOD-SP: the sun per pixel on models (dodsp_sun_ps.h). Base pass only - it runs on the
+// flashlight's matrix, colour, screen-scale constants and shadow sampler, unused there.
+#if defined( SHADER_MODEL_PS_3_0 ) && !defined( _X360 ) && ( FLASHLIGHT == 0 ) && ( LIGHTING_PREVIEW == 0 )
+#define DODSP_MODEL_SUN 1
+#include "dodsp_sun_ps.h"
+#else
+#define DODSP_MODEL_SUN 0
+#endif
  
 const float4 g_EnvmapTint_TintReplaceFactor		: register( c0 );
 const float4 g_DiffuseModulation				: register( c1 );
@@ -137,7 +146,7 @@ struct PS_INPUT
 #endif
 	float4 color					: TEXCOORD2;	// Vertex color (from lighting or unlit)
 	float3 worldVertToEyeVector		: TEXCOORD3;	// Necessary for reflection
-	float3 worldSpaceNormal			: TEXCOORD4;	// Necessary for cubemaps and flashlight
+	float4 worldSpaceNormal			: TEXCOORD4;	// Necessary for cubemaps and flashlight. w = DOD-SP: the engine traced the sun as visible
 
 #if defined ( _X360 )
 #if FLASHLIGHT
@@ -368,6 +377,23 @@ float4 main( PS_INPUT i ) : COLOR
 		diffuseLighting = i.color.rgb;
 	}
 
+#if DODSP_MODEL_SUN
+	// DOD-SP: the vertex shader dropped the engine's sun; add it back per pixel, shadowed
+	if ( bDiffuseLighting && !bVertexColor )
+	{
+		float3 vDoDSPNormal = normalize( i.worldSpaceNormal.xyz );
+		float flDoDSPNdotL = dot( vDoDSPNormal, DoDSP_ModelSunToLight( g_FlashlightWorldToTexture ) );
+		float3 vDoDSPSun;
+		float flDoDSPInside;
+		float flDoDSPVis = DoDSP_ModelSunVisibility( ShadowDepthSampler, i.worldPos_projPosZ.xyz, vDoDSPNormal, i.worldSpaceNormal.w,
+			g_FlashlightWorldToTexture, cFlashlightColor, cFlashlightScreenScale, vDoDSPSun, flDoDSPInside );
+		diffuseLighting += cFlashlightColor.rgb * ( cFlashlightScreenScale.w * flDoDSPVis * saturate( flDoDSPNdotL ) );
+		[branch]
+		if ( cFlashlightScreenScale.y * cFlashlightScreenScale.w > 0.5f )
+			diffuseLighting = DoDSP_ModelSunDebug( cFlashlightScreenScale.y, flDoDSPNdotL, flDoDSPVis, flDoDSPInside, i.worldSpaceNormal.w, vDoDSPSun );
+	}
+#endif
+
 	float3 albedo = baseColor;
 	if (bBlendTintByBaseAlpha)
 	{
@@ -409,7 +435,7 @@ float4 main( PS_INPUT i ) : COLOR
 	bUseWorldNormal = false;
 #endif
 		float3 flashlightColor = DoFlashlight( g_FlashlightPos, i.worldPos_projPosZ.xyz, flashlightSpacePosition,
-			i.worldSpaceNormal, g_FlashlightAttenuationFactors.xyz, 
+			i.worldSpaceNormal.xyz, g_FlashlightAttenuationFactors.xyz, 
 			g_FlashlightAttenuationFactors.w, FlashlightSampler, ShadowDepthSampler,
 			RandRotSampler, nShadowSampleLevel, bDoShadows, false, i.projPos.xy / i.projPos.w, false, g_EnvmapContrast_ShadowTweaks, bUseWorldNormal );
 
@@ -431,7 +457,7 @@ float4 main( PS_INPUT i ) : COLOR
 	float3 diffuseComponent = albedo * diffuseLighting;
 #else
 	float3 vEyeDir = normalize( i.worldVertToEyeVector.xyz );
-	float flFresnelMinlight = saturate( dot( i.worldSpaceNormal, vEyeDir ) );
+	float flFresnelMinlight = saturate( dot( i.worldSpaceNormal.xyz, vEyeDir ) );
 
 	float3 diffuseComponent = albedo * lerp( diffuseLighting, 1, g_fMinLighting * flFresnelMinlight );
 #endif
@@ -463,11 +489,11 @@ float4 main( PS_INPUT i ) : COLOR
 	if( bCubemap )
 	{
 #if CUBEMAP_SPHERE_LEGACY
-		HALF3 reflectVect = normalize(CalcReflectionVectorUnnormalized( i.worldSpaceNormal, i.worldVertToEyeVector.xyz ));
+		HALF3 reflectVect = normalize(CalcReflectionVectorUnnormalized( i.worldSpaceNormal.xyz, i.worldVertToEyeVector.xyz ));
 
 		specularLighting = 0.5 * tex2D( EnvmapSampler, float2(reflectVect.x, reflectVect.y) ) * g_DiffuseModulation.rgb * diffuseLighting;
 #else
-		HALF3 reflectVect = CalcReflectionVectorUnnormalized( i.worldSpaceNormal, i.worldVertToEyeVector.xyz );
+		HALF3 reflectVect = CalcReflectionVectorUnnormalized( i.worldSpaceNormal.xyz, i.worldVertToEyeVector.xyz );
 
 		specularLighting = ENV_MAP_SCALE * texCUBE( EnvmapSampler, reflectVect );
 		specularLighting *= specularFactor;
@@ -484,13 +510,13 @@ float4 main( PS_INPUT i ) : COLOR
 
 #if LIGHTING_PREVIEW
 # if LIGHTING_PREVIEW == 1
-	float dotprod=0.7+0.25*dot(i.worldSpaceNormal,normalize(float3(1,2,-.5)));
+	float dotprod=0.7+0.25*dot(i.worldSpaceNormal.xyz,normalize(float3(1,2,-.5)));
 	return FinalOutput( float4( dotprod*albedo.xyz, alpha ), 0, PIXEL_FOG_TYPE_NONE, TONEMAP_SCALE_LINEAR );
 # else
 	LPREVIEW_PS_OUT ret;
 	ret.flags=float4(1,1,1,1);
 	ret.color=float4( albedo.xyz, alpha );
-	ret.normal=float4(i.worldSpaceNormal,alpha);
+	ret.normal=float4(i.worldSpaceNormal.xyz,alpha);
 	ret.position=float4(i.worldPos_projPosZ.xyz, alpha);
 	return FinalOutput( ret, 0, PIXEL_FOG_TYPE_NONE, TONEMAP_SCALE_NONE );
 # endif

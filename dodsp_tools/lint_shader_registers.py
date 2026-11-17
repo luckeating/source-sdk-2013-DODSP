@@ -7,6 +7,14 @@ INVARIANTS checked:
   2. No shader helper .cpp sets a literal pixel constant >= 32.
   3. The g_DoDSPSun* register( cN ) in the shader and DODSP_PSREG_SUN_* in the helper agree.
   4. Nothing else in the helper writes a literal pixel constant onto one of the DOD-SP slots.
+  5. The model sun's vertex flag (g_DoDSPSunVSFlags, common_vs_fxc.h) sits on c51 =
+     SHADER_SPECIFIC_CONST_3, matching DODSP_VSREG_SUN_FLAGS in dodsp_modelsun.h, and nothing
+     else claims that slot for the model shaders: no listed vertex shader declares it, and the
+     model helpers neither write it nor a 2-register transform onto SPECIFIC_CONST_2 (c50-c51)
+     in MAPBASE builds. (Other shaders' helpers may use c51 for their own vertex shaders.)
+  6. Every listed vertex shader that lights from the engine's light list (GetVertexAttenForLight,
+     DoLighting) has a helper that calls DoDSP_SetModelSunState on every draw - otherwise it
+     would read whatever sun flag the previous draw left behind.
 
 usage: python lint_shader_registers.py <stdshaders dir>
 """
@@ -109,11 +117,100 @@ def main(folder):
     if len(set(shader_regs.values())) != len(shader_regs):
         errors.append("INVARIANT: two sun constants share a register: %s" % sorted(shader_regs.items()))
 
+    errors += check_model_sun(folder, listed)
+
     print("checked %d shader files; sun constants %s" %
           (len(checked), ", ".join("%s=c%d" % kv for kv in sorted(shader_regs.items(), key=lambda kv: kv[1]))))
     for e in errors:
         print(e)
     return 1 if errors else 0
+
+
+# vertex shader (listed .fxc) -> the helper that drives it
+MODEL_SUN_HELPERS = {
+    "sdk_vertexlit_and_unlit_generic_vs20.fxc": "vertexlitgeneric_dx9_helper.cpp",
+    "sdk_vertexlit_and_unlit_generic_bump_vs20.fxc": "vertexlitgeneric_dx9_helper.cpp",
+    "sdk_skin_vs20.fxc": "skin_dx9_helper.cpp",
+}
+
+
+def ifndef_mapbase_lines(text):
+    """line numbers (1-based) that sit inside an #ifndef MAPBASE block"""
+    inside, stack = set(), []
+    for n, line in enumerate(text.split("\n"), 1):
+        t = line.strip()
+        if re.match(r"#\s*if", t):
+            stack.append(bool(re.match(r"#\s*ifndef\s+MAPBASE\b", t)))
+        elif re.match(r"#\s*endif", t) and stack:
+            stack.pop()
+        elif re.match(r"#\s*else", t) and stack:
+            stack[-1] = False
+        if any(stack):
+            inside.add(n)
+    return inside
+
+
+def check_model_sun(folder, listed):
+    errors = []
+    vs_header = find_file(folder, "common_vs_fxc.h")
+    with open(vs_header, encoding="latin-1") as fh:
+        vtext = strip_comments(fh.read())
+    m = re.search(r"g_DoDSPSunVSFlags\s*:\s*register\s*\(\s*(\w+)\s*\)", vtext)
+    dx9_const3 = re.findall(r"#define\s+SHADER_SPECIFIC_CONST_3\s+c(\d+)", vtext)
+    msun = find_file(folder, "dodsp_modelsun.h")
+    with open(msun, encoding="latin-1") as fh:
+        mtext = strip_comments(fh.read())
+    mreg = re.search(r"DODSP_VSREG_SUN_FLAGS\s*=\s*(\d+)", mtext)
+    if not m or m.group(1) != "SHADER_SPECIFIC_CONST_3":
+        errors.append("INVARIANT: g_DoDSPSunVSFlags must be declared on SHADER_SPECIFIC_CONST_3 in common_vs_fxc.h")
+    if "51" not in dx9_const3:
+        errors.append("INVARIANT: SHADER_SPECIFIC_CONST_3 is no longer c51 for DX9 vertex shaders (%s)" % dx9_const3)
+    if not mreg or int(mreg.group(1)) != 51:
+        errors.append("INVARIANT: DODSP_VSREG_SUN_FLAGS in dodsp_modelsun.h must be 51 (= SHADER_SPECIFIC_CONST_3)")
+
+    for fxc in listed:
+        if "_vs" not in fxc.lower():
+            continue
+        path = find_file(folder, fxc)
+        if not path:
+            continue
+        lights = False
+        for f in includes_closure(folder, path):
+            with open(f, encoding="latin-1") as fh:
+                text = strip_comments(fh.read())
+            base = os.path.basename(f).lower()
+            if base != "common_vs_fxc.h":
+                if re.search(r"register\s*\(\s*(SHADER_SPECIFIC_CONST_3|c51)\s*\)", text):
+                    errors.append("INVARIANT: %s declares SHADER_SPECIFIC_CONST_3 (c51), the DOD-SP sun flag slot" % os.path.basename(f))
+                if re.search(r"\b(GetVertexAttenForLight|DoLighting|DoLightingUnrolled)\s*\(", text):
+                    lights = True
+        if lights:
+            helper = MODEL_SUN_HELPERS.get(os.path.basename(path).lower())
+            hpath = find_file(folder, helper) if helper else None
+            ok = False
+            if hpath:
+                with open(hpath, encoding="latin-1") as fh:
+                    ok = "DoDSP_SetModelSunState(" in strip_comments(fh.read())
+            if not ok:
+                errors.append("INVARIANT: %s lights from the engine's light list but no helper writes the DOD-SP sun flag "
+                              "for it (add it to MODEL_SUN_HELPERS and call DoDSP_SetModelSunState)" % fxc)
+
+    for f in os.listdir(folder):
+        if not f.lower().endswith(".cpp"):
+            continue
+        with open(os.path.join(folder, f), encoding="latin-1") as fh:
+            text = strip_comments(fh.read())
+        # Other shaders may use c51 for their own vertex shaders - every draw writes its own
+        # constants first. Only the model helpers must leave it to DoDSP_SetModelSunState.
+        if f.lower() in set(MODEL_SUN_HELPERS.values()):
+            for n, line in enumerate(text.split("\n"), 1):
+                if "SPECIFIC_CONST_3" in line and "Set" in line:
+                    errors.append("INVARIANT: %s:%d writes SPECIFIC_CONST_3, the DOD-SP sun flag slot" % (f, n))
+            excluded = ifndef_mapbase_lines(text)
+            for n, line in enumerate(text.split("\n"), 1):
+                if re.search(r"(TextureTransform|ScaledTransform)\s*\(\s*VERTEX_SHADER_SHADER_SPECIFIC_CONST_2\b", line) and n not in excluded:
+                    errors.append("INVARIANT: %s:%d writes a 2-register transform at SPECIFIC_CONST_2, which runs into c51 (the DOD-SP sun flag)" % (f, n))
+    return errors
 
 
 if __name__ == "__main__":

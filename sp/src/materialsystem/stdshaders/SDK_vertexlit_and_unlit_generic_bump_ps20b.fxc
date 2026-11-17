@@ -68,6 +68,15 @@
 #include "common_flashlight_fxc.h"
 #include "common_vertexlitgeneric_dx9.h"
 
+// DOD-SP: the sun per pixel on models (dodsp_sun_ps.h). Base pass only - it runs on the
+// flashlight's matrix, colour, screen-scale constants and shadow sampler, unused there.
+#if defined( SHADER_MODEL_PS_3_0 ) && !defined( _X360 ) && ( FLASHLIGHT == 0 )
+#define DODSP_MODEL_SUN 1
+#include "dodsp_sun_ps.h"
+#else
+#define DODSP_MODEL_SUN 0
+#endif
+
 const float4 g_EnvmapTint_TintReplaceFactor		: register( c0 );
 const float4 g_DiffuseModulation				: register( c1 );
 const float4 g_EnvmapContrast_ShadowTweaks		: register( c2 );
@@ -116,7 +125,7 @@ sampler DiffuseWarpSampler					: register( s9 );	// Lighting warp sampler (1D te
 struct PS_INPUT
 {
 	float4 baseTexCoord2_tangentSpaceVertToEyeVectorXY			: TEXCOORD0;
-	float3 lightAtten											: TEXCOORD1;
+	float4 lightAtten											: TEXCOORD1;	// w = DOD-SP: the engine traced the sun as visible
 	float4 worldVertToEyeVectorXYZ_tangentSpaceVertToEyeVectorZ	: TEXCOORD2;
 	float3 vWorldNormal											: TEXCOORD3;	// World-space normal
 	float4 vWorldTangent										: TEXCOORD4;
@@ -196,7 +205,7 @@ float4 main( PS_INPUT i ) : COLOR
 #endif
 
 	// Unpack four light attenuations
-	float4 vLightAtten = float4( i.lightAtten, i.detailTexCoord_atten3.z );
+	float4 vLightAtten = float4( i.lightAtten.xyz, i.detailTexCoord_atten3.z );
 
 	float4 baseColor = float4( 1.0f, 1.0f, 1.0f, 1.0f );
 	baseColor = tex2D( BaseTextureSampler, i.baseTexCoord2_tangentSpaceVertToEyeVectorXY.xy );
@@ -249,6 +258,21 @@ float4 main( PS_INPUT i ) : COLOR
 				float3( 0.0f, 0.0f, 0.0f ), false, bAmbientLight, vLightAtten,
 				cAmbientCube, NormalizeSampler, nNumLights, cLightInfo, bHalfLambert,
 				false, 1.0f, bDoDiffuseWarp, DiffuseWarpSampler );
+
+#if DODSP_MODEL_SUN
+		// DOD-SP: the vertex shader dropped the engine's sun; add it back per pixel, shadowed,
+		// through the same diffuse term (half-lambert, light warp) the engine's light had
+		float3 vDoDSPToSun = DoDSP_ModelSunToLight( g_FlashlightWorldToTexture );
+		float3 vDoDSPSun;
+		float flDoDSPInside;
+		float flDoDSPVis = DoDSP_ModelSunVisibility( ShadowDepthSampler, i.worldPos_projPosZ.xyz, normalize( i.vWorldNormal.xyz ), i.lightAtten.w,
+			g_FlashlightWorldToTexture, cFlashlightColor, cFlashlightScreenScale, vDoDSPSun, flDoDSPInside );
+		diffuseLighting += cFlashlightColor.rgb * ( cFlashlightScreenScale.w * flDoDSPVis ) *
+			DiffuseTerm( bHalfLambert, worldSpaceNormal, vDoDSPToSun, false, 1.0f, bDoDiffuseWarp, DiffuseWarpSampler );
+		[branch]
+		if ( cFlashlightScreenScale.y * cFlashlightScreenScale.w > 0.5f )
+			diffuseLighting = DoDSP_ModelSunDebug( cFlashlightScreenScale.y, dot( worldSpaceNormal, vDoDSPToSun ), flDoDSPVis, flDoDSPInside, i.lightAtten.w, vDoDSPSun );
+#endif
 	}
 
 	float3 albedo = baseColor;

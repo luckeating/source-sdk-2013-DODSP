@@ -176,6 +176,16 @@ const float4x3 cModel[53]				: register( c58 );
 #define SHADER_SPECIFIC_BOOL_CONST_7 b11
 #endif // vertex shader model constant packing changes
 
+#if defined( SHADER_MODEL_VS_3_0 ) && !defined( _X360 )
+// DOD-SP sun on models (dodsp_sun_ps.h). x = 1: drop the engine's directional lights - its
+// one-trace-per-model sun - because the pixel shader adds the sun per pixel from the sun shadow
+// maps instead (0 = stock). INVARIANT: every listed vertex shader that lights from cLightInfo
+// must have its helper write this on every draw (DODSP_VSREG_SUN_FLAGS, c51), or it inherits a
+// stale value from the previous draw - dodsp_tools/lint_shader_registers.py checks both sides.
+#define DODSP_SUN_VS 1
+const float4 g_DoDSPSunVSFlags			: register( SHADER_SPECIFIC_CONST_3 );
+#endif
+
 
 //=======================================================================================
 // Methods to decompress vertex normals
@@ -830,6 +840,11 @@ float VertexAttenInternal( const float3 worldPos, int lightNum )
 	// Select between above and directional (no attenuation)
 	result = lerp( flAtten, 1.0f, cLightInfo[lightNum].color.w );
 
+#ifdef DODSP_SUN_VS
+	// DOD-SP: the sun (the only directional light) comes per pixel from the sun shadow maps
+	result *= 1.0f - g_DoDSPSunVSFlags.x * cLightInfo[lightNum].color.w;
+#endif
+
 	return result;
 }
 
@@ -876,6 +891,18 @@ float GetVertexAttenForLight( const float3 worldPos, int lightNum, bool bUseStat
 
 	return result;
 }
+
+#ifdef DODSP_SUN_VS
+// DOD-SP: 1 if the engine passed this model a directional light, i.e. it traced the sun as visible
+// from the model's centre. The pixel shader uses it outside the sun map (the stock verdict).
+float DoDSP_EngineSunVisible()
+{
+	float flSun = 0.0f;
+	for ( int i = 0; i < g_nLightCount; i++ )
+		flSun = max( flSun, cLightInfo[i].color.w );
+	return flSun;
+}
+#endif
 
 float3 DoLightInternal( const float3 worldPos, const float3 worldNormal, int lightNum, bool bHalfLambert )
 {
