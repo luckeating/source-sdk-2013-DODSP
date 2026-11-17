@@ -1,6 +1,4 @@
 //===================== DOD-SP sun (shader DLL side) =====================//
-// DOD-SP crash hunt: the CI builds extra test DLLs with DODSP_BISECT_* defined to leave parts out. Normal builds are unaffected.
-#if !defined( DODSP_BISECT_NO_BRUSH )
 //
 // See dodsp_sun_shader.h. Lighting stage 3b-2.
 //
@@ -21,16 +19,19 @@ COMPILE_TIME_ASSERT( DODSP_RP_VEC_FILTER < MAX_VECTOR_RENDER_PARMS );
 COMPILE_TIME_ASSERT( DODSP_RP_INT_CASCADE0 > INT_FLASHLIGHT_DEPTHTEXTURE_FALLBACK_LAST );
 COMPILE_TIME_ASSERT( DODSP_RP_INT_CASCADE2 < MAX_INT_RENDER_PARMS );
 
-// Shader registers - must match dodsp_sun_fxc.h
+// Shader registers - must match dodsp_sun_fxc.h. INVARIANT: all within c0..c31 (the 2013 engine
+// keeps 32 pixel constants; above that a write overflows its storage - see dodsp_sun_fxc.h).
 enum
 {
-	DODSP_PSREG_SUNCOLOR	= 32,
-	DODSP_PSREG_AXIS_R		= 33,
-	DODSP_PSREG_AXIS_U		= 34,
-	DODSP_PSREG_AXIS_F		= 35,
-	DODSP_PSREG_CASCADE0	= 36,	// .. 38
-	DODSP_PSREG_TOSUN		= 39,
+	DODSP_PSREG_SUNCOLOR	= 13,
+	DODSP_PSREG_AXIS_R		= 14,
+	DODSP_PSREG_AXIS_U		= 15,
+	DODSP_PSREG_AXIS_F		= 16,
+	DODSP_PSREG_CASCADE0	= 17,	// .. 19
+	DODSP_PSREG_TOSUN		= 20,
+	DODSP_PSREG_COUNT		= 8,
 };
+COMPILE_TIME_ASSERT( DODSP_PSREG_SUNCOLOR + DODSP_PSREG_COUNT <= 32 );
 static const Sampler_t s_CascadeSampler[3] = { SHADER_SAMPLER13, SHADER_SAMPLER14, SHADER_SAMPLER15 };
 
 int DoDSP_SunFilterMode()
@@ -94,7 +95,16 @@ void DoDSP_SunDynamicState( CBaseVSShader *pShader, IShaderDynamicAPI *pShaderAP
 	Vector vecToSun = -vecF;
 	VectorNormalize( vecToSun );
 	c[7][0] = vecToSun.x; c[7][1] = vecToSun.y; c[7][2] = vecToSun.z; c[7][3] = vecFilter.x;
-	pShaderAPI->SetPixelShaderConstant( DODSP_PSREG_SUNCOLOR, c[0], 8 );
+	// INVARIANT: never write past the constants the hardware layer actually keeps
+	if ( g_pHardwareConfig->NumPixelShaderConstants() < DODSP_PSREG_SUNCOLOR + DODSP_PSREG_COUNT )
+	{
+		static bool s_bWarned = false;
+		if ( !s_bWarned )
+			Warning( "DOD-SP sun: only %d pixel shader constants - the dynamic sun is off\n", g_pHardwareConfig->NumPixelShaderConstants() );
+		s_bWarned = true;
+		return;
+	}
+	pShaderAPI->SetPixelShaderConstant( DODSP_PSREG_SUNCOLOR, c[0], DODSP_PSREG_COUNT );
 }
 
 const char *DoDSP_BrushUnsupported( IMaterialVar **params, const LightmappedGeneric_DX9_Vars_t &info )
@@ -125,4 +135,3 @@ const char *DoDSP_BrushUnsupported( IMaterialVar **params, const LightmappedGene
 	#undef INTVAL
 	return NULL;
 }
-#endif // bisect switch

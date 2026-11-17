@@ -1,6 +1,4 @@
 //========= Copyright Valve Corporation, All rights reserved. ============//
-// DOD-SP crash hunt: the CI builds extra test DLLs with DODSP_BISECT_* defined to leave parts out. Normal builds are unaffected.
-#if !( defined( DODSP_BISECT_NO_BRUSH ) || defined( DODSP_BISECT_NO_BRUSH_SHADERS ) )
 //
 // DOD-SP copy of Mapbase 8.0's worldvertextransition.cpp: DODSP_WorldVertexTransition (lighting
 // stage 3b-2) = SDK_WorldVertexTransition (blended displacements) with the sun drawn per pixel.
@@ -186,4 +184,3 @@ BEGIN_VS_SHADER( DODSP_WorldVertexTransition, "DOD-SP: SDK_WorldVertexTransition
 
 END_SHADER
 
-#endif // bisect switch

@@ -14,6 +14,8 @@ Fails the build (exit 1) when an INVARIANT breaks:
   - the combo headers dodsp/<name>.inc are exactly what dodsp_shader_inc.py generates from the .fxc,
     and their numbering equals the numbering ShaderCompile2 compiled the .vcs with
   - every listed .fxc produced its .vcs
+  - no dodsp_ shader source uses a pixel/vertex constant register above c31 (the 2013 engine keeps
+    32 pixel constants; a write above that overflows its storage - the stage 3b-2 crash)
 
 usage: python dodsp_build_shaders.py <out_dir>
 """
@@ -110,6 +112,16 @@ def main():
                 continue
             if not name.startswith("dodsp_") and name not in shared_ok:
                 fail("%s registers ConVar %s in DOD-SP's DLL - give it a dodsp_ name (or SHADER_DLL_CVAR)" % (os.path.basename(cpp), name))
+
+    # Constant registers: c0..c31 only, in every dodsp_ shader source and header
+    reg_re = re.compile(r'register\s*\(\s*c(\d+)\s*\)')
+    for path in glob.glob(os.path.join(STDSHADERS, "dodsp_*.fxc")) + glob.glob(os.path.join(STDSHADERS, "dodsp_*.h")):
+        with open(path, encoding="latin-1") as f:
+            for n, line in enumerate(f, 1):
+                for m in reg_re.finditer(line.split("//")[0]):
+                    if int(m.group(1)) > 31:
+                        fail("%s:%d uses constant register c%s - only c0..c31 exist in this engine"
+                             % (os.path.basename(path), n, m.group(1)))
 
     # Combo headers: generated, up to date
     for src in sources:

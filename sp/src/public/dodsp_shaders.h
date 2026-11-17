@@ -15,7 +15,7 @@
 
 #define DODSP_SHADER_DLL_NAME		"game_shader_dx6"
 #define DODSP_SHADER_PREFIX			"DODSP_"
-#define DODSP_SHADER_DLL_VERSION	"3b3"	// bump with every DLL change; see dodsp_shaders_version
+#define DODSP_SHADER_DLL_VERSION	"3b4"	// bump with every DLL change; see dodsp_shaders_version
 
 // Stage 3a: proves the DLL loads next to Mapbase's. It only falls back to UnlitGeneric.
 #define DODSP_SHADER_PROBE			"DODSP_Probe"

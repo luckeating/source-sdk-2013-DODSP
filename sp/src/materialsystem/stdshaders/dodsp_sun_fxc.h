@@ -15,12 +15,18 @@
 // Inputs (set every draw from the rendering parameters the client fills, see
 // public/dodsp_shaders.h - the register and sampler numbers below must match it):
 //   s13..s15  the three cascade depth maps (near, mid, far)
-//   c32       rgb = sun colour in lightmap units, 0 = no dynamic sun; w = 1 / lightmap scale
-//   c33       light-space right axis, w = depth offset
-//   c34       light-space up axis, w = 1 / cascade texels
-//   c35       light-space forward axis (scaled to 0..1 over the depth range), w = depth bias
-//   c36..c38  per cascade: x = scale (1 / width), y = u offset, z = v offset, w = normal offset (units)
-//   c39       xyz = direction TOWARD the sun, w = filter spread in texels
+//   c13       rgb = sun colour in lightmap units, 0 = no dynamic sun; w = 1 / lightmap scale
+//   c14       light-space right axis, w = depth offset
+//   c15       light-space up axis, w = 1 / cascade texels
+//   c16       light-space forward axis (scaled to 0..1 over the depth range), w = depth bias
+//   c17..c19  per cascade: x = scale (1 / width), y = u offset, z = v offset, w = normal offset (units)
+//   c20       xyz = direction TOWARD the sun, w = filter spread in texels
+//
+// INVARIANT: pixel shader constants c0..c31 only. The 2013 engine keeps 32 pixel constants per draw;
+// writing above c31 overflows its storage and corrupts unrelated memory (stage 3b-2 used c32..c39 and
+// mat_reloadallmaterials crashed later inside the file system). c13..c20 are the brush shader's
+// Xbox-360-only flashlight constants, which the PC build never uses. The CI fails on any register above
+// c31 in a dodsp_ shader, and the C++ side checks the hardware's count before setting them.
 //
 // DODSP_SUNFILTER (static combo): 0 = the card compares depth in hardware (NVIDIA),
 //                                 1 = raw depth, compared here (ATI/AMD paths).
@@ -33,14 +39,14 @@ sampler DoDSP_CascadeNear			: register( s13 );
 sampler DoDSP_CascadeMid			: register( s14 );
 sampler DoDSP_CascadeFar			: register( s15 );
 
-const float4 g_DoDSP_SunColor		: register( c32 );
-const float4 g_DoDSP_AxisR			: register( c33 );
-const float4 g_DoDSP_AxisU			: register( c34 );
-const float4 g_DoDSP_AxisF			: register( c35 );
-const float4 g_DoDSP_CascadeNear	: register( c36 );
-const float4 g_DoDSP_CascadeMid		: register( c37 );
-const float4 g_DoDSP_CascadeFar		: register( c38 );
-const float4 g_DoDSP_ToSun			: register( c39 );
+const float4 g_DoDSP_SunColor		: register( c13 );
+const float4 g_DoDSP_AxisR			: register( c14 );
+const float4 g_DoDSP_AxisU			: register( c15 );
+const float4 g_DoDSP_AxisF			: register( c16 );
+const float4 g_DoDSP_CascadeNear	: register( c17 );
+const float4 g_DoDSP_CascadeMid		: register( c18 );
+const float4 g_DoDSP_CascadeFar		: register( c19 );
+const float4 g_DoDSP_ToSun			: register( c20 );
 
 // 1 = lit, 0 = shadowed, for one depth-map texel neighbourhood
 float DoDSP_Compare( sampler s, float2 uv, float z )

@@ -125,29 +125,6 @@ jobs:
         name: 'dodsp_shaders_symbols_win32_${{ inputs.configuration }}'
         path: ${{inputs.branch}}/game/mod_hl2/bin/game_shader_dx6.pdb
         if-no-files-found: warn
-
-    # Crash hunt (mat_reloadallmaterials crashes with the full DLL, not with the stage 3a one): three
-    # extra test builds of the DLL, each leaving one part out, published as dodsp_bisect. Runs after
-    # everything above has been published, because it rebuilds over the same output file.
-    - name: DOD-SP bisect test DLLs
-      if: inputs.project-group == 'dodspshaders'
-      working-directory: '${{inputs.branch}}/src'
-      shell: cmd
-      run: |
-        for %%V in (NO_BRUSH NO_DEBUG NO_BRUSH_SHADERS) do (
-          set "CL=/DDODSP_BISECT_%%V"
-          msbuild -m -t:Rebuild -p:Configuration=${{inputs.configuration}};Platform=x86 dodspshaders.sln -v:minimal || exit /b 1
-          mkdir ..\..\dodsp_bisect\%%V
-          copy ..\game\mod_hl2\bin\game_shader_dx6.dll ..\..\dodsp_bisect\%%V\game_shader_dx6.dll || exit /b 1
-        )
-        dir /s ..\..\dodsp_bisect
-
-    - name: Publish DOD-SP bisect test DLLs
-      if: inputs.project-group == 'dodspshaders'
-      uses: actions/upload-artifact@v4
-      with:
-        name: 'dodsp_bisect_win32_${{ inputs.configuration }}'
-        path: dodsp_bisect/
         if-no-files-found: error
 
     - name: Publish map tools

@@ -114,10 +114,12 @@ const float4 g_TintValuesAndLightmapScale	: register( c12 );
 
 #define g_flAlpha2 g_TintValuesAndLightmapScale.w
 
+#if defined( _X360 )	// DOD-SP: Xbox 360 flashlight only - on PC c13..c20 hold the sun (dodsp_sun_fxc.h)
 const float4 g_FlashlightAttenuationFactors	: register( c13 );
 const float3 g_FlashlightPos				: register( c14 );
 const float4x4 g_FlashlightWorldToTexture	: register( c15 ); // through c18
 const float4 g_ShadowTweaks					: register( c19 );
+#endif
 
 #if PARALLAXCORRECT
 // Parallax cubemaps
