@@ -9,8 +9,10 @@ Fails the build (exit 1) when an INVARIANT breaks:
   - every shader source in the list and every .vcs produced is named dodsp_*
     (so nothing can ever replace a Valve or Mapbase shader file)
   - every shader the DLL registers (BEGIN_VS_SHADER / BEGIN_SHADER in stdshaders/dodsp) is DODSP_*
-  - each .fxc's combo names (// STATIC / // DYNAMIC) are exactly the Set<NAME>() setters in the
-    hand-written dodsp/<name>.inc, so the C++ side and the .vcs agree on combos
+  - every shader file the DLL's C++ asks for (DECLARE_/SET_*_SHADER) is a dodsp_* one, so DOD-SP
+    never depends on the layout of Mapbase's or Valve's compiled shaders
+  - the combo headers dodsp/<name>.inc are exactly what dodsp_shader_inc.py generates from the .fxc,
+    and their numbering equals the numbering ShaderCompile2 compiled the .vcs with
   - every listed .fxc produced its .vcs
 
 usage: python dodsp_build_shaders.py <out_dir>
@@ -21,6 +23,10 @@ import re
 import shutil
 import subprocess
 import sys
+import time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import dodsp_shader_inc  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SRC = os.path.dirname(HERE)
@@ -80,26 +86,58 @@ def main():
             if not m.group(1).startswith("DODSP_"):
                 fail("%s registers shader %s, which is not named DODSP_*" % (os.path.basename(cpp), m.group(1)))
 
-    # Combos: .fxc lines vs the hand-written .inc setters
+    # Shader files the C++ uses: dodsp_* only (comments ignored)
+    use_re = re.compile(r'\b(?:DECLARE|SET)_(?:STATIC|DYNAMIC)_(?:VERTEX|PIXEL)_SHADER(?:_CMD)?\s*\(\s*(?:\w+\s*,\s*)?(\w+)\s*\)')
+    for cpp in glob.glob(os.path.join(STDSHADERS, "dodsp", "*.cpp")):
+        with open(cpp, encoding="latin-1") as f:
+            code = re.sub(r"//[^\n]*", "", f.read())
+        code = re.sub(r"/\*.*?\*/", "", code, flags=re.S)
+        for name in set(use_re.findall(code)):
+            if not name.lower().startswith("dodsp_"):
+                fail("%s uses shader file %s, which is not a dodsp_* one" % (os.path.basename(cpp), name))
+
+    # Combo headers: generated, up to date
     for src in sources:
-        base = os.path.splitext(os.path.basename(src))[0]
-        inc = os.path.join(STDSHADERS, "dodsp", base + ".inc")
-        if not os.path.exists(inc):
-            fail("%s has no hand-written dodsp/%s.inc" % (src, base))
+        try:
+            text = dodsp_shader_inc.generate(src)
+        except ValueError as e:
+            fail(str(e))
             continue
-        with open(inc, encoding="latin-1") as f:
-            setters = set(re.findall(r'void\s+Set([A-Za-z0-9_]+)\s*\(', f.read()))
-        combos = set(combo_names(os.path.join(STDSHADERS, src)))
-        if setters != combos:
-            fail("%s combos %s do not match %s.inc setters %s" % (src, sorted(combos), base, sorted(setters)))
+        path = dodsp_shader_inc.inc_path(src)
+        old = open(path, encoding="latin-1").read() if os.path.exists(path) else None
+        if old != text:
+            fail("%s is stale or hand-edited - regenerate with devtools/dodsp_shader_inc.py" % os.path.basename(path))
 
     # Compile
     for src in sources:
         cmd = [COMPILER, "-ver", "30", "-shaderpath", STDSHADERS, src]
         print("> " + " ".join(cmd), flush=True)
+        t0 = time.time()
         r = subprocess.run(cmd, cwd=STDSHADERS)
+        print("  %s: %.0f s" % (src, time.time() - t0), flush=True)
         if r.returncode != 0:
             fail("ShaderCompile2 failed on %s (exit %d)" % (src, r.returncode))
+
+    # Numbering: our headers vs the include files ShaderCompile2 wrote while compiling
+    def terms(text):
+        out = []
+        for ret in re.findall(r"return\s+(.*?);", text, flags=re.S):
+            out.append(sorted((n, int(m)) for m, n in re.findall(r"\(\s*(\d+)\s*\*\s*m_n(\w+)\s*\)", ret)))
+        return out
+    for src in sources:
+        base = os.path.splitext(os.path.basename(src))[0]
+        theirs = [p for p in glob.glob(os.path.join(STDSHADERS, "**", base + ".inc"), recursive=True)
+                  if os.path.normcase(os.path.dirname(p)) != os.path.normcase(os.path.join(STDSHADERS, "dodsp"))]
+        if not theirs:
+            print("note: ShaderCompile2 wrote no %s.inc to compare numbering with" % base)
+            continue
+        mine_t = terms(open(dodsp_shader_inc.inc_path(src), encoding="latin-1").read())
+        theirs_t = terms(open(theirs[0], encoding="latin-1").read())
+        if sorted(mine_t) != sorted(theirs_t):
+            fail("%s: combo numbering differs from ShaderCompile2's (%s)\n  ours:   %s\n  theirs: %s"
+                 % (src, os.path.relpath(theirs[0], STDSHADERS), mine_t, theirs_t))
+        else:
+            print("numbering matches ShaderCompile2: %s" % base)
 
     # Collect: every listed source must have produced its .vcs; only dodsp_* files ship
     produced = {}

@@ -104,6 +104,7 @@ CWorldLights::CWorldLights() : CAutoGameSystem("World lights")
 {
 	m_nWorldLights = 0;
 	m_pWorldLights = NULL;
+	m_bHaveSunIntensity[0] = m_bHaveSunIntensity[1] = false;
 }
 
 //-----------------------------------------------------------------------------
@@ -112,6 +113,7 @@ CWorldLights::CWorldLights() : CAutoGameSystem("World lights")
 void CWorldLights::Clear()
 {
 	m_nWorldLights = 0;
+	m_bHaveSunIntensity[0] = m_bHaveSunIntensity[1] = false;
 
 	if(m_pWorldLights)
 	{
@@ -224,6 +226,30 @@ void CWorldLights::LevelInitPreEntity()
 
 	// Read worldlights then close
 	g_pFullFileSystem->Read(m_pWorldLights, lightLump.filelen, hFile);
+
+	// DOD-SP: the sun's brightness as VRAD lit each lightmap set (LDR and HDR can differ - the
+	// light_environment has separate HDR values). The dynamic sun must match the set in use.
+	for ( int nSet = 0; nSet < 2; nSet++ )
+	{
+		m_bHaveSunIntensity[nSet] = false;
+		const lump_t &lump = hdr.lumps[nSet ? LUMP_WORLDLIGHTS_HDR : LUMP_WORLDLIGHTS];
+		if ( lump.filelen <= 0 || lump.filelen % sizeof( dworldlight_t ) )
+			continue;
+		int nCount = lump.filelen / sizeof( dworldlight_t );
+		dworldlight_t *pSet = new dworldlight_t[nCount];
+		g_pFullFileSystem->Seek( hFile, lump.fileofs, FILESYSTEM_SEEK_HEAD );
+		g_pFullFileSystem->Read( pSet, lump.filelen, hFile );
+		for ( int i = 0; i < nCount; i++ )
+		{
+			if ( pSet[i].type == emit_skylight )
+			{
+				m_vecSunIntensity[nSet] = pSet[i].intensity;
+				m_bHaveSunIntensity[nSet] = true;
+				break;
+			}
+		}
+		delete[] pSet;
+	}
 	g_pFullFileSystem->Close(hFile);
 
 	DevMsg("CWorldLights: load successful (%d lights at 0x%p)\n", m_nWorldLights, m_pWorldLights);
@@ -311,6 +337,17 @@ void CWorldLights::LevelInitPreEntity()
 //-----------------------------------------------------------------------------
 // DOD-SP: the sun's direction (the way its light travels), straight from the BSP's world lights
 //-----------------------------------------------------------------------------
+bool CWorldLights::GetSunIntensity( bool bHDR, Vector &vecIntensity ) const
+{
+	int nSet = bHDR ? 1 : 0;
+	if ( !m_bHaveSunIntensity[nSet] )
+		nSet = 1 - nSet;		// a map compiled for only one of LDR/HDR
+	if ( !m_bHaveSunIntensity[nSet] )
+		return false;
+	vecIntensity = m_vecSunIntensity[nSet];
+	return true;
+}
+
 bool CWorldLights::GetSunDirection( Vector &vecDir ) const
 {
 	for ( int i = 0; i < m_nWorldLights; i++ )

@@ -1,6 +1,10 @@
 //
-// DOD-SP shaders, shader model 3.0 (compiled by ShaderCompile2 in CI).
+// DOD-SP shaders, shader model 3.0 (compiled by ShaderCompile2 in CI; headers by dodsp_shader_inc.py).
 // INVARIANT: every file here is named dodsp_*  - checked by the build.
 //
 dodsp_screenspace_vs30.fxc
 dodsp_suncascadedebug_ps30.fxc
+dodsp_lightmappedgeneric_vs30.fxc
+dodsp_lightmappedgeneric_ps30.fxc
+dodsp_lightmappedgeneric_flashlight_vs30.fxc
+dodsp_lightmappedgeneric_flashlight_ps30.fxc

@@ -16,7 +16,13 @@
 // format, lightmap needs, opacity, textures. Each swap is checked against a signature taken first;
 // any difference reverts the material to stock and logs an INVARIANT line.
 //
-// Cvars: dodsp_sdkshaders (1, applies on map load), dodsp_sdkshaders_log (print each swap).
+// Stage 3b-2: when DOD-SP's own shader DLL brings a twin with the sun in it (DODSP_LightmappedGeneric,
+// DODSP_WorldVertexTransition), the material goes there instead; a material using a feature the
+// DOD-SP twin doesn't support is handed back to the SDK_ twin by that shader's own SHADER_FALLBACK,
+// and counted here as "handed back".
+//
+// Cvars: dodsp_sdkshaders (1, applies on map load), dodsp_sdkshaders_log (print each swap),
+// dodsp_sunshader (1 = use DOD-SP's sun shaders when present; decided once per game start).
 // Command: dodsp_sdkshaders_report (counts, and any lit material still on a stock shader).
 //
 //=============================================================================//
@@ -31,6 +37,10 @@
 #include "materialsystem/itexture.h"
 #include "materialsystem/IShader.h"
 #include "utlrbtree.h"
+#include "materialsystem/imaterialsystemhardwareconfig.h"
+#include "dodsp_shaders.h"
+#include "c_dodsp_shaderdll.h"
+#include "c_dodsp_sdkshaders.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -39,6 +49,9 @@ static ConVar dodsp_sdkshaders( "dodsp_sdkshaders", "1", 0,
 	"DOD-SP: run stock world/model materials on Mapbase's SDK_ shaders (needed for sun shadows). "
 	"Applies when a map loads; turning it off needs a game restart." );
 static ConVar dodsp_sdkshaders_log( "dodsp_sdkshaders_log", "0", 0, "DOD-SP: print every material moved to an SDK_ shader" );
+static ConVar dodsp_sunshader( "dodsp_sunshader", "1", 0,
+	"DOD-SP: move world materials onto DOD-SP's sun shaders (DODSP_*) when game_shader_dx6.dll brings them; "
+	"0 = Mapbase's SDK_ shaders only. Decided once per game start (a map never mixes the two)." );
 
 namespace
 {
@@ -46,17 +59,18 @@ namespace
 	{
 		const char *m_pszStock;		// resolved shader name the engine reports
 		const char *m_pszSDK;		// Mapbase twin
+		const char *m_pszDoDSP;		// DOD-SP twin with the sun drawn per pixel, or NULL (not yet: models are stage 4)
 	};
 
 	// The lit shaders. Unlit/sprite/water/refract materials take no sunlight and stay stock.
 	const ShaderSwap_t s_Swaps[] =
 	{
-		{ "LightmappedGeneric",			"SDK_LightmappedGeneric" },
-		{ "LightmappedGeneric_DX9",		"SDK_LightmappedGeneric" },
-		{ "WorldVertexTransition",		"SDK_WorldVertexTransition" },
-		{ "WorldVertexTransition_DX9",	"SDK_WorldVertexTransition" },
-		{ "VertexLitGeneric",			"SDK_VertexLitGeneric" },
-		{ "VertexLitGeneric_DX9",		"SDK_VertexLitGeneric" },
+		{ "LightmappedGeneric",			"SDK_LightmappedGeneric",		DODSP_SHADER_LMG },
+		{ "LightmappedGeneric_DX9",		"SDK_LightmappedGeneric",		DODSP_SHADER_LMG },
+		{ "WorldVertexTransition",		"SDK_WorldVertexTransition",	DODSP_SHADER_WVT },
+		{ "WorldVertexTransition_DX9",	"SDK_WorldVertexTransition",	DODSP_SHADER_WVT },
+		{ "VertexLitGeneric",			"SDK_VertexLitGeneric",			NULL },
+		{ "VertexLitGeneric_DX9",		"SDK_VertexLitGeneric",			NULL },
 	};
 
 	// Engine-internal materials keep exactly what the engine gave them.
@@ -72,16 +86,18 @@ namespace
 		return NULL;
 	}
 
-	bool ShaderLoaded( const char *pszShader )
+	// The shader a material ends up on after its fallbacks: the requested twin, or (for a DOD-SP
+	// twin) the Mapbase twin it handed the material back to. Mapbase's own twins may resolve to
+	// their "_DX9" shader.
+	bool IsShaderOrDX9( const char *pszResolved, const char *pszWanted )
 	{
-		int n = materials->ShaderCount();
-		CUtlVector<IShader *> list;
-		list.SetCount( n );
-		n = materials->GetShaders( 0, n, list.Base() );
-		for ( int i = 0; i < n; i++ )
-			if ( list[i] && !Q_stricmp( list[i]->GetName(), pszShader ) )
-				return true;
-		return false;
+		if ( !pszWanted )
+			return false;
+		if ( !Q_stricmp( pszResolved, pszWanted ) )
+			return true;
+		char szDX9[128];
+		Q_snprintf( szDX9, sizeof( szDX9 ), "%s_DX9", pszWanted );
+		return !Q_stricmp( pszResolved, szDX9 );
 	}
 
 	bool SkipByName( const char *pszName )
@@ -223,6 +239,8 @@ public:
 	{
 		m_bInLevel = false;
 		m_bCheckedShaders = false;
+		m_bUseDoDSP = false;
+		Q_strncpy( m_szNoDoDSP, "not decided yet", sizeof( m_szNoDoDSP ) );
 		for ( int i = 0; i < SWAP_NUM; i++ )
 			m_bTargetLoaded[i] = false;
 		m_flNextSweep = 0.0f;
@@ -239,6 +257,11 @@ public:
 		Msg( "DOD-SP SDK shaders: %d materials moved to Mapbase shaders (world %d, blend %d, models %d); "
 			 "%d left stock (no .vmt), %d reverted\n",
 			 m_nMoved[0] + m_nMoved[1] + m_nMoved[2], m_nMoved[0], m_nMoved[1], m_nMoved[2], m_nNoFile, m_nReverted );
+		if ( m_bUseDoDSP )
+			Msg( "DOD-SP sun shaders: %d world materials on DOD-SP's sun shaders, %d handed back to Mapbase's "
+				 "(a feature DOD-SP's brush shader leaves out - see dodsp_sdkshaders_report)\n", m_nOnDoDSP, m_nHandedBack );
+		else
+			Msg( "DOD-SP sun shaders: not used (%s)\n", m_szNoDoDSP );
 	}
 
 	virtual void LevelShutdownPreEntity()
@@ -255,6 +278,8 @@ public:
 		m_flNextSweep = gpGlobals->realtime + 2.0f;
 		Sweep( NULL );
 	}
+
+	bool SunShadersInUse() const { return m_bCheckedShaders && m_bUseDoDSP && dodsp_sdkshaders.GetBool(); }
 
 	void Report()
 	{
@@ -275,6 +300,25 @@ public:
 			}
 		}
 		Msg( "  %d lit materials in use are still on stock shaders\n", nStock );
+
+		// World materials that run without the per-pixel sun: with dodsp_sun_baked 0 they get no direct sun
+		Msg( "DOD-SP sun shaders: %s; %d on them, %d handed back\n", m_bUseDoDSP ? "in use" : m_szNoDoDSP, m_nOnDoDSP, m_nHandedBack );
+		int nBack = 0;
+		for ( MaterialHandle_t h = materials->FirstMaterial(); h != materials->InvalidMaterial(); h = materials->NextMaterial( h ) )
+		{
+			IMaterial *pMat = materials->GetMaterial( h );
+			if ( !pMat || !pMat->IsPrecached() || pMat->IsErrorMaterial() || SkipByName( pMat->GetName() ) )
+				continue;
+			const char *pszShader = pMat->GetShaderName();
+			if ( IsShaderOrDX9( pszShader, "SDK_LightmappedGeneric" ) || IsShaderOrDX9( pszShader, "SDK_WorldVertexTransition" ) )
+			{
+				if ( nBack < 40 )
+					Msg( "  no per-pixel sun: %-48s %s\n", pMat->GetName(), pszShader );
+				nBack++;
+			}
+		}
+		if ( m_bUseDoDSP )
+			Msg( "  %d world materials in use draw without the per-pixel sun\n", nBack );
 	}
 
 private:
@@ -282,6 +326,7 @@ private:
 	{
 		m_nMoved[0] = m_nMoved[1] = m_nMoved[2] = 0;
 		m_nNoFile = m_nReverted = 0;
+		m_nOnDoDSP = m_nHandedBack = 0;
 	}
 
 	int Family( const char *pszSDK )
@@ -299,9 +344,20 @@ private:
 		if ( !m_bCheckedShaders )
 		{
 			m_bCheckedShaders = true;
+
+			// DOD-SP's sun shaders: one decision per game start, so a map never mixes the two
+			m_bUseDoDSP = false;
+			if ( !dodsp_sunshader.GetBool() )
+				Q_strncpy( m_szNoDoDSP, "dodsp_sunshader 0", sizeof( m_szNoDoDSP ) );
+			else if ( !g_pMaterialSystemHardwareConfig->SupportsShaderModel_3_0() )
+				Q_strncpy( m_szNoDoDSP, "no shader model 3.0", sizeof( m_szNoDoDSP ) );
+			else if ( !DoDSP_ShaderExists( DODSP_SHADER_LMG ) || !DoDSP_ShaderExists( DODSP_SHADER_WVT ) )
+				Q_strncpy( m_szNoDoDSP, DODSP_SHADER_DLL_NAME ".dll without the sun shaders (older build?)", sizeof( m_szNoDoDSP ) );
+			else
+				m_bUseDoDSP = true;
 			for ( int i = 0; i < SWAP_NUM; i++ )
 			{
-				m_bTargetLoaded[i] = ShaderLoaded( s_Swaps[i].m_pszSDK );
+				m_bTargetLoaded[i] = DoDSP_ShaderExists( s_Swaps[i].m_pszSDK );
 				if ( !m_bTargetLoaded[i] )
 					Warning( "INVARIANT: DOD-SP SDK shaders: %s is not loaded - %s materials stay stock (Mapbase shader DLL missing?)\n",
 							 s_Swaps[i].m_pszSDK, s_Swaps[i].m_pszStock );
@@ -346,14 +402,19 @@ private:
 		MatSig_t before, after;
 		TakeSig( pMat, before );
 
+		const char *pszTarget = ( m_bUseDoDSP && swap.m_pszDoDSP ) ? swap.m_pszDoDSP : swap.m_pszSDK;
+
 		KeyValues *pStockKV = pKV->MakeCopy();
-		pKV->SetName( swap.m_pszSDK );
+		pKV->SetName( pszTarget );
 		pMat->SetShaderAndParams( pKV );
 		pKV->deleteThis();
 
 		TakeSig( pMat, after );
 		const char *pszDiff = SigDiff( before, after );
-		if ( !pszDiff && Q_stricmp( pMat->GetShaderName(), swap.m_pszSDK ) )
+		const char *pszResolved = pMat->GetShaderName();
+		const bool bOnTarget = IsShaderOrDX9( pszResolved, pszTarget );
+		const bool bHandedBack = !bOnTarget && pszTarget != swap.m_pszSDK && IsShaderOrDX9( pszResolved, swap.m_pszSDK );
+		if ( !pszDiff && !bOnTarget && !bHandedBack )
 			pszDiff = "shader did not take";
 
 		if ( pszDiff )
@@ -369,8 +430,15 @@ private:
 		else
 		{
 			m_nMoved[Family( swap.m_pszSDK )]++;
+			if ( pszTarget != swap.m_pszSDK )
+			{
+				if ( bOnTarget )
+					m_nOnDoDSP++;
+				else
+					m_nHandedBack++;
+			}
 			if ( dodsp_sdkshaders_log.GetBool() )
-				Msg( "  %-56s %s -> %s\n", pMat->GetName(), swap.m_pszStock, swap.m_pszSDK );
+				Msg( "  %-56s %s -> %s\n", pMat->GetName(), swap.m_pszStock, pszResolved );
 		}
 		pStockKV->deleteThis();
 	}
@@ -382,10 +450,19 @@ private:
 	int m_nMoved[3];
 	int m_nNoFile;
 	int m_nReverted;
+	bool m_bUseDoDSP;
+	char m_szNoDoDSP[128];
+	int m_nOnDoDSP;
+	int m_nHandedBack;
 	CUtlRBTree<IMaterial *> m_Refused;
 };
 
 static CDODSPShaderSwap s_DODSPShaderSwap;
+
+bool DoDSP_SunShadersInUse()
+{
+	return s_DODSPShaderSwap.SunShadersInUse();
+}
 
 CON_COMMAND( dodsp_sdkshaders_report, "DOD-SP: how many materials run on Mapbase SDK_ shaders, and which lit ones don't" )
 {

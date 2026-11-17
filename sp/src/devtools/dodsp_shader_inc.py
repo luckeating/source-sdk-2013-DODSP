@@ -1,0 +1,158 @@
+"""DOD-SP shader combo headers (.inc) - one owner for how a .fxc's combos become C++.
+
+Writes, for each dodsp_*.fxc in materialsystem/stdshaders/dodsp_shaders_dx9_30.txt, the header
+materialsystem/stdshaders/dodsp/<name>.inc in Valve's .inc format (the same layout as Mapbase's
+fxctmp9 headers, so the stock SET_*_SHADER_COMBO macros work unchanged).
+
+Index layout (Valve's): dynamic combos first, in the order they are declared, each multiplier the
+product of the ranges before it; static combos continue from the dynamic total.
+
+    python dodsp_shader_inc.py            write every header
+    python dodsp_shader_inc.py --check    exit 1 if a committed header differs (the CI runs this)
+
+The CI also compares these multipliers with the include files ShaderCompile2 writes while compiling,
+so the C++ side and the .vcs files can never disagree about combo numbering.
+"""
+import os
+import re
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+STDSHADERS = os.path.join(os.path.dirname(HERE), "materialsystem", "stdshaders")
+LIST = os.path.join(STDSHADERS, "dodsp_shaders_dx9_30.txt")
+INC_DIR = os.path.join(STDSHADERS, "dodsp")
+
+COMBO_RE = re.compile(r'^\s*//\s*(STATIC|DYNAMIC)\s*:\s*"(\w+)"\s*"(\d+)\.\.(\d+)"(.*)$')
+
+
+def read_list():
+    names = []
+    with open(LIST) as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("//"):
+                names.append(line)
+    return names
+
+
+def parse_combos(fxc_path):
+    """[(kind, name, min, max)] in declaration order. Lines with [tags] are refused: DOD-SP's
+    shaders declare plain combos so there is exactly one reading of them."""
+    combos = []
+    with open(fxc_path, encoding="latin-1") as f:
+        for n, line in enumerate(f, 1):
+            m = COMBO_RE.match(line)
+            if not m:
+                continue
+            if "[" in m.group(5):
+                raise ValueError("%s:%d: combo line has platform/model tags - DOD-SP shaders must not use them" % (fxc_path, n))
+            lo, hi = int(m.group(3)), int(m.group(4))
+            if lo != 0 or hi < lo:
+                raise ValueError("%s:%d: combo ranges must start at 0" % (fxc_path, n))
+            combos.append((m.group(1), m.group(2), lo, hi))
+    names = [c[1] for c in combos]
+    dupes = sorted(set(x for x in names if names.count(x) > 1))
+    if dupes:
+        raise ValueError("%s: combo declared twice: %s" % (fxc_path, ", ".join(dupes)))
+    return combos
+
+
+def multipliers(combos):
+    """{name: multiplier}, Valve's layout: dynamic first, then static."""
+    mult = {}
+    m = 1
+    for kind, name, lo, hi in combos:
+        if kind == "DYNAMIC":
+            mult[name] = m
+            m *= (hi - lo + 1)
+    for kind, name, lo, hi in combos:
+        if kind == "STATIC":
+            mult[name] = m
+            m *= (hi - lo + 1)
+    return mult
+
+
+def _class(shader, kind, combos, mult, prefix):
+    label = "Static" if kind == "STATIC" else "Dynamic"
+    test = "static" if kind == "STATIC" else "dynamic"
+    mine = [c for c in combos if c[0] == kind]
+    cls = "%s_%s_Index" % (shader, label)
+    out = ["class %s" % cls, "{"]
+    for _, name, lo, hi in mine:
+        out += [
+            "private:",
+            "\tint m_n%s;" % name,
+            "#ifdef _DEBUG",
+            "\tbool m_b%s;" % name,
+            "#endif",
+            "public:",
+            "\tvoid Set%s( int i )" % name,
+            "\t{",
+            "\t\tAssert( i >= %d && i <= %d );" % (lo, hi),
+            "\t\tm_n%s = i;" % name,
+            "#ifdef _DEBUG",
+            "\t\tm_b%s = true;" % name,
+            "#endif",
+            "\t}",
+            "\tvoid Set%s( bool i )" % name,
+            "\t{",
+            "\t\tm_n%s = i ? 1 : 0;" % name,
+            "#ifdef _DEBUG",
+            "\t\tm_b%s = true;" % name,
+            "#endif",
+            "\t}",
+        ]
+    out += ["public:", "\t%s()" % cls, "\t{"]
+    for _, name, lo, hi in mine:
+        out += ["#ifdef _DEBUG", "\t\tm_b%s = false;" % name, "#endif // _DEBUG", "\t\tm_n%s = 0;" % name]
+    out += ["\t}", "\tint GetIndex()", "\t{", "#ifdef _DEBUG"]
+    if mine:
+        out.append("\t\tbool bAll%sVarsDefined = %s;" % (label, " && ".join("m_b%s" % c[1] for c in mine)))
+        out.append("\t\tAssert( bAll%sVarsDefined );" % label)
+    out.append("#endif // _DEBUG")
+    terms = " + ".join("( %d * m_n%s )" % (mult[c[1]], c[1]) for c in mine)
+    out.append("\t\treturn %s0;" % (terms + " + " if terms else ""))
+    out += ["\t}", "};"]
+    tests = " + ".join("%s_forgot_to_set_%s_%s" % (prefix, test, c[1]) for c in mine)
+    out.append("#define shader%sTest_%s %s0" % (label, shader, (tests + " + ") if tests else ""))
+    return out
+
+
+def generate(fxc_name):
+    shader = os.path.splitext(os.path.basename(fxc_name))[0]
+    combos = parse_combos(os.path.join(STDSHADERS, fxc_name))
+    mult = multipliers(combos)
+    prefix = "vsh" if "_vs" in shader else "psh"
+    lines = [
+        "// GENERATED by sp/src/devtools/dodsp_shader_inc.py from %s - do not edit by hand." % fxc_name,
+        '#include "shaderlib/cshader.h"',
+    ]
+    lines += _class(shader, "STATIC", combos, mult, prefix)
+    lines += _class(shader, "DYNAMIC", combos, mult, prefix)
+    return "\n".join(lines) + "\n"
+
+
+def inc_path(fxc_name):
+    return os.path.join(INC_DIR, os.path.splitext(os.path.basename(fxc_name))[0] + ".inc")
+
+
+def main():
+    check = "--check" in sys.argv[1:]
+    bad = 0
+    for fxc in read_list():
+        text = generate(fxc)
+        path = inc_path(fxc)
+        if check:
+            old = open(path, encoding="latin-1").read() if os.path.exists(path) else None
+            if old != text:
+                print("INVARIANT: %s is out of date with %s - run dodsp_shader_inc.py" % (os.path.basename(path), fxc))
+                bad += 1
+        else:
+            with open(path, "w", newline="\n") as f:
+                f.write(text)
+            print("wrote %s" % os.path.relpath(path, STDSHADERS))
+    return 1 if bad else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

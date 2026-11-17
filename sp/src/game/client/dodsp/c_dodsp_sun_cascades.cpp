@@ -4,6 +4,14 @@
 //   near - around the player, every frame      (dodsp_csm_size_near, half-width in units)
 //   mid  - wider, every frame                  (dodsp_csm_size_mid)
 //   far  - the whole map, every few seconds    (dodsp_csm_far_interval)
+// Stage 3b-2: every frame this file also publishes the sun to DOD-SP's shaders (DoDSP_PublishSun):
+// the cascades, their placement and the sun's colour, as rendering parameters (public/dodsp_shaders.h).
+// The sun's colour is only non-zero when the baked direct sun is off (dodsp_sun_baked 0) - one sun
+// at a time, never both and never neither:
+// INVARIANT (watchdog): dodsp_sun_baked 0 while the dynamic sun can't draw (no DOD-SP sun shaders,
+// no shader model 3.0, cascades off) would leave the map with no direct sun at all, so the
+// watchdog puts the baked sun back and says why.
+//
 // Stage 3b-1: dodsp_csm_view draws them top-right with DOD-SP's DODSP_SunCascadeDebug shader and a
 // ring on the point under the crosshair (green = the cascade says sunlit, red = in shadow), which
 // checks the world -> texture matrix, the depth range and the shadow compare against the scene.
@@ -21,7 +29,8 @@
 //
 // Cvars: dodsp_csm (1 = render), dodsp_csm_debug (1 = coverage boxes + stats), dodsp_csm_res,
 // dodsp_csm_size_near/mid, dodsp_csm_far_interval, dodsp_csm_slopebias, dodsp_csm_bias,
-// dodsp_csm_view (1 = draw the cascades on screen), dodsp_csm_view_size, dodsp_csm_view_bias.
+// dodsp_csm_view (1 = draw the cascades on screen), dodsp_csm_view_size, dodsp_csm_view_bias,
+// dodsp_sun_scale, dodsp_sun_filter, dodsp_sun_normaloffset, dodsp_sun_bias (the dynamic sun).
 // Command: dodsp_csm_report.
 //
 //===================================================================================//
@@ -44,6 +53,7 @@
 #include "KeyValues.h"
 #include "dodsp_shaders.h"
 #include "c_dodsp_shaderdll.h"
+#include "c_dodsp_sdkshaders.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -60,6 +70,10 @@ static ConVar dodsp_csm_view( "dodsp_csm_view", "0", 0,
 	"DOD-SP debug: 1 = draw the sun cascades top-right (near, mid, far) with a ring on the point you aim at: "
 	"green = that cascade says sunlit, red = in shadow. Needs DOD-SP's shader DLL and shader files." );
 static ConVar dodsp_csm_view_size( "dodsp_csm_view_size", "256", 0, "DOD-SP debug: on-screen size of each cascade in dodsp_csm_view, pixels" );
+static ConVar dodsp_sun_scale( "dodsp_sun_scale", "1", 0, "DOD-SP: brightness of the dynamic sun against the baked one (1 = exactly the light_environment)" );
+static ConVar dodsp_sun_filter( "dodsp_sun_filter", "1.5", 0, "DOD-SP: softness of the dynamic sun's shadow edge, in cascade texels" );
+static ConVar dodsp_sun_normaloffset( "dodsp_sun_normaloffset", "1.5", 0, "DOD-SP: how far (in cascade texels) a surface is pushed out along its normal before the shadow test - fights shadow acne" );
+static ConVar dodsp_sun_bias( "dodsp_sun_bias", "0.0005", 0, "DOD-SP: depth bias of the dynamic sun's shadow test (0..1 of the cascade depth range)" );
 static ConVar dodsp_csm_view_bias( "dodsp_csm_view_bias", "0.002", 0, "DOD-SP debug: depth bias (0..1 of the cascade's depth) for the aim-point test in dodsp_csm_view" );
 
 namespace
@@ -86,13 +100,14 @@ class CDoDSPSunCascades : public CAutoGameSystem
 {
 public:
 	CDoDSPSunCascades() : CAutoGameSystem( "CDoDSPSunCascades" ), m_bAllocated( false ), m_nRes( 0 ), m_bHaveSun( false ), m_nLastFrame( -1 ),
-		m_bViewMaterials( false ), m_bViewWarned( false ) {}
+		m_bViewMaterials( false ), m_bViewWarned( false ), m_bSunInvariantWarned( false ) {}
 
 	virtual void LevelInitPostEntity()	{ Reset(); EnsureTargets(); FindSun(); }
 	virtual void LevelShutdownPreEntity() { Reset(); m_bHaveSun = false; }
 	virtual void Shutdown()				{ FreeTargets(); FreeViewMaterials(); }
 
 	void Render( const CViewSetup &mainView );
+	void PublishSun();
 	void DrawView( const CViewSetup &mainView );
 	bool Get( int n, ITexture **ppDepth, VMatrix *pMat );
 	void Report() const;
@@ -114,6 +129,8 @@ private:
 	bool SetupCascade( Cascade_t &c, float flHalfSize, const Vector2D &vecCentreLS );
 	void DrawDebug( const CViewSetup &mainView );
 	bool EnsureViewMaterials();
+	bool CanDrawDynamicSun( const char **ppszWhy ) const;
+	void WatchSunInvariant();
 	void FreeViewMaterials();
 
 	bool				m_bAllocated;
@@ -136,6 +153,7 @@ private:
 	IMaterialVar		*m_pViewParams[DODSP_CASCADE_COUNT];
 	bool				m_bViewMaterials;
 	bool				m_bViewWarned;
+	bool				m_bSunInvariantWarned;
 };
 
 static CDoDSPSunCascades s_DoDSPSunCascades;
@@ -242,11 +260,18 @@ void CDoDSPSunCascades::Render( const CViewSetup &mainView )
 		return;	// one render per frame, whichever view path calls first
 	m_nLastFrame = gpGlobals->framecount;
 
+	WatchSunInvariant();
 	if ( !dodsp_csm.GetBool() || !m_bHaveSun )
+	{
+		PublishSun();	// publishes "no dynamic sun"
 		return;
+	}
 	EnsureTargets();
 	if ( !m_bAllocated )
+	{
+		PublishSun();
 		return;
+	}
 
 	Vector2D vecEyeLS( DotProduct( mainView.origin, m_vecRight ), DotProduct( mainView.origin, m_vecUp ) );
 	Vector2D vecMapCentreLS = ( m_vecWorldMinLS + m_vecWorldMaxLS ) * 0.5f;
@@ -295,8 +320,95 @@ void CDoDSPSunCascades::Render( const CViewSetup &mainView )
 		c.m_bValid = true;
 	}
 
+	PublishSun();
+
 	if ( dodsp_csm_debug.GetBool() )
 		DrawDebug( mainView );
+}
+
+// Why the dynamic sun can't draw on this map / machine (NULL reason = it can)
+bool CDoDSPSunCascades::CanDrawDynamicSun( const char **ppszWhy ) const
+{
+	const char *pszWhy = NULL;
+	if ( !m_bHaveSun )
+		pszWhy = "this map has no light_environment";
+	else if ( !dodsp_csm.GetBool() )
+		pszWhy = "the sun cascades are off (dodsp_csm 0)";
+	else if ( !DoDSP_SunShadersInUse() )
+		pszWhy = "the world isn't on DOD-SP's sun shaders (see the 'DOD-SP sun shaders' line at map load)";
+	if ( ppszWhy )
+		*ppszWhy = pszWhy;
+	return !pszWhy;
+}
+
+void CDoDSPSunCascades::WatchSunInvariant()
+{
+	static ConVarRef s_SunBaked( "dodsp_sun_baked" );
+	if ( !s_SunBaked.IsValid() || s_SunBaked.GetBool() )
+	{
+		m_bSunInvariantWarned = false;
+		return;
+	}
+	const char *pszWhy = NULL;
+	if ( CanDrawDynamicSun( &pszWhy ) )
+		return;
+	if ( !m_bSunInvariantWarned )
+		Warning( "INVARIANT: DOD-SP sun: dodsp_sun_baked 0 but the dynamic sun can't draw (%s) - putting the baked sun back\n", pszWhy );
+	m_bSunInvariantWarned = true;
+	engine->ClientCmd_Unrestricted( "dodsp_sun_baked 1\n" );
+}
+
+// Publishes everything DOD-SP's shaders need for the sun, every frame (see public/dodsp_shaders.h).
+// The placement comes straight out of each cascade's world -> texture matrix (SetupCascade owns it).
+void CDoDSPSunCascades::PublishSun()
+{
+	bool bValid = m_bAllocated && m_bHaveSun && dodsp_csm.GetBool();
+	for ( int i = 0; i < DODSP_CASCADE_COUNT; i++ )
+		bValid = bValid && m_Cascades[i].m_bValid;
+
+	static ConVarRef s_SunBaked( "dodsp_sun_baked" );
+	const bool bDynamic = bValid && s_SunBaked.IsValid() && !s_SunBaked.GetBool() && CanDrawDynamicSun( NULL );
+
+	Vector vecSun( 0.0f, 0.0f, 0.0f );
+	if ( bDynamic )
+	{
+		const bool bHDR = g_pMaterialSystemHardwareConfig->GetHDREnabled() && engine->MapHasHDRLighting();
+		Vector vecIntensity;
+		if ( g_pWorldLights && g_pWorldLights->GetSunIntensity( bHDR, vecIntensity ) )
+			vecSun = vecIntensity * MAX( dodsp_sun_scale.GetFloat(), 0.0f );
+	}
+
+	CMatRenderContextPtr pRenderContext( materials );
+	pRenderContext->SetVectorRenderingParameter( DODSP_RP_VEC_SUNCOLOR, vecSun );
+	for ( int i = 0; i < DODSP_CASCADE_COUNT; i++ )
+		pRenderContext->SetIntRenderingParameter( DODSP_RP_INT_CASCADE0 + i, bValid ? (int)(intp)(ITexture *)m_Cascades[i].m_Depth : 0 );
+	if ( !bValid )
+		return;
+
+	// The depth row is shared by all three cascades (they all span the whole map along the sun)
+	const VMatrix &m0 = m_Cascades[0].m_matWorldToTexture;
+	for ( int i = 1; i < DODSP_CASCADE_COUNT; i++ )
+	{
+		const VMatrix &m = m_Cascades[i].m_matWorldToTexture;
+		if ( fabsf( m[2][3] - m0[2][3] ) > 1e-4f || fabsf( m[2][0] - m0[2][0] ) > 1e-6f )
+		{
+			Warning( "INVARIANT: DOD-SP sun: cascade %d's depth range differs from the near one's - the shader assumes one\n", i );
+			break;
+		}
+	}
+
+	pRenderContext->SetVectorRenderingParameter( DODSP_RP_VEC_AXIS_R, m_vecRight );
+	pRenderContext->SetVectorRenderingParameter( DODSP_RP_VEC_AXIS_U, m_vecUp );
+	pRenderContext->SetVectorRenderingParameter( DODSP_RP_VEC_AXIS_F, Vector( m0[2][0], m0[2][1], m0[2][2] ) );
+	pRenderContext->SetVectorRenderingParameter( DODSP_RP_VEC_DEPTH, Vector( m0[2][3], 1.0f / m_nRes, MAX( dodsp_sun_bias.GetFloat(), 0.0f ) ) );
+	for ( int i = 0; i < DODSP_CASCADE_COUNT; i++ )
+	{
+		const VMatrix &m = m_Cascades[i].m_matWorldToTexture;
+		float flScale = Vector( m[0][0], m[0][1], m[0][2] ).Length();
+		pRenderContext->SetVectorRenderingParameter( DODSP_RP_VEC_CASCADE0 + i, Vector( flScale, m[0][3], m[1][3] ) );
+	}
+	pRenderContext->SetVectorRenderingParameter( DODSP_RP_VEC_FILTER,
+		Vector( MAX( dodsp_sun_filter.GetFloat(), 0.0f ), MAX( dodsp_sun_normaloffset.GetFloat(), 0.0f ), 0.0f ) );
 }
 
 void CDoDSPSunCascades::DrawDebug( const CViewSetup &mainView )

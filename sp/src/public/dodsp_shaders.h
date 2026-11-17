@@ -15,12 +15,37 @@
 
 #define DODSP_SHADER_DLL_NAME		"game_shader_dx6"
 #define DODSP_SHADER_PREFIX			"DODSP_"
-#define DODSP_SHADER_DLL_VERSION	"3b1"	// bump with every DLL change; see dodsp_shaders_version
+#define DODSP_SHADER_DLL_VERSION	"3b2"	// bump with every DLL change; see dodsp_shaders_version
 
 // Stage 3a: proves the DLL loads next to Mapbase's. It only falls back to UnlitGeneric.
 #define DODSP_SHADER_PROBE			"DODSP_Probe"
 
 // Stage 3b-1: draws a sun cascade with the aim-point marker (dodsp_csm_view). Uses dodsp_*.vcs.
 #define DODSP_SHADER_CASCADE_DEBUG	"DODSP_SunCascadeDebug"
+
+// Stage 3b-2: the brush shaders with the sun drawn per pixel. Materials using a feature these don't
+// support fall back to Mapbase's twin by themselves (SHADER_FALLBACK).
+#define DODSP_SHADER_LMG			"DODSP_LightmappedGeneric"
+#define DODSP_SHADER_WVT			"DODSP_WorldVertexTransition"
+
+//-----------------------------------------------------------------------------
+// The sun, from the client to the shaders: rendering parameters set on the render context every
+// frame (so they stay in order with queued rendering). Written ONLY by c_dodsp_sun_cascades.cpp
+// (DoDSP_PublishSun), read ONLY by materialsystem/stdshaders/dodsp/dodsp_sun_shader.cpp.
+// INVARIANT: these are the slots Valve and Mapbase leave free (public/renderparm.h: vectors 0..10,
+// ints 0..16 are taken); nothing else may use them. Checked at compile time in dodsp_sun_shader.cpp.
+//-----------------------------------------------------------------------------
+#define DODSP_RP_VEC_AXIS_R			11	// light-space right axis (world)
+#define DODSP_RP_VEC_AXIS_U			12	// light-space up axis
+#define DODSP_RP_VEC_AXIS_F			13	// light travel direction scaled by 1 / depth range
+#define DODSP_RP_VEC_DEPTH			14	// x = depth offset, y = 1 / cascade texels, z = depth bias
+#define DODSP_RP_VEC_CASCADE0		15	// near: x = scale (1 / width), y = u offset, z = v offset
+#define DODSP_RP_VEC_CASCADE1		16	// mid
+#define DODSP_RP_VEC_CASCADE2		17	// far
+#define DODSP_RP_VEC_SUNCOLOR		18	// sun colour in lightmap units; 0 0 0 = no dynamic sun
+#define DODSP_RP_VEC_FILTER			19	// x = filter spread (texels), y = normal offset (texels)
+#define DODSP_RP_INT_CASCADE0		17	// ITexture * of the near cascade's depth map
+#define DODSP_RP_INT_CASCADE1		18	// mid
+#define DODSP_RP_INT_CASCADE2		19	// far
 
 #endif // DODSP_SHADERS_H
