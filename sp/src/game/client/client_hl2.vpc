@@ -27,7 +27,16 @@ $Project "Client (HL2)"
 		$File	"dodsp\c_weapon_stubs_dodsp.cpp"
 		$File	"dodsp\c_dodsp_sdkshaders.cpp"
 		$File	"dodsp\c_dodsp_shaderdll.cpp"
-		$File	"dodsp\c_dodsp_crashlog.cpp"
+		$File	"dodsp\c_dodsp_crashlog.cpp"	// windows.h must come before cbase.h, so no precompiled header
+		{
+			$Configuration
+			{
+				$Compiler
+				{
+					$Create/UsePrecompiledHeader	"Not Using Precompiled Headers"
+				}
+			}
+		}
 		$File	"dodsp\c_dodsp_sun_cascades.cpp"
 		$File	"dodsp\c_npc_german_soldier.cpp"
 	}
