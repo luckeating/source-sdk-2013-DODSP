@@ -16,6 +16,7 @@
 #include "c_physicsprop.h"
 #include "tier0/vprof.h"
 #include "ivrenderview.h"
+#include "dodsp/c_dodsp_sdkshaders.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -58,12 +59,22 @@ bool C_PhysicsProp::OnInternalDrawModel( ClientModelRenderInfo_t *pInfo )
 {
 	CreateModelInstance();
 
-	if ( r_PhysPropStaticLighting.GetBool() && m_bAwakeLastTime != m_bAwake )
+	// DOD-SP. INVARIANT: no model's lighting depends on a runtime bake while DOD-SP's sun shaders are
+	// in use. The bake (RecomputeStaticLighting, done once as the prop falls asleep) reads the sun's
+	// light style at that moment: baked with dodsp_sun_baked 0 the prop has no sun at all, and the
+	// STATIC_LIGHT model shader gets no per-pixel sun either, so a bumped prop went dark once it
+	// settled. Baked with dodsp_sun_baked 1 it stays stale after the switch. Sleeping props are lit
+	// like moving ones instead (the engine's live lighting + the per-pixel sun), so nothing changes
+	// when a prop settles. CI (devtools/dodsp_lint_client.py) fails the build on any other use of
+	// static lighting in the client that doesn't carry this check.
+	const bool bStaticLighting = r_PhysPropStaticLighting.GetBool() && !DoDSP_SunShadersInUse();	// dodsp-lint: static lighting guarded
+
+	if ( bStaticLighting && m_bAwakeLastTime != m_bAwake )
 	{
 		if ( m_bAwakeLastTime && !m_bAwake )
 		{
 			// transition to sleep, bake lighting now, once
-			if ( !modelrender->RecomputeStaticLighting( GetModelInstance() ) )
+			if ( !modelrender->RecomputeStaticLighting( GetModelInstance() ) )	// dodsp-lint: static lighting guarded
 			{
 				// not valid for drawing
 				return false;
@@ -82,14 +93,15 @@ bool C_PhysicsProp::OnInternalDrawModel( ClientModelRenderInfo_t *pInfo )
 		}
 	}
 
-	if ( !m_bAwake && r_PhysPropStaticLighting.GetBool() )
+	if ( !m_bAwake && bStaticLighting )
 	{
 		// going to sleep, have static lighting
-		pInfo->flags |= STUDIO_STATIC_LIGHTING;
+		pInfo->flags |= STUDIO_STATIC_LIGHTING;	// dodsp-lint: static lighting guarded
 	}
 	
-	// track state
-	m_bAwakeLastTime = m_bAwake;
+	// track state. Without static lighting, stay "awake" so that if it comes back on, the prop bakes
+	// afresh when it next sleeps instead of drawing an old bake.
+	m_bAwakeLastTime = bStaticLighting ? m_bAwake : true;
 
 	return true;
 }

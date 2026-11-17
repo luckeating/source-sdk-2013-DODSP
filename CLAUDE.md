@@ -73,6 +73,14 @@ If you learn something like this, add it here in the same commit as the fix.
   directional light the engine hands them (`cLightInfo[i].color.w == 1`), i.e. the engine's
   once-per-model sun. Static props with baked vertex lighting (`STATIC_LIGHT`) keep VRAD's baked sun
   and get no per-pixel sun (vradstaticprops bakes the sun style into them).
+- **Sleeping physics props bake their lighting once** (`C_PhysicsProp`, `r_PhysPropStaticLighting`): when
+  a prop settles, `RecomputeStaticLighting` bakes the engine's lights as they are at that moment and the
+  prop then draws with `STUDIO_STATIC_LIGHTING` (the STATIC_LIGHT shader path: no per-pixel sun). With
+  `dodsp_sun_baked 0` the bake has no sun, so a bumped prop went dark once it settled (2026-11-17). While
+  the sun shaders are in use, sleeping props use live lighting like moving ones. Guard:
+  `devtools/dodsp_lint_client.py` (runs before the game build) fails on any client use of static
+  model lighting without the `DoDSP_SunShadersInUse()` check and the `dodsp-lint: static lighting guarded`
+  tag. Props that never moved were baked at map load, while `dodsp_sun_baked` was still 1.
 - DOD-SP shaders pin features they leave out to `"0..0"` combos and hand such materials back to
   Mapbase via SHADER_FALLBACK. The list of features (`DoDSP_BrushUnsupported`,
   `DoDSP_ModelUnsupported`) and the pins must describe the same things; `DoDSP_Pinned` wraps every
