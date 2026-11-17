@@ -112,21 +112,16 @@ If you learn something like this, add it here in the same commit as the fix.
   sampler (Mapbase's brush helper had one on s14 = our mid cascade; removed). Guard: build script
   `check_raw_depth`. The old `DODSP_SUNFILTER` combo is gone. Watchdog INVARIANT if a cascade didn't come
   out in the readable format (the dynamic sun then stays off).
-- **Soft shadows (4b/4b-2, dodsp_sun_common_fxc.h):** blocker search -> penumbra = (receiver - blocker
-  depth) x depth range x tan(sun radius) -> 16-tap filter. 4b-2 (no grain): FIXED golden-angle spiral (a
-  per-texel random turn = grain, the owner rejected it), every filter tap a 2x2 bilinear compare, and each
-  step reads the cascade that makes its radius only a few texels wide (search 10, filter 4 texels; wide
-  penumbras come from coarser cascades). The search runs twice: close by in the finest cascade (thin
-  casters like chair legs must never be missed by a coarse map) and over the full reach in the picked
-  cascade. Receiver-plane bias from ddx/ddy (taken BEFORE any branch). Loop bodies read whichever
-  cascade was picked (`DoDSP_ReadCascade`, `_ReadCascade4`): unrolled copies would blow the ps_3_0
-  512-slot limit next to Mapbase's skin shader. Sharpest edge = 1 texel of the finest cascade
-  (`DODSP_PCSS_MIN_TEXELS`; the `dodsp_sun_filter` cvar is gone). Constants: brush c15.w = tan, c20.w =
-  texel; model PS MSun0.w = texel, MSun3.w = tan, to-sun z rebuilt from x/y (watchdog: sun must shine down); model VS c224.y =
+- **Soft shadows (4b, dodsp_sun_common_fxc.h):** blocker search (12 taps) -> penumbra = (receiver -
+  blocker depth) x depth range x tan(sun radius) -> 16-tap filter, golden-angle spiral turned per texel,
+  receiver-plane bias from ddx/ddy (taken BEFORE any branch). One loop body reads whichever cascade
+  holds the point (`DoDSP_ReadCascade`): three inlined copies would blow the ps_3_0 512-slot limit next
+  to Mapbase's skin shader. Constants: brush c15.w = tan, c20.w = min radius; model PS MSun0.w = min
+  radius, MSun3.w = tan, to-sun z rebuilt from x/y (watchdog: sun must shine down); model VS c224.y =
   depth range, passed to the PS in the sun coordinate's .w (0 = takes no sun). Render parms: DEPTH.y =
-  tan, FILTER.x = texel, FILTER.y = normal offset (cascade texture units). Sun size: light_environment
-  `SunSpreadAngle` (client parses the entity string; VRAD reads the same key), x `dodsp_sun_softness`;
-  none in the map -> `dodsp_sun_spread_default` (0.6 degrees since 4b-2 = the owner's pick).
+  tan, FILTER.x/.y now in cascade texture units. Sun size: light_environment `SunSpreadAngle` (client
+  parses the entity string; VRAD reads the same key), x `dodsp_sun_softness`; none in the map ->
+  `dodsp_sun_spread_default` (2 degrees).
 - Valve's `BuildOrthoWorldToFlashlightMatrix` gives depth (d + near)/(far - near), but the ortho
   shadow map stores (d - near)/(far - near). If you ever use Valve's ortho matrix, fix the depth
   (5cd6ea4). Our cascades build their own matrix.
@@ -228,9 +223,13 @@ If you learn something like this, add it here in the same commit as the fix.
   TESTED 2026-11-17 (build 44176044660): works; owner's best look is `dodsp_sun_softness 0.3` with the 2-degree
   default (= 0.6 degree sun radius). Softer than that "really degrades quality": 16 taps spread over a wider
   radius with a per-texel random turn = grain. Next: 4b-2 smooth taps (bilinear 2x2 compares) instead of
-  more noise, and 0.6 degrees as the default. 4b-2 built ("4b2"): see Engine facts "Soft shadows".
-  Owner noted a ~0.5 s hitch at map load since 4b (likely first use of the bigger shaders); FPS unchanged
-  on this small map. Replaces the saved 3x3 PCF
+  more noise, and 0.6 degrees as the default.
+  **4b-2 REJECTED 2026-11-17 (build 44179877884), reverted.** It picked the filter's cascade per pixel from the
+  penumbra estimate (wide penumbra -> coarser cascade) and searched blockers in two cascades. Neighbouring
+  pixels then switched between cascades whose shadows are rasterized differently -> blocky patches and
+  saw-tooth fringes at contact points and under the window light. Lesson: never let the filter's cascade
+  change with the penumbra estimate; one pixel's shadow comes from ONE cascade (the finest that holds it).
+  Known-good = 4b (build 44176044660) with `dodsp_sun_softness 0.3` (0.6-degree sun). Replaces the saved 3x3 PCF
   fix (`dodsp_sun_filter 3` made the saw-tooth worse). Per pixel: blocker search in the cascade ->
   penumbra width = (receiver - blocker depth) x sun angular size -> ~16-tap rotated Poisson PCF.
   Sharp at contact, soft far from the caster, no stair-steps. The sun's size has ONE owner: the

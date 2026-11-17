@@ -117,7 +117,7 @@ void DoDSP_SunDynamicState( CBaseVSShader *pShader, IShaderDynamicAPI *pShaderAP
 	}
 	Vector vecToSun = -vecF;
 	VectorNormalize( vecToSun );
-	c[7][0] = vecToSun.x; c[7][1] = vecToSun.y; c[7][2] = vecToSun.z; c[7][3] = vecFilter.x;	// one cascade texel
+	c[7][0] = vecToSun.x; c[7][1] = vecToSun.y; c[7][2] = vecToSun.z; c[7][3] = vecFilter.x;	// smallest filter radius
 	// INVARIANT: never write past the constants the hardware layer actually keeps
 	if ( g_pHardwareConfig->NumPixelShaderConstants() < DODSP_PSREG_SUNCOLOR + DODSP_PSREG_COUNT )
 	{
@@ -200,7 +200,7 @@ void DoDSP_ModelSunDynamicState( CBaseVSShader *pShader, IShaderDynamicAPI *pSha
 	const Vector &vecU = pShaderAPI->GetVectorRenderingParameter( DODSP_RP_VEC_AXIS_U );
 	const Vector &vecF = pShaderAPI->GetVectorRenderingParameter( DODSP_RP_VEC_AXIS_F );
 	const Vector &vecDepth = pShaderAPI->GetVectorRenderingParameter( DODSP_RP_VEC_DEPTH );	// offset, tan( sun radius ), bias
-	const Vector &vecFilter = pShaderAPI->GetVectorRenderingParameter( DODSP_RP_VEC_FILTER );	// texel, normal offset (texture units)
+	const Vector &vecFilter = pShaderAPI->GetVectorRenderingParameter( DODSP_RP_VEC_FILTER );	// min radius, normal offset (texture units)
 	Vector vecCascade[3];
 	for ( int i = 0; i < 3; i++ )
 		vecCascade[i] = pShaderAPI->GetVectorRenderingParameter( DODSP_RP_VEC_CASCADE0 + i );
@@ -223,7 +223,7 @@ void DoDSP_ModelSunDynamicState( CBaseVSShader *pShader, IShaderDynamicAPI *pSha
 	{
 		c[i][0] = vecCascade[i].x; c[i][1] = vecCascade[i].y; c[i][2] = vecCascade[i].z;
 	}
-	c[0][3] = vecFilter.x;			// one cascade texel, texture units (as the brushes)
+	c[0][3] = vecFilter.x;			// smallest filter radius, cascade texture units (as the brushes)
 	c[1][3] = vecToSun.x;
 	c[2][3] = vecToSun.y;			// .z is rebuilt in the shader: the sun shines down (client watchdog)
 	c[3][0] = bSun ? vecSun.x : 0.0f;			// the engine's light units: what it would give the model for the sun

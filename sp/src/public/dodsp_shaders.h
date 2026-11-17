@@ -15,7 +15,7 @@
 
 #define DODSP_SHADER_DLL_NAME		"game_shader_dx6"
 #define DODSP_SHADER_PREFIX			"DODSP_"
-#define DODSP_SHADER_DLL_VERSION	"4b2"	// bump with every DLL change; see dodsp_shaders_version
+#define DODSP_SHADER_DLL_VERSION	"4b"	// bump with every DLL change; see dodsp_shaders_version
 
 // Stage 3a: proves the DLL loads next to Mapbase's. It only falls back to UnlitGeneric.
 #define DODSP_SHADER_PROBE			"DODSP_Probe"
@@ -47,7 +47,7 @@
 #define DODSP_RP_VEC_CASCADE1		16	// mid
 #define DODSP_RP_VEC_CASCADE2		17	// far
 #define DODSP_RP_VEC_SUNCOLOR		18	// sun colour in lightmap units while any DODSP_SUNMODE_ is on, else 0 0 0
-#define DODSP_RP_VEC_FILTER			19	// x = one cascade texel, y = normal offset (both cascade texture units), z = DODSP_SUNMODE_ bits
+#define DODSP_RP_VEC_FILTER			19	// x = smallest filter radius, y = normal offset (both cascade texture units), z = DODSP_SUNMODE_ bits
 #define DODSP_RP_INT_CASCADE0		17	// ITexture * of the near cascade's depth map
 #define DODSP_RP_INT_CASCADE1		18	// mid
 #define DODSP_RP_INT_CASCADE2		19	// far

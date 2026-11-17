@@ -20,7 +20,7 @@
 //   c15       light-space up axis, w = tan( sun's angular radius ) (stage 4b soft shadows)
 //   c16       light-space forward axis (scaled to 0..1 over the depth range), w = depth bias
 //   c17..c19  per cascade: x = scale (1 / width), y = u offset, z = v offset, w = normal offset (units)
-//   c20       xyz = direction TOWARD the sun, w = one cascade texel (texture units)
+//   c20       xyz = direction TOWARD the sun, w = smallest filter radius (cascade texture units)
 //
 // INVARIANT: pixel shader constants c0..c31 only. The 2013 engine keeps 32 pixel constants per draw;
 // writing above c31 overflows its storage and corrupts unrelated memory (stage 3b-2 used c32..c39 and
@@ -65,7 +65,7 @@ float DoDSP_SunShadow( float3 worldPos, float3 geoNormal )
 	DoDSP_Soft_t soft;
 	soft.flRange = 1.0f / max( length( g_DoDSP_AxisF.xyz ), 1e-6f );	// the forward axis is scaled by 1 / range
 	soft.flTanSun = g_DoDSP_AxisU.w;
-	soft.flTexel = g_DoDSP_ToSun.w;
+	soft.flMinRadius = g_DoDSP_ToSun.w;
 	return DoDSP_ShadowFromCascades( cn, cm, cf,
 		float3( g_DoDSP_CascadeNear.x, g_DoDSP_CascadeMid.x, g_DoDSP_CascadeFar.x ), soft,
 		( dot( g_DoDSP_SunColor.rgb, float3( 1.0f, 1.0f, 1.0f ) ) > 0.0f ) ? 1.0f : 0.0f );
