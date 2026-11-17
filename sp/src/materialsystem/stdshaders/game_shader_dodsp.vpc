@@ -4,18 +4,20 @@
 //	DOD-SP's own shader DLL (lighting stage 3).
 //
 //	INVARIANT: this DLL sits NEXT TO Mapbase's game_shader_dx9.dll and never replaces it.
-//	  - Its file name is game_shader_generic_dodsp.dll. The engine loads every
-//	    game_shader_generic*.dll in the mod's bin folder after game_shader_dx6..dx9.
+//	  - Its file name is game_shader_dx6.dll. The SDK 2013 SP engine loads exactly
+//	    game_shader_dx6.dll .. game_shader_dx9.dll from the mod's bin folder; Mapbase owns dx9,
+//	    nobody ships dx6. Tested in game (stage 3a): game_shader_generic*.dll is NOT loaded by
+//	    this engine, even though older code and the 2025 MP SDK use that name - don't go back to it.
 //	  - It registers only DODSP_* shaders and only uses dodsp_*.vcs shader files, so it
 //	    can never take over one of Mapbase's SDK_* shaders or a Valve shader.
 //	  - It must NOT include game_shader_dx9_mapbase.vpc (that would register a second copy
 //	    of every SDK_* shader, and the last DLL loaded wins).
-//	Uninstall: delete DOD-SP\bin\game_shader_generic_dodsp.dll (and later DOD-SP\shaders\fxc\dodsp_*.vcs).
+//	Uninstall: delete DOD-SP\bin\game_shader_dx6.dll (and later DOD-SP\shaders\fxc\dodsp_*.vcs).
 //-----------------------------------------------------------------------------
 
 $Macro SRCDIR		"..\.."
 $Macro GAMENAME		"mod_hl2"
-$Macro OUTBINNAME	"game_shader_generic_dodsp"
+$Macro OUTBINNAME	"game_shader_dx6"
 $Macro OUTBINDIR	"$SRCDIR\..\game\$GAMENAME\bin"
 
 $Include "$SRCDIR\vpc_scripts\source_dll_base.vpc"

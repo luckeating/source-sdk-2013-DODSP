@@ -30,7 +30,7 @@ $Project "game_shader_dx9"
 	"materialsystem\stdshaders\game_shader_dx9_episodic.vpc"  [$EPISODIC]
 }
 
-$Project "game_shader_generic_dodsp"
+$Project "game_shader_dodsp"
 {
 	"materialsystem\stdshaders\game_shader_dodsp.vpc" [$WIN32]
 }

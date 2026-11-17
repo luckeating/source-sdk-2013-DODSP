@@ -102,7 +102,7 @@ jobs:
       with:
         name: 'dodsp_shaders_win32_${{ inputs.configuration }}'
         path: |
-          ${{inputs.branch}}/game/mod_hl2/bin/game_shader_generic_dodsp.dll
+          ${{inputs.branch}}/game/mod_hl2/bin/game_shader_dx6.dll
         if-no-files-found: error
 
     - name: Publish map tools

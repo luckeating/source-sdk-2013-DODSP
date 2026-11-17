@@ -1,11 +1,11 @@
 //===================== DOD-SP shader DLL check =====================//
 //
-// Lighting stage 3a. DOD-SP's shaders live in their own DLL, game_shader_generic_dodsp.dll, which
+// Lighting stage 3a. DOD-SP's shaders live in their own DLL, game_shader_dx6.dll, which
 // sits next to Mapbase's game_shader_dx9.dll in DOD-SP\bin and never replaces it. This file
 // reports, once per game start (first map load) and on demand (dodsp_shaders_report):
 //
-//   DOD-SP shaders: game_shader_generic_dodsp.dll loaded (build 3a), 1 shader: DODSP_Probe
-//   DOD-SP shaders: game_shader_generic_dodsp.dll NOT loaded - Mapbase SDK_ shaders only
+//   DOD-SP shaders: game_shader_dx6.dll loaded (build 3a), 1 shader: DODSP_Probe
+//   DOD-SP shaders: game_shader_dx6.dll NOT loaded - Mapbase SDK_ shaders only
 //
 // INVARIANT: Mapbase's own shaders must still be there. If SDK_LightmappedGeneric is missing,
 // Mapbase's game_shader_dx9.dll is gone or broken (that is what broke Hammer once), and an

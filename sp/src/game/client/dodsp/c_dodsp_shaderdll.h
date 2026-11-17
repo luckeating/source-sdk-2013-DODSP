@@ -1,6 +1,6 @@
 //===================== DOD-SP shader DLL check =====================//
 //
-// One owner for "did DOD-SP's own shader DLL (game_shader_generic_dodsp.dll) load, and which
+// One owner for "did DOD-SP's own shader DLL (game_shader_dx6.dll) load, and which
 // DODSP_ shaders did it bring". Lighting stage 3. Names live in public/dodsp_shaders.h.
 //
 //==================================================================//

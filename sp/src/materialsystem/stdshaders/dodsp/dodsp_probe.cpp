@@ -1,7 +1,7 @@
 //===================== DOD-SP shader DLL probe =====================//
 //
 // Lighting stage 3a. The smallest possible DOD-SP shader: it proves that
-// game_shader_generic_dodsp.dll loads next to Mapbase's untouched game_shader_dx9.dll, in the
+// game_shader_dx6.dll loads next to Mapbase's untouched game_shader_dx9.dll, in the
 // game and in Hammer, before any real shader work goes into it.
 //
 // It uses no compiled shader files: a material set to DODSP_Probe simply draws as UnlitGeneric.

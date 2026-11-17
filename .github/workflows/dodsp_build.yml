@@ -12,7 +12,7 @@
 # built from this repo, so lighting work that changes VRAD ships with the game build.
 #
 # The third artifact, dodsp_shaders_win32_Release, is DOD-SP's own shader DLL,
-# game_shader_generic_dodsp.dll. It goes NEXT TO Mapbase's game_shader_dx9.dll in
+# game_shader_dx6.dll. It goes NEXT TO Mapbase's game_shader_dx9.dll in
 # sourcemods\DOD-SP\bin and never replaces it. Uninstall = delete that one file.
 
 name: DOD-SP Build
