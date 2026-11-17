@@ -86,9 +86,7 @@ const float4 g_vMiscParams4					: register( SHADER_SPECIFIC_CONST_9 );
 //		 cMorphTargetTextureDim.z = 4tuples/morph
 const float3 cMorphTargetTextureDim			: register( SHADER_SPECIFIC_CONST_10 );
 const float4 cMorphSubrect					: register( SHADER_SPECIFIC_CONST_11 );
-// DOD-SP: was register( D3DVERTEXTEXTURESAMPLER0, s0 ) - old fxc syntax current compilers reject (X3089);
-// in vs_3_0, s0 is vertex texture sampler 0 (SHADER_VERTEXTEXTURE_SAMPLER0)
-sampler2D morphSampler						: register( s0 );
+sampler2D morphSampler						: register( D3DVERTEXTEXTURESAMPLER0, s0 );
 #endif
 
 struct VS_INPUT
@@ -138,7 +136,7 @@ struct VS_OUTPUT
 	float3 worldVertToEyeVector		: TEXCOORD3;		// Necessary for cubemaps
 #endif
 
-	float4 worldSpaceNormal			: TEXCOORD4;		// Necessary for cubemaps and flashlight. w = DOD-SP: the engine traced the sun as visible (dodsp_sun_ps.h)
+	float3 worldSpaceNormal			: TEXCOORD4;		// Necessary for cubemaps and flashlight
 
 #if defined ( _X360 ) && FLASHLIGHT
 	float4 flashlightSpacePos		: TEXCOORD5;
@@ -204,10 +202,7 @@ VS_OUTPUT main( const VS_INPUT v )
 	worldPos += worldNormal * 0.05f * v.vTexCoord2.z;
 #endif
 	
-	o.worldSpaceNormal.xyz = worldNormal;
-#ifdef DODSP_SUN_VS
-	o.worldSpaceNormal.w = bDynamicLight ? DoDSP_EngineSunVisible() : 0.0f;
-#endif
+	o.worldSpaceNormal = worldNormal;
 
 	// Transform into projection space
 	float4 vProjPos = mul( float4( worldPos, 1 ), cViewProj );

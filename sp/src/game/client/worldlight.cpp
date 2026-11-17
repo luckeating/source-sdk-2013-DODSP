@@ -305,75 +305,6 @@ bool CWorldLights::GetBrightestLightSource(const Vector &vecPosition, Vector &ve
 	return !vecLightBrightness.IsZero();
 }
 
-//-----------------------------------------------------------------------------
-// DOD-SP: helpers for the shadow direction search below.
-//
-// Sun: a prop that can see the sky casts its shadow along the light_environment's
-// actual direction. (Stock code fell back to the shadow_control angle instead, which
-// mappers have to keep in sync by hand - when they differ, shadows point the wrong way.)
-// The sun is placed very far away along its own direction, so the shadow code's
-// "origin - light position" gives the sun direction for every prop.
-//-----------------------------------------------------------------------------
-static void DoDSP_UseSunAsLight( const dworldlight_t *light, Vector &vecLightPos, Vector &vecLightBrightness )
-{
-	vecLightPos = -light->normal * 1.0e6f;
-	vecLightBrightness = light->intensity;
-	if ( vecLightBrightness.IsZero() )
-		vecLightBrightness.Init( 1, 1, 1 );
-}
-
-// Spotlights only count where their cone actually reaches (stock code treated every
-// spotlight as a bare bulb shining in all directions, so a lamp aimed at the floor across
-// the room could still "cast" a prop's shadow).
-static bool DoDSP_SpotlightReaches( const dworldlight_t *light, const Vector &vecDeltaToLight )
-{
-	if ( light->type != emit_spotlight )
-		return true;
-	Vector vecLightToProp = -vecDeltaToLight;
-	if ( vecLightToProp.NormalizeInPlace() < 1.0f )
-		return true;
-	return DotProduct( vecLightToProp, light->normal ) >= light->stopdot2;
-}
-
-bool CWorldLights::GetSunDirection( Vector &vecDir ) const
-{
-#ifdef MAPBASE
-	if ( m_iSunIndex < 0 || !m_pWorldLights )
-		return false;
-	vecDir = m_pWorldLights[m_iSunIndex].normal;
-	return vecDir.NormalizeInPlace() > 0.0f;
-#else
-	return false;
-#endif
-}
-
-// DOD-SP: the sun's intensity exactly as VRAD baked it (linear, lightmap units).
-bool CWorldLights::GetSunColor( Vector &vecColor ) const
-{
-#ifdef MAPBASE
-	if ( m_iSunIndex < 0 || !m_pWorldLights )
-		return false;
-	vecColor = m_pWorldLights[m_iSunIndex].intensity;
-	return true;
-#else
-	return false;
-#endif
-}
-
-int CWorldLights::IsInSunlight( const Vector &vecPosition, const IHandleEntity *pIgnore ) const
-{
-#ifdef MAPBASE
-	if ( m_iSunIndex < 0 || !m_pWorldLights )
-		return -1;
-	const dworldlight_t *light = &m_pWorldLights[m_iSunIndex];
-	trace_t tr;
-	UTIL_TraceLine( vecPosition, vecPosition - light->normal * MAX_TRACE_LENGTH, MASK_OPAQUE, pIgnore, COLLISION_GROUP_NONE, &tr );
-	return ( tr.DidHit() && ( tr.surface.flags & SURF_SKY ) ) ? 1 : 0;
-#else
-	return -1;
-#endif
-}
-
 void CWorldLights::FindBrightestLightSourceOld( const Vector &vecPosition, Vector &vecLightPos, Vector &vecLightBrightness, int nCluster )
 {
 	// Find the size of the PVS for our current position
@@ -420,8 +351,9 @@ void CWorldLights::FindBrightestLightSourceOld( const Vector &vecPosition, Vecto
 				continue;
 			}
 
-			// DOD-SP: the prop sees the sun - shadow along the sun's own direction
-			DoDSP_UseSunAsLight( light, vecLightPos, vecLightBrightness );
+			// Act like we didn't find any valid worldlights, so the shadow
+			// manager uses the default shadow direction instead (should be the
+			// sun direction)
 
 			delete[] pvs;
 
@@ -446,10 +378,6 @@ void CWorldLights::FindBrightestLightSourceOld( const Vector &vecPosition, Vecto
 			//engine->Con_NPrintf(i, "%d: out of PVS", i);
 			continue;
 		}
-
-		// DOD-SP: outside a spotlight's cone it doesn't light us
-		if ( !DoDSP_SpotlightReaches( light, vecDelta ) )
-			continue;
 
 		// Calculate intensity at our position
 		float flRatio = Engine_WorldLightDistanceFalloff(light, vecDelta);
@@ -500,13 +428,14 @@ void CWorldLights::FindBrightestLightSourceNew( const Vector &vecPosition, Vecto
 		// If we didn't hit anything then we have a problem
 		if(tr.DidHit())
 		{
-			// DOD-SP: the ray reached the sky - the prop is in sunlight, so its shadow
-			// follows the sun. (Was "SKY && SKY2D": ordinary toolsskybox faces are only
-			// SURF_SKY - SURF_SKY2D is for toolsskybox2d - so on most maps the sun was
-			// never found and outdoor props took their shadow from some lamp instead.)
-			if ( tr.surface.flags & SURF_SKY )
+			// If we did hit something, and it wasn't the skybox, then skip
+			// this worldlight
+			if((tr.surface.flags & SURF_SKY) && (tr.surface.flags & SURF_SKY2D))
 			{
-				DoDSP_UseSunAsLight( light, vecLightPos, vecLightBrightness );
+				// Act like we didn't find any valid worldlights, so the shadow
+				// manager uses the default shadow direction instead (should be the
+				// sun direction)
+
 				return;
 			}
 		}
@@ -532,10 +461,6 @@ void CWorldLights::FindBrightestLightSourceNew( const Vector &vecPosition, Vecto
 				//engine->Con_NPrintf(i, "%d: out-of-radius (dist: %d, radius: %d)", i, sqrt(flDistSqr), light->radius);
 				continue;
 			}
-
-			// DOD-SP: outside a spotlight's cone it doesn't light us
-			if ( !DoDSP_SpotlightReaches( light, vecDelta ) )
-				continue;
 
 			// Calculate intensity at our position
 			float flRatio = Engine_WorldLightDistanceFalloff(light, vecDelta);

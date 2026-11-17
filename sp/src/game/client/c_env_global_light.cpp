@@ -12,11 +12,6 @@
 #include "materialsystem/itexture.h"
 #endif
 
-#ifdef MAPBASE
-#include "worldlight.h"
-#endif
-void DoDSP_SetGlobalSunShadows( bool bActive );	// clientshadowmgr.cpp
-
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
@@ -31,15 +26,10 @@ ConVar cl_globallight_freeze( "cl_globallight_freeze", "0" );
 ConVar cl_globallight_xoffset( "cl_globallight_xoffset", "0" );
 ConVar cl_globallight_yoffset( "cl_globallight_yoffset", "0" );
 
-// DOD-SP: slope bias 4 (was 16) - 16 pushed shadows off their casters and let the sun leak
-// under walls (Fake-CSM's tested value is 4 too). Not cheats, so they can be tuned in play.
-static ConVar cl_globallight_slopescaledepthbias_shadowmap( "cl_globallight_slopescaledepthbias_shadowmap", "4" );
-static ConVar cl_globallight_shadowfiltersize( "cl_globallight_shadowfiltersize", "0.1" );
-static ConVar cl_globallight_depthbias_shadowmap( "cl_globallight_depthbias_shadowmap", "0.00001" );
-// DOD-SP: 0 = the real shadow map size (r_flashlightdepthres). It used to claim 8192 while
-// the texture was 2048, so the shader filtered for the wrong size.
-static ConVar cl_globallight_depthres( "cl_globallight_depthres", "0", FCVAR_CHEAT );
-extern ConVar r_flashlightdepthres;
+static ConVar cl_globallight_slopescaledepthbias_shadowmap( "cl_globallight_slopescaledepthbias_shadowmap", "16", FCVAR_CHEAT );
+static ConVar cl_globallight_shadowfiltersize( "cl_globallight_shadowfiltersize", "0.1", FCVAR_CHEAT );
+static ConVar cl_globallight_depthbias_shadowmap( "cl_globallight_depthbias_shadowmap", "0.00001", FCVAR_CHEAT );
+static ConVar cl_globallight_depthres( "cl_globallight_depthres", "8192", FCVAR_CHEAT );
 #else
 ConVar cl_globallight_xoffset( "cl_globallight_xoffset", "-800" );
 ConVar cl_globallight_yoffset( "cl_globallight_yoffset", "1600" );
@@ -126,7 +116,6 @@ END_RECV_TABLE()
 
 C_GlobalLight::~C_GlobalLight()
 {
-	DoDSP_SetGlobalSunShadows( false );
 	if ( m_LocalFlashlightHandle != CLIENTSHADOW_INVALID_HANDLE )
 	{
 		g_pClientShadowMgr->DestroyFlashlight( m_LocalFlashlightHandle );
@@ -225,14 +214,6 @@ void C_GlobalLight::ClientThink()
 		FlashlightState_t state;
 
 		Vector vDirection = m_shadowDirection;
-#ifdef MAPBASE
-		// DOD-SP: the map's light_environment owns the sun direction, so this sun's shadows
-		// always line up with the baked ones. (The entity's own angles only matter on a map
-		// with no light_environment.)
-		Vector vWorldSun;
-		if ( g_pWorldLights && g_pWorldLights->GetSunDirection( vWorldSun ) )
-			vDirection = vWorldSun;
-#endif
 		VectorNormalize( vDirection );
 
 		//Vector vViewUp = Vector( 0.0f, 1.0f, 0.0f );
@@ -312,7 +293,7 @@ void C_GlobalLight::ClientThink()
 
 #ifdef MAPBASE
 		//state.m_bDrawShadowFrustum = true; // Don't draw that huge debug thing
-		state.m_flShadowMapResolution = cl_globallight_depthres.GetFloat() > 0 ? cl_globallight_depthres.GetFloat() : r_flashlightdepthres.GetFloat();
+		state.m_flShadowMapResolution = cl_globallight_depthres.GetFloat();
 		state.m_flShadowFilterSize = cl_globallight_shadowfiltersize.GetFloat();
 		state.m_flShadowSlopeScaleDepthBias = cl_globallight_slopescaledepthbias_shadowmap.GetFloat();
 		state.m_flShadowDepthBias = cl_globallight_depthbias_shadowmap.GetFloat();
@@ -362,7 +343,6 @@ void C_GlobalLight::ClientThink()
 	}
 
 	g_pClientShadowMgr->SetShadowFromWorldLightsEnabled( !bSupressWorldLights );
-	DoDSP_SetGlobalSunShadows( bSupressWorldLights );	// DOD-SP: shadow-mapped sun replaces blob shadows
 
 	BaseClass::ClientThink();
 } 

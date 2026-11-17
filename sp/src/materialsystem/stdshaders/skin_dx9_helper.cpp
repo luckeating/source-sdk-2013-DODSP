@@ -12,7 +12,6 @@
 #include "SDK_skin_vs20.inc"
 #include "SDK_skin_ps20b.inc"
 #include "commandbuilder.h"
-#include "dodsp_modelsun.h"
 
 #ifndef _X360
 #include "SDK_skin_vs30.inc"
@@ -425,10 +424,6 @@ void DrawSkin_DX9_Internal( CBaseVSShader *pShader, IMaterialVar** params, IShad
 			pShaderShadow->EnableSRGBRead( SHADER_SAMPLER6, true );
 			userDataSize = 4; // tangent S
 		}
-		else if ( DoDSP_ModelSunAvailable() )
-		{
-			DoDSP_EnableModelSunSampler( pShaderShadow, SHADER_SAMPLER4 );	// DOD-SP: the sun's full shadow map (dodsp_modelsun.h)
-		}
 
 		// Always enable, since flat normal will be bound
 		pShaderShadow->EnableTexture( SHADER_SAMPLER3, true );		// Normal map
@@ -769,14 +764,6 @@ void DrawSkin_DX9_Internal( CBaseVSShader *pShader, IMaterialVar** params, IShad
 			}
 		}
 #endif
-
-		// DOD-SP: the sun per pixel (dodsp_modelsun.h), written on every shader model 3 base-pass draw
-		if ( !bHasFlashlight && DoDSP_ModelSunAvailable() )
-		{
-			DoDSP_SetModelSunState( pShader, pShaderAPI, PSREG_FLASHLIGHT_TO_WORLD_TEXTURE, SHADER_SAMPLER4,
-									lightState.m_bStaticLight ? DODSP_MS_STATIC_LIT
-									: !lightState.HasDynamicLight() ? DODSP_MS_NO_LIGHT_STATE : DODSP_MS_ON );
-		}
 
 		pShader->SetVertexShaderTextureTransform( VERTEX_SHADER_SHADER_SPECIFIC_CONST_0, info.m_nBaseTextureTransform );
 

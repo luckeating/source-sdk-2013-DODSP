@@ -6,7 +6,6 @@
 //=============================================================================//
 
 #include "cbase.h"
-#include "fmtstr.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -36,11 +35,6 @@ public:
 	void	InputEnable( inputdata_t &inputdata );
 	void	InputDisable( inputdata_t &inputdata );
 	void	InputSetTexture( inputdata_t &inputdata );
-
-	// DOD-SP: the engine looks the texture up by its exact path under materials/. A bare name like
-	// "flashlight_border" (the one most often typed) finds nothing and the sun draws with no texture.
-	// One owner for the name: every place that sets it calls this.
-	void	DoDSP_ResolveTextureName();
 	void	InputSetEnableShadows( inputdata_t &inputdata );
 	void	InputSetLightColor( inputdata_t &inputdata );
 #ifdef MAPBASE
@@ -248,7 +242,6 @@ bool CGlobalLight::KeyValue( const char *szKeyName, const char *szValue )
 #else
 		Q_strcpy( m_TextureName.GetForModify(), szValue );
 #endif
-		DoDSP_ResolveTextureName();
 	}
 	else if ( FStrEq( szKeyName, "StartDisabled" ) )
 	{
@@ -315,28 +308,9 @@ void CGlobalLight::InputDisable( inputdata_t &inputdata )
 	m_bEnabled = false;
 }
 
-void CGlobalLight::DoDSP_ResolveTextureName()
-{
-	const char *pszName = m_TextureName.Get();
-	if ( !pszName[0] || filesystem->FileExists( CFmtStr( "materials/%s.vtf", pszName ), "GAME" ) )
-		return;
-
-	CFmtStr effects( "effects/%s", pszName );
-	if ( filesystem->FileExists( CFmtStr( "materials/%s.vtf", effects.Access() ), "GAME" ) )
-	{
-		Warning( "env_global_light: texture \"%s\" not found, using \"%s\" (set Texture Name to that in Hammer)\n", pszName, effects.Access() );
-		Q_strncpy( m_TextureName.GetForModify(), effects.Access(), MAX_PATH );
-	}
-	else
-	{
-		Warning( "INVARIANT: env_global_light: texture \"%s\" not found (materials/%s.vtf) - the sun will draw without it\n", pszName, pszName );
-	}
-}
-
 void CGlobalLight::InputSetTexture( inputdata_t &inputdata )
 {
 	Q_strcpy( m_TextureName.GetForModify(), inputdata.value.String() );
-	DoDSP_ResolveTextureName();
 }
 
 void CGlobalLight::InputSetEnableShadows( inputdata_t &inputdata )

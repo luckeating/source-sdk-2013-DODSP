@@ -68,15 +68,6 @@
 #include "common_flashlight_fxc.h"
 #include "shader_constant_register_map.h"
 
-// DOD-SP: the sun per pixel on models (dodsp_sun_ps.h). Base pass only - it runs on the
-// flashlight's matrix, colour, screen-scale constants and shadow sampler, unused there.
-#if defined( SHADER_MODEL_PS_3_0 ) && !defined( _X360 ) && ( FLASHLIGHT == 0 )
-#define DODSP_MODEL_SUN 1
-#include "dodsp_sun_ps.h"
-#else
-#define DODSP_MODEL_SUN 0
-#endif
-
 const float4 g_SelfIllumTint_and_DetailBlendFactor	: register( PSREG_SELFILLUMTINT );
 #if ( SELFILLUMFRESNEL == 1 )
 const float4 g_SelfIllumScaleBiasExpBrightness		: register( PSREG_SELFILLUM_SCALE_BIAS_EXP );
@@ -141,7 +132,7 @@ sampler EnvmapMaskSampler		: register( s15 );
 struct PS_INPUT
 {
 	float4 baseTexCoordDetailTexCoord							: TEXCOORD0; // xy=base zw=detail
-	float4 lightAtten											: TEXCOORD1; // Scalar light attenuation factors for FOUR lights. w = DOD-SP: the engine traced the sun as visible
+	float3 lightAtten											: TEXCOORD1; // Scalar light attenuation factors for FOUR lights
 	float3 worldVertToEyeVectorXYZ_tangentSpaceVertToEyeVectorZ	: TEXCOORD2;
 	float3x3 tangentSpaceTranspose								: TEXCOORD3;
 	//	     second row											: TEXCOORD4;
@@ -172,7 +163,7 @@ float4 main( PS_INPUT i ) : COLOR
 	float3 vWorldPos = i.worldPos_atten3.xyz;
 	float  atten3 = i.worldPos_atten3.w;
 
-	float4 vLightAtten = float4( i.lightAtten.xyz, atten3 );
+	float4 vLightAtten = float4( i.lightAtten, atten3 );
 
 #if WRINKLEMAP
 	float flWrinkleAmount = saturate( -fWrinkleWeight );					// One of these two is zero
@@ -253,17 +244,6 @@ float4 main( PS_INPUT i ) : COLOR
 
 	float3 diffuseLighting = float3( 1.0f, 1.0f, 1.0f );
 	float3 envMapColor = float3( 0.0f, 0.0f, 0.0f );
-
-#if DODSP_MODEL_SUN
-	// DOD-SP: the vertex shader dropped the engine's sun; it comes back per pixel, shadowed, through
-	// the same diffuse and phong terms the engine's light had
-	float3 vDoDSPToSun = DoDSP_ModelSunToLight( g_FlashlightWorldToTexture );
-	float3 vDoDSPSun;
-	float flDoDSPInside;
-	float flDoDSPVis = DoDSP_ModelSunVisibility( ShadowDepthSampler, vWorldPos, normalize( mul( i.tangentSpaceTranspose, float3( 0.0f, 0.0f, 1.0f ) ) ),
-		i.lightAtten.w, g_FlashlightWorldToTexture, cFlashlightColor, cFlashlightScreenScale, vDoDSPSun, flDoDSPInside );
-	float flDoDSPSunAtten = cFlashlightScreenScale.w * flDoDSPVis;
-#endif
 	if( !bFlashlight )
 	{
 		// Summation of diffuse illumination from all local lights
@@ -274,14 +254,6 @@ float4 main( PS_INPUT i ) : COLOR
 			// These parameters aren't passed by generic shaders:
 			false, 1.0f,
 			bDoDiffuseWarp, DiffuseWarpSampler );
-
-#if DODSP_MODEL_SUN
-		diffuseLighting += cFlashlightColor.rgb * flDoDSPSunAtten *
-			DiffuseTerm( PHONG_HALFLAMBERT, worldSpaceNormal, vDoDSPToSun, false, 1.0f, bDoDiffuseWarp, DiffuseWarpSampler );
-		[branch]
-		if ( cFlashlightScreenScale.y * cFlashlightScreenScale.w > 0.5f )
-			diffuseLighting = DoDSP_ModelSunDebug( cFlashlightScreenScale.y, dot( worldSpaceNormal, vDoDSPToSun ), flDoDSPVis, flDoDSPInside, i.lightAtten.w, vDoDSPSun );
-#endif
 
 		if( bCubemap )
 		{
@@ -357,15 +329,6 @@ float4 main( PS_INPUT i ) : COLOR
 
 			// Outputs
 			specularLighting, rimLighting );
-
-#if DODSP_MODEL_SUN
-		float3 vDoDSPSunSpecular, vDoDSPSunRim;
-		PixelShaderDoSpecularLight( vWorldPos, worldSpaceNormal, fSpecExp, vEyeDir, flDoDSPSunAtten,
-			cFlashlightColor.rgb, vDoDSPToSun, false, 1.0f, bDoSpecularWarp, SpecularWarpSampler,
-			fFresnelRanges, bDoRimLighting, g_RimExponent, vDoDSPSunSpecular, vDoDSPSunRim );
-		specularLighting += vDoDSPSunSpecular;
-		rimLighting += vDoDSPSunRim;
-#endif
 	}
 	else
 	{

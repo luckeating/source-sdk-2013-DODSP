@@ -30,9 +30,7 @@ const float4x4 g_FlashlightWorldToTexture :  register( SHADER_SPECIFIC_CONST_6 )
 const float3 cMorphTargetTextureDim			: register( SHADER_SPECIFIC_CONST_10 );
 const float4 cMorphSubrect					: register( SHADER_SPECIFIC_CONST_11 );
 
-// DOD-SP: was register( D3DVERTEXTEXTURESAMPLER0, s0 ) - old fxc syntax current compilers reject (X3089);
-// in vs_3_0, s0 is vertex texture sampler 0 (SHADER_VERTEXTEXTURE_SAMPLER0)
-sampler2D morphSampler : register( s0 );
+sampler2D morphSampler : register( D3DVERTEXTEXTURESAMPLER0, s0 );
 #endif
 
 
@@ -79,7 +77,7 @@ struct VS_OUTPUT
 	// Stuff that is seen by the pixel shader
 
 	float4 baseTexCoord2_tangentSpaceVertToEyeVectorXY			: TEXCOORD0;
-	float4 lightAtten											: TEXCOORD1;	// w = DOD-SP: the engine traced the sun as visible (dodsp_sun_ps.h)
+	float3 lightAtten											: TEXCOORD1;
 	float4 worldVertToEyeVectorXYZ_tangentSpaceVertToEyeVectorZ	: TEXCOORD2;
 	float3 vWorldNormal											: TEXCOORD3;	// World-space normal
 	float4 vWorldTangent										: TEXCOORD4;
@@ -183,9 +181,6 @@ VS_OUTPUT main( const VS_INPUT v )
 	o.lightAtten.y = GetVertexAttenForLight( worldPos, 1, true );
 	o.lightAtten.z = GetVertexAttenForLight( worldPos, 2, true );
 	o.detailTexCoord_atten3.z = GetVertexAttenForLight( worldPos, 3, true );
-#endif
-#ifdef DODSP_SUN_VS
-	o.lightAtten.w = DoDSP_EngineSunVisible();
 #endif
 
 	// Base texture coordinate transform

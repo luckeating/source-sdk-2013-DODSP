@@ -4493,33 +4493,6 @@ static void DrawOpaqueRenderables_Range( CClientRenderablesList::CEntry *pEntiti
 	}
 }
 
-//-----------------------------------------------------------------------------
-// DOD-SP sun shadows: which casters a shadow depth render draws. The sun keeps two maps - static
-// casters (world, static props: what VRAD already baked) and dynamic casters (everything that
-// moves or was never baked) - so the world shader can darken only where a dynamic caster blocks
-// sun the lightmap still has. One owner: the sun shadow code in clientshadowmgr.cpp sets this
-// around its two renders.
-//-----------------------------------------------------------------------------
-static int s_nDoDSPShadowCasters = DODSP_CASTERS_ALL;
-static int s_nDoDSPCastersDrawn[2];	// [0] static props, [1] entities (incl. brush models, NPCs)
-
-void DoDSP_SetShadowCasterFilter( int nCasters )
-{
-	s_nDoDSPShadowCasters = nCasters;
-	s_nDoDSPCastersDrawn[0] = s_nDoDSPCastersDrawn[1] = 0;
-}
-
-void DoDSP_GetShadowCastersDrawn( int &nStaticProps, int &nEntities )
-{
-	nStaticProps = s_nDoDSPCastersDrawn[0];
-	nEntities = s_nDoDSPCastersDrawn[1];
-}
-
-static int DoDSP_CasterFilter( int nDrawFlags )
-{
-	return ( nDrawFlags & DF_SHADOW_DEPTH_MAP ) ? s_nDoDSPShadowCasters : DODSP_CASTERS_ALL;
-}
-
 void CRendering3dView::DrawOpaqueRenderables( ERenderDepthMode DepthMode )
 {
 	VPROF_BUDGET("CViewRender::DrawOpaqueRenderables", "DrawOpaqueRenderables" );
@@ -4540,22 +4513,6 @@ void CRendering3dView::DrawOpaqueRenderables( ERenderDepthMode DepthMode )
 
 	//bool const bDrawopaquestaticpropslast = r_drawopaquestaticpropslast.GetBool();
 
-	// DOD-SP: sun shadow caster split
-	const int nDoDSPCasters = DoDSP_CasterFilter( m_DrawFlags );
-	if ( nDoDSPCasters == DODSP_CASTERS_STATIC )
-	{
-		for ( int bucket = 0; bucket < RENDER_GROUP_CFG_NUM_OPAQUE_ENT_BUCKETS; ++ bucket )
-		{
-			CClientRenderablesList::CEntry
-				* const pPropsBegin = m_pRenderablesList->m_RenderGroups[ RENDER_GROUP_OPAQUE_STATIC_HUGE + 2 * bucket ],
-				* const pPropsEnd = pPropsBegin + m_pRenderablesList->m_RenderGroupCounts[ RENDER_GROUP_OPAQUE_STATIC_HUGE + 2 * bucket ];
-			s_nDoDSPCastersDrawn[0] += pPropsEnd - pPropsBegin;
-			DrawOpaqueRenderables_DrawStaticProps( pPropsBegin, pPropsEnd, DepthMode );
-		}
-		return;
-	}
-	const bool bDoDSPSkipStaticProps = ( nDoDSPCasters == DODSP_CASTERS_DYNAMIC );
-
 	
 	//
 	// First do the brush models
@@ -4564,7 +4521,6 @@ void CRendering3dView::DrawOpaqueRenderables( ERenderDepthMode DepthMode )
 		CClientRenderablesList::CEntry *pEntitiesBegin, *pEntitiesEnd;
 		pEntitiesBegin = m_pRenderablesList->m_RenderGroups[RENDER_GROUP_OPAQUE_BRUSH];
 		pEntitiesEnd = pEntitiesBegin + m_pRenderablesList->m_RenderGroupCounts[RENDER_GROUP_OPAQUE_BRUSH];
-		s_nDoDSPCastersDrawn[1] += pEntitiesEnd - pEntitiesBegin;
 		DrawOpaqueRenderables_DrawBrushModels( pEntitiesBegin, pEntitiesEnd, DepthMode );
 	}
 
@@ -4728,12 +4684,7 @@ void CRendering3dView::DrawOpaqueRenderables( ERenderDepthMode DepthMode )
 			//if ( bDrawopaquestaticpropslast )
 			{
 				DrawOpaqueRenderables_Range( pEnts[bucket][0], pEnts[bucket][1], DepthMode );
-				s_nDoDSPCastersDrawn[1] += pEnts[bucket][1] - pEnts[bucket][0];
-				if ( !bDoDSPSkipStaticProps )
-				{
-					DrawOpaqueRenderables_DrawStaticProps( pProps[bucket][0], pProps[bucket][1], DepthMode );
-					s_nDoDSPCastersDrawn[0] += pProps[bucket][1] - pProps[bucket][0];
-				}
+				DrawOpaqueRenderables_DrawStaticProps( pProps[bucket][0], pProps[bucket][1], DepthMode );
 			}
 			/*else
 			{
@@ -4749,7 +4700,6 @@ void CRendering3dView::DrawOpaqueRenderables( ERenderDepthMode DepthMode )
 	// Draw NPCs now
 	//
 	DrawOpaqueRenderables_Range( arrRenderEntsNpcsFirst.Base(), arrRenderEntsNpcsFirst.Base() + numNpcs, DepthMode );
-	s_nDoDSPCastersDrawn[1] += numNpcs;
 
 	//
 	// Ropes and particles
@@ -5744,8 +5694,7 @@ void CShadowDepthView::Draw()
 
 	{
 		VPROF_BUDGET( "DrawWorld", VPROF_BUDGETGROUP_SHADOW_DEPTH_TEXTURING );
-		if ( DoDSP_CasterFilter( m_DrawFlags ) != DODSP_CASTERS_DYNAMIC )	// DOD-SP: the world is a static caster
-			DrawWorld( 0.0f );
+		DrawWorld( 0.0f );
 	}
 
 	// Draw opaque and translucent renderables with appropriate override materials
@@ -6223,8 +6172,7 @@ void CBaseWorldView::SSAO_DepthPass()
 
 	{
 		VPROF_BUDGET( "DrawWorld", VPROF_BUDGETGROUP_SHADOW_DEPTH_TEXTURING );
-		if ( DoDSP_CasterFilter( m_DrawFlags ) != DODSP_CASTERS_DYNAMIC )	// DOD-SP: the world is a static caster
-			DrawWorld( 0.0f );
+		DrawWorld( 0.0f );
 	}
 
 	// Draw opaque and translucent renderables with appropriate override materials
