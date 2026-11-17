@@ -219,7 +219,11 @@ If you learn something like this, add it here in the same commit as the fix.
   Engine facts "Soft shadows"; the INTZ probe code was removed - the cascades are INTZ now). Files:
   dodsp_sun_common_fxc.h, dodsp_sun_fxc.h, dodsp_modelsun_{vs,ps}_fxc.h, the four sun PS .fxc + .inc
   (combo removed), dodsp_sun_shader.cpp/.h, the three helpers, c_dodsp_sun_cascades.cpp, dodsp_shaders.h
-  ("4b"), dodsp_build_shaders.py. Undo: the 4d shader DLL/.vcs + client.dll (build 44168681578). Replaces the saved 3x3 PCF
+  ("4b"), dodsp_build_shaders.py. Undo: the 4d shader DLL/.vcs + client.dll (build 44168681578).
+  TESTED 2026-11-17 (build 44176044660): works; owner's best look is `dodsp_sun_softness 0.3` with the 2-degree
+  default (= 0.6 degree sun radius). Softer than that "really degrades quality": 16 taps spread over a wider
+  radius with a per-texel random turn = grain. Next: 4b-2 smooth taps (bilinear 2x2 compares) instead of
+  more noise, and 0.6 degrees as the default. Replaces the saved 3x3 PCF
   fix (`dodsp_sun_filter 3` made the saw-tooth worse). Per pixel: blocker search in the cascade ->
   penumbra width = (receiver - blocker depth) x sun angular size -> ~16-tap rotated Poisson PCF.
   Sharp at contact, soft far from the caster, no stair-steps. The sun's size has ONE owner: the
