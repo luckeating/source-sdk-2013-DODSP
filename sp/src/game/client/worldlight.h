@@ -27,6 +27,10 @@ public:
 	// Find the brightest light source at a point
 	//-------------------------------------------------------------------------
 	bool GetBrightestLightSource(const Vector &vecPosition, Vector &vecLightPos, Vector &vecLightBrightness);
+
+	// DOD-SP: the sun (light_environment) as VRAD wrote it - the way its light travels.
+	// False when the map has no sun.
+	bool GetSunDirection( Vector &vecDir ) const;
 	void FindBrightestLightSourceOld( const Vector &vecPosition, Vector &vecLightPos, Vector &vecLightBrightness, int nCluster );
 #ifdef MAPBASE
 	void FindBrightestLightSourceNew(const Vector &vecPosition, Vector &vecLightPos, Vector &vecLightBrightness, int nCluster);

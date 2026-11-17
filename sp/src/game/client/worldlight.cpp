@@ -309,6 +309,22 @@ void CWorldLights::LevelInitPreEntity()
 }
 
 //-----------------------------------------------------------------------------
+// DOD-SP: the sun's direction (the way its light travels), straight from the BSP's world lights
+//-----------------------------------------------------------------------------
+bool CWorldLights::GetSunDirection( Vector &vecDir ) const
+{
+	for ( int i = 0; i < m_nWorldLights; i++ )
+	{
+		if ( m_pWorldLights[i].type == emit_skylight )
+		{
+			vecDir = m_pWorldLights[i].normal;
+			return true;
+		}
+	}
+	return false;
+}
+
+//-----------------------------------------------------------------------------
 // Purpose: find the brightest light source at a point
 //-----------------------------------------------------------------------------
 bool CWorldLights::GetBrightestLightSource(const Vector &vecPosition, Vector &vecLightPos, Vector &vecLightBrightness)

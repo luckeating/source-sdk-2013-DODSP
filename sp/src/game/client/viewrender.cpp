@@ -82,6 +82,8 @@
 // Projective textures
 #include "C_Env_Projected_Texture.h"
 
+#include "dodsp/c_dodsp_sun_cascades.h"
+
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
@@ -1465,6 +1467,12 @@ void CViewRender::ViewDrawScene( bool bDrew3dSkybox, SkyboxVisibility_t nSkyboxV
 #ifdef ASW_PROJECTED_TEXTURES
 		CMatRenderContextPtr pRenderContext( materials );
 #endif
+	}
+
+	// DOD-SP: the sun's cascaded shadow maps (dodsp/c_dodsp_sun_cascades.cpp), before the scene
+	if ( viewID == VIEW_MAIN )
+	{
+		DoDSP_RenderSunCascades( view );
 	}
 
 	m_BaseDrawFlags = baseDrawFlags;
