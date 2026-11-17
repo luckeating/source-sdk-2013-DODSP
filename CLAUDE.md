@@ -174,8 +174,15 @@ If you learn something like this, add it here in the same commit as the fix.
   for art direction. Blur width in world units, so cascade seams match. Risk to check FIRST: the
   NVIDIA hardware-compare path can't return raw depth for the blocker search -> cascades need a
   readable depth format. Long shader build (~40 min): warn first. Pixel constants: stay inside c0..c31.
-- Stage 5: deferred lamps (can reuse the 4b filter). Stage 6: extras (cubemap normalization /
-  specular occlusion, the owner's idea).
+- **Stage 4c - blob shadows become contact shadows** (client only, ~12 min build). The engine's
+  render-to-texture prop shadows point along `shadow_control` and look like holes in shade, and darken
+  twice under props in sunlit patches. While `dodsp_sun_baked 0`: straight down, ~24-36 units long,
+  lighter. One owner: the sun-mode code sets them, and puts the map's `shadow_control` values back on
+  `dodsp_sun_baked 1`. INVARIANT watchdog line if they drift from what the sun mode wants.
+- Stage 5: deferred lamps (can reuse the 4b filter).
+- Stage 6: extras. **SSAO** (screen-space ambient occlusion: contact darkening from what's on screen),
+  and then blob shadows OFF entirely while the per-pixel sun draws (agreed 2026-11-17). Also cubemap
+  normalization / specular occlusion (the owner's idea).
 
 ## Open known issues (lighting)
 - The door entity doesn't cast into the sun cascades.
