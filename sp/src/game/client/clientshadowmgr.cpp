@@ -3130,9 +3130,17 @@ void CClientShadowMgr::BuildFlashlight( ClientShadowHandle_t handle )
 
 	// DOD-SP: the darken-only sun lights nothing itself - project it onto no surfaces and no models
 	// (matrices still update) and let the world shaders darken from its shadow maps instead.
+	// INVARIANT: a darken-only sun has no receivers. Projecting onto no leaves only clears world
+	// surfaces; models stay on the light, and the leaf system keeps the leaves of the last additive
+	// frame (dodsp_sun_darken switched at runtime), re-adding every model that moves into them -
+	// lit by a sun whose own shadow map is no longer drawn, i.e. fullbright. So clear all three,
+	// and AddShadowToReceiver refuses this light outright.
 	if ( DoDSP_SunDarkens( shadowmgr->GetFlashlightState( shadow.m_ShadowHandle ) ) )
 	{
 		shadowmgr->ProjectFlashlight( shadow.m_ShadowHandle, shadow.m_WorldToShadow, 0, NULL );
+		shadowmgr->EnableShadow( shadow.m_ShadowHandle, false );	// clears models and surfaces (as stock does below)
+		shadowmgr->EnableShadow( shadow.m_ShadowHandle, true );
+		ClientLeafSystem()->ProjectFlashlight( shadow.m_ClientLeafShadowHandle, 0, NULL );
 		return;
 	}
 
@@ -4046,6 +4054,11 @@ void CClientShadowMgr::AddShadowToReceiver( ClientShadowHandle_t handle,
 
 	// Don't bother if this renderable doesn't receive shadows or light from flashlights
 	if( !pRenderable->ShouldReceiveProjectedTextures( SHADOW_FLAGS_PROJECTED_TEXTURE_TYPE_MASK ) )
+		return;
+
+	// DOD-SP INVARIANT: the darken-only sun lights no receiver (see BuildFlashlight). One gate for
+	// every path that adds receivers: the leaf system, attached children, a target entity.
+	if ( ( shadow.m_Flags & SHADOW_FLAGS_FLASHLIGHT ) && DoDSP_SunDarkens( shadowmgr->GetFlashlightState( shadow.m_ShadowHandle ) ) )
 		return;
 
 	// Cull if the origin is on the wrong side of a shadow clip plane....
