@@ -164,6 +164,19 @@ If you learn something like this, add it here in the same commit as the fix.
 - Undo: put the 3b4 DLL and .vcs files back (or `dodsp_sunshader 0` + restart: everything stays on
   Mapbase's shaders).
 
+## Lighting roadmap (one stage at a time)
+- Stages 1-3 done (3b4). Stage 4 (models' per-pixel sun) built; settled-prop fix in 8a582ff.
+- **Stage 4b - soft sun shadows (contact hardening, PCSS)**, agreed 2026-11-17. Replaces the saved 3x3 PCF
+  fix (`dodsp_sun_filter 3` made the saw-tooth worse). Per pixel: blocker search in the cascade ->
+  penumbra width = (receiver - blocker depth) x sun angular size -> ~16-tap rotated Poisson PCF.
+  Sharp at contact, soft far from the caster, no stair-steps. The sun's size has ONE owner: the
+  light_environment's SunSpreadAngle (what VRAD uses for the baked soft sun), plus a `dodsp_` multiplier
+  for art direction. Blur width in world units, so cascade seams match. Risk to check FIRST: the
+  NVIDIA hardware-compare path can't return raw depth for the blocker search -> cascades need a
+  readable depth format. Long shader build (~40 min): warn first. Pixel constants: stay inside c0..c31.
+- Stage 5: deferred lamps (can reuse the 4b filter). Stage 6: extras (cubemap normalization /
+  specular occlusion, the owner's idea).
+
 ## Open known issues (lighting)
 - The door entity doesn't cast into the sun cascades.
 - Black front steps = the HL2-materials issue above (fixed in the client build after 44117643276). The half-black CAFÉ sign is an overlay - the
@@ -171,5 +184,5 @@ If you learn something like this, add it here in the same commit as the fix.
 - Cubemaps (owner: "fix later"): after a compile, before `buildcubemaps`, envmapped props show noise
   (the material points at cubemap images the compile reserved but nothing has filled). Idea: fall
   back to the default cubemap when a map's cubemaps aren't built, and say so at load.
-- Pending checks: FPS with `dodsp_sun_baked` 1 vs 0; `dodsp_sun_filter 3` against edge saw-tooth.
+- Pending checks: FPS with `dodsp_sun_baked` 1 vs 0 (and again after 4b's extra taps).
 - Confirmed 2026-11-17: `buildcubemaps` no longer crashes with the sun shaders loaded (3b4).
