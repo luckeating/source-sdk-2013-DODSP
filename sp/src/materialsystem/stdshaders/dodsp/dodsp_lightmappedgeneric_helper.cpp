@@ -683,7 +683,7 @@ void DrawLightmappedGenericFlashlight_DX9_Internal( CBaseVSShader *pShader, IMat
 		atten[2] = flashlightState.m_fQuadraticAtten;
 		atten[3] = flashlightState.m_FarZ;
 		/*atten[3] = flashlightState.m_FarZAtten;*/
-		pShaderAPI->SetPixelShaderConstant( PSREG_FLASHLIGHT_ATTENUATION, atten, 1 );
+		pShaderAPI->SetPixelShaderConstant( PSREG_FLASHLIGHT_ATTENUATION, atten, 1 );	// dodsp-lint: flashlight pass only (DrawLightmappedGenericFlashlight)
 
 		float lightPos[4];
 		lightPos[0] = flashlightState.m_vecLightOrigin[0];
@@ -695,7 +695,7 @@ void DrawLightmappedGenericFlashlight_DX9_Internal( CBaseVSShader *pShader, IMat
 		float specParams[4];
 		params[vars.m_nPhongFresnelRanges]->GetVecValue( specParams, 3 );
 		specParams[3] = params[vars.m_nPhongBoost]->GetFloatValue();
-		pShaderAPI->SetPixelShaderConstant( PSREG_FRESNEL_SPEC_PARAMS, specParams, 1 );
+		pShaderAPI->SetPixelShaderConstant( PSREG_FRESNEL_SPEC_PARAMS, specParams, 1 );	// dodsp-lint: flashlight pass only (DrawLightmappedGenericFlashlight)
 
 		pShader->SetFlashlightVertexShaderConstants( vars.m_bBump, vars.m_nBumpTransform, bDetail, vars.m_nDetailScale,  bSeamless ? false : true );
 	}

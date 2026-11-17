@@ -18,9 +18,10 @@ Fails the build (exit 1) when an INVARIANT breaks:
     even on SM3 cards, and a write above that overflows its storage (found 2026-11-15, lost in the
     revert to stock, re-found 2026-11-17 as the buildcubemaps crash). Checked for every listed pixel
     shader and every header it includes, and for every literal pixel-constant write in our C++
-  - the sun's registers in dodsp_sun_fxc.h and DODSP_PSREG_* in dodsp_sun_shader.cpp agree, and no
-    other literal pixel-constant write in our C++ lands on them (a line that only runs on Xbox 360
-    says so with a "dodsp-lint: x360 only" comment)
+  - the brush sun's registers (dodsp_sun_fxc.h vs DODSP_PSREG_*) and the model sun's (each model
+    pixel shader's g_DoDSP_MSun0..3 and dodsp_modelsun_vs_fxc.h vs DODSP_MSUN_* in dodsp_sun_shader.h)
+    agree, and no other pixel-constant write in the helper that draws them (literal or PSREG_ name)
+    lands on them - unless the line says "dodsp-lint: x360 only" or "dodsp-lint: flashlight pass only"
 
 usage: python dodsp_build_shaders.py <out_dir>
 """
@@ -116,7 +117,7 @@ def check_constants(sources):
                             fail("%s:%d (in pixel shader %s) uses c%s - only c0..c31 exist in this engine"
                                  % (os.path.basename(path), n, src, m.group(1)))
 
-    # The sun's slots: shader side vs C++ side
+    # The brush sun's slots: shader side vs C++ side
     with open(os.path.join(STDSHADERS, "dodsp_sun_fxc.h"), encoding="latin-1") as f:
         sun_regs = sorted(int(r) for r in re.findall(r"g_DoDSP_\w+\s*:\s*register\s*\(\s*c(\d+)\s*\)",
                                                      strip_comments(f.read())))
@@ -126,24 +127,79 @@ def check_constants(sources):
     if first is None or count is None or sun_regs != list(range(first, first + count)):
         fail("sun registers disagree: dodsp_sun_fxc.h uses %s, dodsp_sun_shader.cpp says c%s x %s"
              % (sun_regs, first, count))
-    sun_slots = set(sun_regs)
+    brush_slots = set(sun_regs)
 
-    # Every literal pixel-constant write in our C++
-    write_re = re.compile(r"SetPixelShaderConstant\w*\s*\(\s*(\d+)\s*(?:,\s*[^,;]*?(?:,\s*(\d+))?)?\s*\)")
+    # The model sun's slots (stage 4): each model pixel shader declares g_DoDSP_MSun0..3 itself
+    with open(os.path.join(STDSHADERS, "dodsp", "dodsp_sun_shader.h"), encoding="latin-1") as f:
+        menum = dict((k, int(v)) for k, v in re.findall(r"\bDODSP_MSUN_(\w+)\s*=\s*(\d+)", strip_comments(f.read())))
+    model_ps = {"dodsp_vertexlit_and_unlit_generic_ps30.fxc": "PSREG_PLAIN",
+                "dodsp_vertexlit_and_unlit_generic_bump_ps30.fxc": "PSREG_BUMP",
+                "dodsp_skin_ps30.fxc": "PSREG_SKIN"}
+    model_slots = {}
+    for fxc, key in model_ps.items():
+        if fxc not in sources:
+            fail("model shader %s is not in dodsp_shaders_dx9_30.txt" % fxc)
+            continue
+        with open(os.path.join(STDSHADERS, fxc), encoding="latin-1") as f:
+            regs = sorted(int(r) for r in re.findall(r"g_DoDSP_MSun\d\s*:\s*register\s*\(\s*c(\d+)\s*\)", strip_comments(f.read())))
+        want = list(range(menum.get(key, -99), menum.get(key, -99) + menum.get("PSREG_COUNT", 0)))
+        if regs != want:
+            fail("model sun registers disagree: %s declares %s, dodsp_sun_shader.h DODSP_MSUN_%s says %s" % (fxc, regs, key, want))
+        model_slots[key] = set(want)
+    with open(os.path.join(STDSHADERS, "dodsp_modelsun_vs_fxc.h"), encoding="latin-1") as f:
+        vregs = sorted(int(r) for r in re.findall(r"register\s*\(\s*c(\d+)\s*\)", strip_comments(f.read())))
+    vwant = list(range(menum.get("VSREG", -99), menum.get("VSREG", -99) + menum.get("VSREG_COUNT", 0)))
+    if vregs != vwant:
+        fail("model sun vertex registers disagree: dodsp_modelsun_vs_fxc.h uses %s, dodsp_sun_shader.h says %s" % (vregs, vwant))
+    if any(r <= 220 or r > 255 for r in vregs):
+        fail("model sun vertex registers %s must sit in c221..c255 (bones end at c216, c217..c220 are the engine's)" % vregs)
+
+    # Which C++ file may touch which slots (a write onto them is allowed only on lines tagged
+    # "dodsp-lint: x360 only" or "dodsp-lint: flashlight pass only")
+    protected = {
+        "dodsp_lightmappedgeneric_helper.cpp": ("the brush sun (dodsp_sun_fxc.h)", brush_slots),
+        "dodsp_vertexlitgeneric_helper.cpp": ("the model sun (plain c15.., bump c22..)",
+                                              model_slots.get("PSREG_PLAIN", set()) | model_slots.get("PSREG_BUMP", set())),
+        "dodsp_skin_helper.cpp": ("the model sun (skin)", model_slots.get("PSREG_SKIN", set())),
+    }
+
+    # PSREG_* names used by Mapbase's helpers -> numbers
+    psreg = {}
+    for hdr in ("cpp_shader_constant_register_map.h", "shader_constant_register_map.h"):
+        path = os.path.join(STDSHADERS, hdr)
+        if os.path.exists(path):
+            with open(path, encoding="latin-1") as f:
+                for name, val in re.findall(r"^\s*#define\s+(PSREG_\w+)\s+(\w+)", strip_comments(f.read()), re.M):
+                    psreg[name] = val
+    def resolve(tok):
+        for _ in range(4):
+            if tok.isdigit():
+                return int(tok)
+            if re.match(r"^c\d+$", tok):                   # the HLSL side of the same map: "c15"
+                return int(tok[1:])
+            tok = psreg.get(tok, "")
+        return None
+
+    # Every pixel-constant write in our C++ (literal numbers and PSREG_ names)
+    write_re = re.compile(r"SetPixelShaderConstant\w*\s*\(\s*(\w+)\s*(?:,\s*[^,;]*?(?:,\s*(\d+))?)?\s*\)")
     for cpp in glob.glob(os.path.join(STDSHADERS, "dodsp", "*.cpp")):
+        base = os.path.basename(cpp)
         with open(cpp, encoding="latin-1") as f:
             raw = f.read()
         raw_lines = raw.split("\n")
+        owner, slots = protected.get(base, ("", set()))
         for n, line in enumerate(strip_comments(raw).split("\n"), 1):
             for m in write_re.finditer(line):
-                reg = int(m.group(1))
+                reg = resolve(m.group(1))
+                if reg is None:
+                    continue                                    # a variable (e.g. the sun's own register enum)
                 cnt = int(m.group(2)) if m.group(2) else 1
                 if reg + cnt > MAX_PS_CONST:
-                    fail("%s:%d writes pixel constant c%d (x%d) - only c0..c31 exist in this engine"
-                         % (os.path.basename(cpp), n, reg, cnt))
-                if sun_slots & set(range(reg, reg + cnt)) and "dodsp-lint: x360 only" not in raw_lines[n - 1]:
-                    fail("%s:%d writes c%d, one of the sun's slots (dodsp_sun_fxc.h owns c%d..c%d)"
-                         % (os.path.basename(cpp), n, reg, min(sun_slots), max(sun_slots)))
+                    fail("%s:%d writes pixel constant c%d (x%d) - only c0..c31 exist in this engine" % (base, n, reg, cnt))
+                tagged = "dodsp-lint: x360 only" in raw_lines[n - 1] or "dodsp-lint: flashlight pass only" in raw_lines[n - 1]
+                if slots & set(range(reg, reg + cnt)) and not tagged:
+                    fail("%s:%d writes c%d, one of %s's slots - tag the line if it only runs on Xbox 360 or in the flashlight pass"
+                         % (base, n, reg, owner))
 
 
 def main():

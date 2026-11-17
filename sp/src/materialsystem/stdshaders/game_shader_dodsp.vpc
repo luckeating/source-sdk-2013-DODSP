@@ -72,6 +72,9 @@ $Project "Shaders (DOD-SP)"
 			$File	"dodsp\dodsp_lightmappedgeneric.cpp"
 			$File	"dodsp\dodsp_worldvertextransition.cpp"
 			$File	"dodsp\dodsp_lightmappedgeneric_helper.cpp"
+			$File	"dodsp\dodsp_vertexlitgeneric.cpp"
+			$File	"dodsp\dodsp_vertexlitgeneric_helper.cpp"
+			$File	"dodsp\dodsp_skin_helper.cpp"
 		}
 	}
 
@@ -92,6 +95,14 @@ $Project "Shaders (DOD-SP)"
 		$File	"dodsp\dodsp_lightmappedgeneric_flashlight_ps30.inc"
 		$File	"dodsp\dodsp_sun_shader.h"
 		$File	"lightmappedgeneric_dx9_helper.h"
+		$File	"vertexlitgeneric_dx9_helper.h"
+		$File	"skin_dx9_helper.h"
+		$File	"dodsp\dodsp_vertexlit_and_unlit_generic_vs30.inc"
+		$File	"dodsp\dodsp_vertexlit_and_unlit_generic_ps30.inc"
+		$File	"dodsp\dodsp_vertexlit_and_unlit_generic_bump_vs30.inc"
+		$File	"dodsp\dodsp_vertexlit_and_unlit_generic_bump_ps30.inc"
+		$File	"dodsp\dodsp_skin_vs30.inc"
+		$File	"dodsp\dodsp_skin_ps30.inc"
 	}
 
 	// The .fxc files listed in dodsp_shaders_dx9_30.txt are compiled to shaders\fxc\dodsp_*.vcs by

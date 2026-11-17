@@ -62,7 +62,7 @@ namespace
 	{
 		const char *m_pszStock;		// resolved shader name the engine reports
 		const char *m_pszSDK;		// Mapbase twin
-		const char *m_pszDoDSP;		// DOD-SP twin with the sun drawn per pixel, or NULL (not yet: models are stage 4)
+		const char *m_pszDoDSP;		// DOD-SP twin with the sun drawn per pixel
 		bool		m_bSunOnly;		// already on Mapbase's shader (its .vmt names SDK_): moved only to the sun twin
 	};
 
@@ -73,8 +73,8 @@ namespace
 		{ "LightmappedGeneric_DX9",		"SDK_LightmappedGeneric",		DODSP_SHADER_LMG,	false },
 		{ "WorldVertexTransition",		"SDK_WorldVertexTransition",	DODSP_SHADER_WVT,	false },
 		{ "WorldVertexTransition_DX9",	"SDK_WorldVertexTransition",	DODSP_SHADER_WVT,	false },
-		{ "VertexLitGeneric",			"SDK_VertexLitGeneric",			NULL,				false },
-		{ "VertexLitGeneric_DX9",		"SDK_VertexLitGeneric",			NULL,				false },
+		{ "VertexLitGeneric",			"SDK_VertexLitGeneric",			DODSP_SHADER_VLG,	false },	// stage 4: models
+		{ "VertexLitGeneric_DX9",		"SDK_VertexLitGeneric",			DODSP_SHADER_VLG,	false },
 		// Materials whose .vmt already names Mapbase's shader (the HL2 materials in DOD-SP\content). Without
 		// these they never got the per-pixel sun, so with dodsp_sun_baked 0 they lost the sun completely and
 		// drew dark (2026-11-17, the cafe steps). Only used when DOD-SP's sun shaders are in use.
@@ -82,6 +82,8 @@ namespace
 		{ "SDK_LightmappedGeneric_DX9",	"SDK_LightmappedGeneric",		DODSP_SHADER_LMG,	true },
 		{ "SDK_WorldVertexTransition",	"SDK_WorldVertexTransition",	DODSP_SHADER_WVT,	true },
 		{ "SDK_WorldVertexTransition_DX9", "SDK_WorldVertexTransition", DODSP_SHADER_WVT,	true },
+		{ "SDK_VertexLitGeneric",		"SDK_VertexLitGeneric",			DODSP_SHADER_VLG,	true },
+		{ "SDK_VertexLitGeneric_DX9",	"SDK_VertexLitGeneric",			DODSP_SHADER_VLG,	true },
 	};
 
 	// Engine-internal materials keep exactly what the engine gave them.
@@ -253,7 +255,7 @@ public:
 		m_bUseDoDSP = false;
 		Q_strncpy( m_szNoDoDSP, "not decided yet", sizeof( m_szNoDoDSP ) );
 		for ( int i = 0; i < SWAP_NUM; i++ )
-			m_bTargetLoaded[i] = false;
+			m_bTargetLoaded[i] = m_bDoDSPTwin[i] = false;
 		m_flNextSweep = 0.0f;
 		ResetCounts();
 	}
@@ -276,8 +278,8 @@ public:
 			// has no direct sun at all. Say so at load instead of leaving a dark surface to be hunted.
 			int nNoSun = CountNoSun( false );
 			if ( nNoSun )
-				Warning( "INVARIANT: DOD-SP sun: %d world material%s can't take the per-pixel sun - with dodsp_sun_baked 0 "
-						 "they get no direct sun and draw dark (dodsp_sdkshaders_report lists them)\n", nNoSun, nNoSun == 1 ? "" : "s" );
+				Warning( "INVARIANT: DOD-SP sun: %d world/model material%s can't take the per-pixel sun (a feature DOD-SP's shaders leave "
+						 "out) - with dodsp_sun_baked 0 they may get no direct sun (dodsp_sdkshaders_report lists them)\n", nNoSun, nNoSun == 1 ? "" : "s" );
 		}
 		else
 			Msg( "DOD-SP sun shaders: not used (%s)\n", m_szNoDoDSP );
@@ -329,7 +331,7 @@ public:
 	}
 
 private:
-	// Lit world materials still on Mapbase's brush shaders, i.e. without the per-pixel sun
+	// Lit world and model materials still on Mapbase's shaders, i.e. without the per-pixel sun
 	int CountNoSun( bool bPrint )
 	{
 		int nBack = 0;
@@ -339,7 +341,8 @@ private:
 			if ( !pMat || !pMat->IsPrecached() || pMat->IsErrorMaterial() || SkipByName( pMat->GetName() ) )
 				continue;
 			const char *pszShader = pMat->GetShaderName();
-			if ( IsShaderOrDX9( pszShader, "SDK_LightmappedGeneric" ) || IsShaderOrDX9( pszShader, "SDK_WorldVertexTransition" ) )
+			if ( IsShaderOrDX9( pszShader, "SDK_LightmappedGeneric" ) || IsShaderOrDX9( pszShader, "SDK_WorldVertexTransition" ) ||
+				 IsShaderOrDX9( pszShader, "SDK_VertexLitGeneric" ) )
 			{
 				if ( bPrint && nBack < 40 )
 					Msg( "  no per-pixel sun: %-48s %s\n", pMat->GetName(), pszShader );
@@ -385,6 +388,10 @@ private:
 			for ( int i = 0; i < SWAP_NUM; i++ )
 			{
 				m_bTargetLoaded[i] = DoDSP_ShaderExists( s_Swaps[i].m_pszSDK );
+				m_bDoDSPTwin[i] = m_bUseDoDSP && s_Swaps[i].m_pszDoDSP && DoDSP_ShaderExists( s_Swaps[i].m_pszDoDSP );
+				if ( m_bUseDoDSP && s_Swaps[i].m_pszDoDSP && !m_bDoDSPTwin[i] )
+					Msg( "DOD-SP sun shaders: %s isn't in this %s.dll (older build?) - %s materials stay on %s\n",
+						 s_Swaps[i].m_pszDoDSP, DODSP_SHADER_DLL_NAME, s_Swaps[i].m_pszStock, s_Swaps[i].m_pszSDK );
 				if ( !m_bTargetLoaded[i] )
 					Warning( "INVARIANT: DOD-SP SDK shaders: %s is not loaded - %s materials stay stock (Mapbase shader DLL missing?)\n",
 							 s_Swaps[i].m_pszSDK, s_Swaps[i].m_pszStock );
@@ -402,7 +409,7 @@ private:
 			const ShaderSwap_t *pSwap = FindSwap( pMat->GetShaderName() );
 			if ( !pSwap || !m_bTargetLoaded[pSwap - s_Swaps] || SkipByName( pMat->GetName() ) )
 				continue;
-			if ( pSwap->m_bSunOnly && !m_bUseDoDSP )
+			if ( pSwap->m_bSunOnly && !m_bDoDSPTwin[pSwap - s_Swaps] )
 				continue;	// already on Mapbase's shader, and no sun twin to move it to
 			if ( m_Refused.Find( pMat ) != m_Refused.InvalidIndex() )
 				continue;
@@ -431,7 +438,7 @@ private:
 		MatSig_t before, after;
 		TakeSig( pMat, before );
 
-		const char *pszTarget = ( m_bUseDoDSP && swap.m_pszDoDSP ) ? swap.m_pszDoDSP : swap.m_pszSDK;
+		const char *pszTarget = m_bDoDSPTwin[&swap - s_Swaps] ? swap.m_pszDoDSP : swap.m_pszSDK;
 
 		KeyValues *pStockKV = pKV->MakeCopy();
 		pKV->SetName( pszTarget );
@@ -478,6 +485,7 @@ private:
 	bool m_bInLevel;
 	bool m_bCheckedShaders;
 	bool m_bTargetLoaded[SWAP_NUM];
+	bool m_bDoDSPTwin[SWAP_NUM];		// the DOD-SP sun twin is in use for this swap
 	float m_flNextSweep;
 	int m_nMoved[3];
 	int m_nNoFile;

@@ -35,9 +35,7 @@
 #ifndef DODSP_SUN_FXC_H
 #define DODSP_SUN_FXC_H
 
-sampler DoDSP_CascadeNear			: register( s13 );
-sampler DoDSP_CascadeMid			: register( s14 );
-sampler DoDSP_CascadeFar			: register( s15 );
+#include "dodsp_sun_common_fxc.h"	// samplers s13..s15, depth compare, filter, cascade pick
 
 const float4 g_DoDSP_SunColor		: register( c13 );
 const float4 g_DoDSP_AxisR			: register( c14 );
@@ -48,27 +46,6 @@ const float4 g_DoDSP_CascadeMid		: register( c18 );
 const float4 g_DoDSP_CascadeFar		: register( c19 );
 const float4 g_DoDSP_ToSun			: register( c20 );
 
-// 1 = lit, 0 = shadowed, for one depth-map texel neighbourhood
-float DoDSP_Compare( sampler s, float2 uv, float z )
-{
-#if DODSP_SUNFILTER == 0
-	return tex2Dproj( s, float4( uv, z, 1.0f ) ).x;		// hardware compare, bilinear between 4 texels
-#else
-	return ( z <= tex2D( s, uv ).x ) ? 1.0f : 0.0f;
-#endif
-}
-
-// Four taps half a filter-spread apart: with the hardware compare each tap is already a 2x2
-// bilinear compare, so the edge is about 3 texels soft.
-float DoDSP_Filter( sampler s, float2 uv, float z )
-{
-	float o = 0.5f * g_DoDSP_ToSun.w * g_DoDSP_AxisU.w;
-	return 0.25f * ( DoDSP_Compare( s, uv + float2( -o, -o ), z ) +
-					 DoDSP_Compare( s, uv + float2(  o, -o ), z ) +
-					 DoDSP_Compare( s, uv + float2( -o,  o ), z ) +
-					 DoDSP_Compare( s, uv + float2(  o,  o ), z ) );
-}
-
 // Where a world point lands in one cascade: xy = texture, z = depth (minus bias), w = 1 if inside
 float4 DoDSP_CascadeCoord( float4 c, float3 worldPos, float3 geoNormal )
 {
@@ -76,29 +53,17 @@ float4 DoDSP_CascadeCoord( float4 c, float3 worldPos, float3 geoNormal )
 	float u = dot( p, g_DoDSP_AxisR.xyz ) * c.x + c.y;
 	float v = -dot( p, g_DoDSP_AxisU.xyz ) * c.x + c.z;
 	float z = dot( p, g_DoDSP_AxisF.xyz ) + g_DoDSP_AxisR.w - g_DoDSP_AxisF.w;
-	float2 edge = min( float2( u, v ), 1.0f - float2( u, v ) );
-	float inside = ( min( edge.x, edge.y ) > 0.02f ) ? 1.0f : 0.0f;		// keep the filter off the border
-	return float4( u, v, z, inside );
+	return float4( u, v, z, DoDSP_Inside( float2( u, v ) ) );
 }
 
-// Sun visibility 0..1 at a world point: the finest cascade that holds the point wins.
-// (Every cascade is sampled and the right one selected without branching - gradient-based
-// texture reads can't sit inside dynamic branches in shader model 3.)
+// Sun visibility 0..1 at a world point (the cascade pick lives in dodsp_sun_common_fxc.h)
 float DoDSP_SunShadow( float3 worldPos, float3 geoNormal )
 {
 	float4 cn = DoDSP_CascadeCoord( g_DoDSP_CascadeNear, worldPos, geoNormal );
 	float4 cm = DoDSP_CascadeCoord( g_DoDSP_CascadeMid, worldPos, geoNormal );
 	float4 cf = DoDSP_CascadeCoord( g_DoDSP_CascadeFar, worldPos, geoNormal );
 
-	float sn = DoDSP_Filter( DoDSP_CascadeNear, cn.xy, cn.z );
-	float sm = DoDSP_Filter( DoDSP_CascadeMid, cm.xy, cm.z );
-	float sf = DoDSP_Filter( DoDSP_CascadeFar, cf.xy, cf.z );
-
-	float wn = cn.w;
-	float wm = ( 1.0f - wn ) * cm.w;
-	float wf = ( 1.0f - wn ) * ( 1.0f - cm.w ) * cf.w;
-	float wOutside = 1.0f - wn - wm - wf;				// outside every cascade: lit (open sky)
-	return sn * wn + sm * wm + sf * wf + wOutside;
+	return DoDSP_ShadowFromCascades( cn, cm, cf, 0.5f * g_DoDSP_ToSun.w * g_DoDSP_AxisU.w );
 }
 
 // The sun's light at a pixel, in the same units as the lightmap colour it is added to.

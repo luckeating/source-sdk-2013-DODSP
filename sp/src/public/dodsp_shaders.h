@@ -15,7 +15,7 @@
 
 #define DODSP_SHADER_DLL_NAME		"game_shader_dx6"
 #define DODSP_SHADER_PREFIX			"DODSP_"
-#define DODSP_SHADER_DLL_VERSION	"3b4"	// bump with every DLL change; see dodsp_shaders_version
+#define DODSP_SHADER_DLL_VERSION	"4a"	// bump with every DLL change; see dodsp_shaders_version
 
 // Stage 3a: proves the DLL loads next to Mapbase's. It only falls back to UnlitGeneric.
 #define DODSP_SHADER_PROBE			"DODSP_Probe"
@@ -27,6 +27,10 @@
 // support fall back to Mapbase's twin by themselves (SHADER_FALLBACK).
 #define DODSP_SHADER_LMG			"DODSP_LightmappedGeneric"
 #define DODSP_SHADER_WVT			"DODSP_WorldVertexTransition"
+
+// Stage 4: props and NPCs with the sun drawn per pixel (plain, bump-mapped and phong/skin paths).
+// Materials using a feature it doesn't support fall back to Mapbase's SDK_VertexLitGeneric.
+#define DODSP_SHADER_VLG			"DODSP_VertexLitGeneric"
 
 //-----------------------------------------------------------------------------
 // The sun, from the client to the shaders: rendering parameters set on the render context every

@@ -51,6 +51,23 @@ If you learn something like this, add it here in the same commit as the fix.
 - Compiler: Valve's ShaderCompile2 (2025 SDK, x64, needs D3DCOMPILER_47) in devtools/bin. .inc
   combo numbering: dynamic combos first in declaration order, then static. A `0..0` combo keeps
   its setter but adds no variants. CI checks our generated .inc against ShaderCompile2's.
+- **Model shaders (stage 4) have almost no free pixel constants.** The model sun does its cascade
+  maths in the vertex shader (light-space position out on TEXCOORD9, `dodsp_modelsun_vs_fxc.h`) and
+  needs only 4 pixel constants: plain `c15..c18` (unused there), bump `c22..c25` and skin `c15..c18`
+  (the flashlight's registers; in the base pass the flashlight names become `#define`d constants so
+  the dead flashlight code still compiles). Vertex constants `c221..c223` (bones end at c216,
+  c217..c220 are the engine's clip planes). Numbers live in `DODSP_MSUN_*` (dodsp_sun_shader.h);
+  CI checks every .fxc against them and flags any C++ write onto them (literal or PSREG_ name)
+  unless the line says `dodsp-lint: flashlight pass only` / `x360 only`.
+- **One sun on models:** while our sun draws (VS `c221.w = 1`) the model vertex shaders drop every
+  directional light the engine hands them (`cLightInfo[i].color.w == 1`), i.e. the engine's
+  once-per-model sun. Static props with baked vertex lighting (`STATIC_LIGHT`) keep VRAD's baked sun
+  and get no per-pixel sun (vradstaticprops bakes the sun style into them).
+- DOD-SP shaders pin features they leave out to `"0..0"` combos and hand such materials back to
+  Mapbase via SHADER_FALLBACK. The list of features (`DoDSP_BrushUnsupported`,
+  `DoDSP_ModelUnsupported`) and the pins must describe the same things; `DoDSP_Pinned` wraps every
+  pinned combo setter in the model helpers and prints an INVARIANT if a pinned combo is ever set
+  non-zero (that would select the wrong shader variant).
 - Mapbase ships its shaders precompiled, so their sources may not compile on today's compilers:
   `register( D3DVERTEXTEXTURESAMPLER0, s0 )` is rejected (X3089, write `s0`), and a loop over the
   integer light count fails (X4509, read the light-enabled booleans instead).
@@ -89,6 +106,9 @@ If you learn something like this, add it here in the same commit as the fix.
 - Mapbase's patched HL2 materials use `SDK_LightmappedGeneric` and need Mapbase's shader DLL. The
   client swaps DoD:S world materials onto the SDK_ shaders at runtime (c_dodsp_sdkshaders),
   because the stock 2013 shaders draw envmapped props as noise and floor decals fullbright.
+  With the sun shaders in use the swap goes one step further, to the DODSP_ twins: brushes
+  (LightmappedGeneric/WorldVertexTransition) and models (VertexLitGeneric), including materials
+  whose .vmt already names the SDK_ shader (HL2 content) - only if the loaded DLL has that twin.
 - DoD:S content mounts after HL2, so HL2's same-named sound and soundscape manifests hide DoD's.
   We copy missing DoD entries into a generated override (eaa0e7e).
 - DoD maps use prop_physics_multiplayer. The SP player didn't collide with it (004173a).
@@ -115,6 +135,16 @@ If you learn something like this, add it here in the same commit as the fix.
 - Windows hides extensions: a rename to `x.dll` became `x.dll.dll`.
 - Shader updates need BOTH `bin\game_shader_dx6.dll` and `shaders\fxc\dodsp_*.vcs` from one build.
 - A setting changed after the map loaded invalidated a test once. Restart for start-up settings.
+
+## Stage 4 (models) - files and undo
+- Shader side: `dodsp_modelsun_vs_fxc.h`, `dodsp_modelsun_ps_fxc.h`, `dodsp_sun_common_fxc.h` (shared
+  with the brushes), `dodsp_vertexlit_and_unlit_generic{,_bump}_{vs,ps}30.fxc`, `dodsp_skin_{vs,ps}30.fxc`
+  (generated once from Mapbase's by a script, then kept by hand).
+- DLL side: `dodsp/dodsp_vertexlitgeneric.cpp` (DODSP_VertexLitGeneric), `dodsp_vertexlitgeneric_helper.cpp`,
+  `dodsp_skin_helper.cpp`, model parts of `dodsp_sun_shader.cpp/.h`. Client: swap table in
+  `c_dodsp_sdkshaders.cpp`.
+- Undo: put the 3b4 DLL and .vcs files back (or `dodsp_sunshader 0` + restart: everything stays on
+  Mapbase's shaders).
 
 ## Open known issues (lighting)
 - The door entity doesn't cast into the sun cascades.

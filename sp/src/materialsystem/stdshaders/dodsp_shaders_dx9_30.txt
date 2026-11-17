@@ -8,3 +8,9 @@ dodsp_lightmappedgeneric_vs30.fxc
 dodsp_lightmappedgeneric_ps30.fxc
 dodsp_lightmappedgeneric_flashlight_vs30.fxc
 dodsp_lightmappedgeneric_flashlight_ps30.fxc
+dodsp_vertexlit_and_unlit_generic_vs30.fxc
+dodsp_vertexlit_and_unlit_generic_ps30.fxc
+dodsp_vertexlit_and_unlit_generic_bump_vs30.fxc
+dodsp_vertexlit_and_unlit_generic_bump_ps30.fxc
+dodsp_skin_vs30.fxc
+dodsp_skin_ps30.fxc
