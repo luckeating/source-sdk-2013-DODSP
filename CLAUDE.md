@@ -120,4 +120,8 @@ If you learn something like this, add it here in the same commit as the fix.
 - The door entity doesn't cast into the sun cascades.
 - Black front steps = the HL2-materials issue above (fixed in the client build after 44117643276). The half-black CAFÉ sign is an overlay - the
   owner's to fix, not a shader problem. woodstair02 materials reverting.
+- Cubemaps (owner: "fix later"): after a compile, before `buildcubemaps`, envmapped props show noise
+  (the material points at cubemap images the compile reserved but nothing has filled). Idea: fall
+  back to the default cubemap when a map's cubemaps aren't built, and say so at load.
 - Pending checks: FPS with `dodsp_sun_baked` 1 vs 0; `dodsp_sun_filter 3` against edge saw-tooth.
+- Confirmed 2026-11-17: `buildcubemaps` no longer crashes with the sun shaders loaded (3b4).
