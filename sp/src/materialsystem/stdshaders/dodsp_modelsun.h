@@ -24,6 +24,25 @@ enum
 	DODSP_PSREG_MODEL_SUN_TWEAKS = 31,	// = cFlashlightScreenScale in common_ps_fxc.h
 };
 
+// Why a model draw does or does not get the sun - counted per draw for dodsp_modelsun_report
+// (vertexlitgeneric_dx9_helper.cpp), so "it makes no difference" is answered by numbers.
+enum DoDSPModelSun_t
+{
+	DODSP_MS_ON = 0,			// lit per pixel
+	DODSP_MS_STATIC_LIT,		// static prop with baked vertex lighting
+	DODSP_MS_NOT_LIT,			// unlit / ambient-only material
+	DODSP_MS_NO_LIGHT_STATE,	// the engine gave this draw no lighting at all
+	DODSP_MS_SETTING_OFF,		// dodsp_sunshadow_models 0 or dodsp_sun_darken 0
+	DODSP_MS_NO_MAP,			// no sun shadow map this frame (no env_global_light with shadows)
+	DODSP_MS_COUNT
+};
+
+inline int *DoDSP_ModelSunCounts()
+{
+	static int s_nCounts[DODSP_MS_COUNT];
+	return s_nCounts;
+}
+
 // The model sun exists on the shader model 3 path only (the ps30/vs30 shaders DOD-SP compiles)
 inline bool DoDSP_ModelSunAvailable()
 {
@@ -70,15 +89,20 @@ inline void DoDSP_CheckEngineSun( IShaderDynamicAPI *pShaderAPI, const Vector &v
 
 // nMatrixReg: the pixel register of this shader's g_FlashlightWorldToTexture.
 // depthSampler: this shader's ShadowDepthSampler.
-// bSunLit: false for draws that must keep stock lighting (unlit, ambient-only, or static props
-// whose baked vertex lighting already contains the sun).
+// nVerdict: DODSP_MS_ON if this draw may take the sun, else why it keeps stock lighting
+// (unlit, ambient-only, static props whose baked vertex lighting already contains the sun).
 inline void DoDSP_SetModelSunState( CBaseVSShader *pShader, IShaderDynamicAPI *pShaderAPI,
-									int nMatrixReg, Sampler_t depthSampler, bool bSunLit )
+									int nMatrixReg, Sampler_t depthSampler, int nVerdict )
 {
 	ITexture *pFull = (ITexture *)pShaderAPI->GetIntRenderingParameter( INT_RENDERPARM_DODSP_SUN_FULL_DEPTH );
 	Vector vParams = pShaderAPI->GetVectorRenderingParameter( VECTOR_RENDERPARM_DODSP_SUN_PARAMS );
 	Vector vTweaks = pShaderAPI->GetVectorRenderingParameter( VECTOR_RENDERPARM_DODSP_SUN_TWEAKS );
-	const bool bOn = bSunLit && pFull && vParams.y > 0.0f && vTweaks.y > 0.0f;
+	if ( nVerdict == DODSP_MS_ON && ( !pFull || vParams.y <= 0.0f ) )
+		nVerdict = DODSP_MS_NO_MAP;
+	else if ( nVerdict == DODSP_MS_ON && vTweaks.y <= 0.0f )
+		nVerdict = DODSP_MS_SETTING_OFF;
+	DoDSP_ModelSunCounts()[nVerdict]++;
+	const bool bOn = ( nVerdict == DODSP_MS_ON );
 
 	float matrix[16], color[4], tweaks[4], vsFlags[4];
 	memset( matrix, 0, sizeof( matrix ) );

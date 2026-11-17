@@ -26,6 +26,23 @@
 
 #include "commandbuilder.h"
 #include "dodsp_modelsun.h"
+
+// DOD-SP: why model draws do or do not get the sun, counted per draw since the last call
+CON_COMMAND( dodsp_modelsun_report, "DOD-SP: counts of model draws by sun verdict since the last call (run it, look around a few seconds, run it again)" )
+{
+	static double s_flLast = 0.0;
+	double flNow = Plat_FloatTime();
+	static const char *s_pszNames[DODSP_MS_COUNT] = { "lit per pixel", "static prop, baked vertex light (kept stock)",
+		"unlit / ambient-only material", "no engine lighting", "setting off (models or darken)", "no sun map this frame" };
+	int *pCounts = DoDSP_ModelSunCounts();
+	Msg( "DOD-SP model sun: model draws over the last %.1f s\n", s_flLast > 0.0 ? flNow - s_flLast : 0.0 );
+	for ( int i = 0; i < DODSP_MS_COUNT; i++ )
+	{
+		Msg( "  %8d  %s\n", pCounts[i], s_pszNames[i] );
+		pCounts[i] = 0;
+	}
+	s_flLast = flNow;
+}
 #include "convar.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
@@ -1525,8 +1542,10 @@ static void DrawVertexLitGeneric_DX9_Internal( CBaseVSShader *pShader, IMaterial
 		// Off for unlit, ambient-only and static-lit draws (their baked vertex light has the sun).
 		if ( !bHasFlashlight && DoDSP_ModelSunAvailable() )
 		{
-			const bool bSunLit = bVertexLitGeneric && !bAmbientOnly && !lightState.m_bStaticLight && lightState.HasDynamicLight();
-			DoDSP_SetModelSunState( pShader, pShaderAPI, 24, SHADER_SAMPLER8, bSunLit );	// c24 = g_FlashlightWorldToTexture
+			const int nVerdict = ( !bVertexLitGeneric || bAmbientOnly ) ? DODSP_MS_NOT_LIT
+				: lightState.m_bStaticLight ? DODSP_MS_STATIC_LIT
+				: !lightState.HasDynamicLight() ? DODSP_MS_NO_LIGHT_STATE : DODSP_MS_ON;
+			DoDSP_SetModelSunState( pShader, pShaderAPI, 24, SHADER_SAMPLER8, nVerdict );	// c24 = g_FlashlightWorldToTexture
 		}
 
 #ifdef MAPBASE

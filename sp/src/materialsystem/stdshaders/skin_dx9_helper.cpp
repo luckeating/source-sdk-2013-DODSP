@@ -774,7 +774,8 @@ void DrawSkin_DX9_Internal( CBaseVSShader *pShader, IMaterialVar** params, IShad
 		if ( !bHasFlashlight && DoDSP_ModelSunAvailable() )
 		{
 			DoDSP_SetModelSunState( pShader, pShaderAPI, PSREG_FLASHLIGHT_TO_WORLD_TEXTURE, SHADER_SAMPLER4,
-									!lightState.m_bStaticLight && lightState.HasDynamicLight() );
+									lightState.m_bStaticLight ? DODSP_MS_STATIC_LIT
+									: !lightState.HasDynamicLight() ? DODSP_MS_NO_LIGHT_STATE : DODSP_MS_ON );
 		}
 
 		pShader->SetVertexShaderTextureTransform( VERTEX_SHADER_SHADER_SPECIFIC_CONST_0, info.m_nBaseTextureTransform );

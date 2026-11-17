@@ -35,7 +35,7 @@
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
-static ConVar dodsp_sdkshaders( "dodsp_sdkshaders", "1", FCVAR_ARCHIVE,
+static ConVar dodsp_sdkshaders( "dodsp_sdkshaders", "1", 0,
 	"DOD-SP: run stock world/model materials on Mapbase's SDK_ shaders (needed for sun shadows). "
 	"Applies when a map loads; turning it off needs a game restart." );
 static ConVar dodsp_sdkshaders_log( "dodsp_sdkshaders_log", "0", 0, "DOD-SP: print every material moved to an SDK_ shader" );

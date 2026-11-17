@@ -110,16 +110,16 @@ static ConVar r_shadow_shortenfactor( "r_shadow_shortenfactor", "2" , 0, "Makes 
 // the blob - one per object, from one light - only ever pointed somewhere wrong and fought
 // with projected-texture shadows. 0 = stock behaviour (blob shadows everywhere).
 static ConVar dodsp_sunshadow_maps( "dodsp_sunshadow_maps", "1", 0, "DOD-SP: render the sun's static and dynamic shadow maps for the world shaders (needs an env_global_light with shadows)" );
-static ConVar dodsp_sun_darken( "dodsp_sun_darken", "1", FCVAR_ARCHIVE, "DOD-SP: 1 = the env_global_light only darkens (removes baked sun where something dynamic blocks it; baked bounce stays). 0 = it adds its own light on top (stock)." );
+static ConVar dodsp_sun_darken( "dodsp_sun_darken", "1", 0, "DOD-SP: 1 = the env_global_light only darkens (removes baked sun where something dynamic blocks it; baked bounce stays). 0 = it adds its own light on top (stock)." );
 static ConVar dodsp_sunshadow_debug( "dodsp_sunshadow_debug", "0", 0, "DOD-SP debug: world brushes and models show the sun shadow data instead of lighting. 1 = verdict: green = sunlit (should match the baked sun patch), red = sunlit but blocked by something dynamic (gets darkened), blue = static map says shadowed, purple = outside the sun map, grey = faces away from the sun (models: purple = outside the sun map, bright where the engine's own trace says sunlit). 2 = raw sun-map coordinates (red/green across the map, blue depth). No colours at all = the shader gets no sun data." );
-static ConVar dodsp_sunshadow_models( "dodsp_sunshadow_models", "1", FCVAR_ARCHIVE, "DOD-SP: 1 = models (props, NPCs) get the sun per pixel from the sun shadow maps, so a chair half in a sunbeam is lit on that half. 0 = stock: the engine's one-trace-per-model sun." );
-static ConVar dodsp_sunshadow_softness( "dodsp_sunshadow_softness", "1", FCVAR_ARCHIVE, "DOD-SP: how soft sun shadow edges are, in shadow map texels between filter taps (0.25 = sharpest, 3 = softest)", true, 0.25f, true, 3.0f );
+static ConVar dodsp_sunshadow_models( "dodsp_sunshadow_models", "1", 0, "DOD-SP: 1 = models (props, NPCs) get the sun per pixel from the sun shadow maps, so a chair half in a sunbeam is lit on that half. 0 = stock: the engine's one-trace-per-model sun." );
+static ConVar dodsp_sunshadow_softness( "dodsp_sunshadow_softness", "1", 0, "DOD-SP: how soft sun shadow edges are, in shadow map texels between filter taps (0.25 = sharpest, 3 = softest)", true, 0.25f, true, 3.0f );
 // INVARIANT (one owner: BuildOrthoWorldToFlashlightMatrix): an orthographic light's lookup depth must
 // equal what its shadow map stores, (d - NearZ) / (FarZ - NearZ). Valve's ortho matrix gives
 // (d + NearZ) / (FarZ - NearZ), so every surface reads 2 x NearZ units behind itself = shadowed.
 static ConVar dodsp_ortho_depthfix( "dodsp_ortho_depthfix", "1", 0, "DOD-SP: correct the depth of orthographic projected textures (the env_global_light sun) so it matches their shadow map. 0 = stock Valve maths (every surface reads 2 x NearZ units too deep, so everything counts as shadowed)." );
 static ConVar dodsp_sunshadow_zbias( "dodsp_sunshadow_zbias", "0", 0, "DOD-SP debug: extra world units the sun shadow lookup is pulled toward the sun (positive = fewer surfaces count as shadowed)" );
-static ConVar dodsp_sunshadow_strength( "dodsp_sunshadow_strength", "1", FCVAR_ARCHIVE, "DOD-SP: how much of the baked sun a dynamic shadow removes (1 = all of it)" );
+static ConVar dodsp_sunshadow_strength( "dodsp_sunshadow_strength", "1", 0, "DOD-SP: how much of the baked sun a dynamic shadow removes (1 = all of it)" );
 
 // DOD-SP: one owner for "is this light the darken-only sun"
 static bool DoDSP_SunDarkens( const FlashlightState_t &state )
@@ -129,6 +129,72 @@ static bool DoDSP_SunDarkens( const FlashlightState_t &state )
 #else
 	return false;
 #endif
+}
+
+// DOD-SP settings. INVARIANT: every launch starts on this build's defaults, which are the
+// intended setup. Test toggles used to be saved to config.cfg, so one A/B comparison left the new
+// shadows switched off for every session after it. None are saved now; settings an older build
+// saved are reset once (dodsp_settings_version), and every map load prints the active setup and
+// flags anything not at its default.
+static ConVar dodsp_settings_version( "dodsp_settings_version", "0", FCVAR_ARCHIVE | FCVAR_HIDDEN, "DOD-SP internal: last settings reset applied" );
+static const int DODSP_SETTINGS_VERSION = 2;
+static const char *s_pszDoDSPSettings[] =
+{
+	"dodsp_sdkshaders", "dodsp_sunshadow_maps", "dodsp_sun_darken", "dodsp_sunshadow_models",
+	"dodsp_sunshadow_softness", "dodsp_sunshadow_strength", "dodsp_ortho_depthfix",
+	"dodsp_sunshadow_zbias", "dodsp_sunshadow_debug", "dodsp_sunshadow_view",
+};
+
+static void DoDSP_CheckSettings()
+{
+	bool bReset = dodsp_settings_version.GetInt() < DODSP_SETTINGS_VERSION;
+	int nChanged = 0;
+	for ( int i = 0; i < (int)ARRAYSIZE( s_pszDoDSPSettings ); i++ )
+	{
+		ConVarRef var( s_pszDoDSPSettings[i] );
+		if ( !var.IsValid() )
+		{
+			Warning( "INVARIANT: DOD-SP setting %s does not exist\n", s_pszDoDSPSettings[i] );
+			continue;
+		}
+		if ( !Q_strcmp( var.GetString(), var.GetDefault() ) )
+			continue;
+		if ( bReset )
+		{
+			Msg( "DOD-SP: %s %s -> %s (reset to this build's default)\n", s_pszDoDSPSettings[i], var.GetString(), var.GetDefault() );
+			var.SetValue( var.GetDefault() );
+		}
+		else
+		{
+			Warning( "DOD-SP: %s is %s, not its default %s\n", s_pszDoDSPSettings[i], var.GetString(), var.GetDefault() );
+			nChanged++;
+		}
+	}
+	if ( bReset )
+		dodsp_settings_version.SetValue( DODSP_SETTINGS_VERSION );
+	Msg( "DOD-SP sun: %s, models %s, softness %.2f, strength %.2f%s\n",
+		 dodsp_sun_darken.GetBool() ? "darken-only" : "ADDITIVE (stock)",
+		 ( dodsp_sunshadow_models.GetBool() && dodsp_sun_darken.GetBool() ) ? "per pixel" : "STOCK",
+		 dodsp_sunshadow_softness.GetFloat(), dodsp_sunshadow_strength.GetFloat(),
+		 nChanged ? " - some settings are not at their defaults (see above)" : "" );
+}
+
+// DOD-SP INVARIANT: the darken-only sun adds no light anywhere. Detaching its receivers is not
+// enough: the engine draws some flashlight passes (overlays, decals) for every active flashlight
+// by frustum, not by receiver list, and in darken mode the sun's own shadow map is never drawn -
+// so those passes lit overlays through a stale map (a "phantom window" that slid with the
+// camera, light through walls). Every state handed to the engine goes through here, and a
+// darken-only sun goes with zero colour, so any pass that still draws it adds nothing.
+static void DoDSP_SubmitFlashlightState( ShadowHandle_t hShadow, const FlashlightState_t &state )
+{
+	if ( !DoDSP_SunDarkens( state ) )
+	{
+		shadowmgr->UpdateFlashlightState( hShadow, state );
+		return;
+	}
+	FlashlightState_t dark = state;
+	dark.m_Color[0] = dark.m_Color[1] = dark.m_Color[2] = dark.m_Color[3] = 0.0f;
+	shadowmgr->UpdateFlashlightState( hShadow, dark );
 }
 
 static ConVar dodsp_sunshadow_view( "dodsp_sunshadow_view", "0", 0, "DOD-SP debug: which shadow map the env_global_light's own light uses. 0 = its normal one, 1 = static casters only (world, static props), 2 = the full map (everything: world, static props, NPCs, physics props, brush entities)" );
@@ -1756,6 +1822,8 @@ void CClientShadowMgr::LevelInitPreEntity()
 {
 	m_bUpdatingDirtyShadows = false;
 
+	DoDSP_CheckSettings();
+
 #ifdef DYNAMIC_RTT_SHADOWS
 	// Default setting for this, can be overridden by shadow control entities
 #ifdef MAPBASE
@@ -2354,7 +2422,7 @@ void CClientShadowMgr::UpdateFlashlightState( ClientShadowHandle_t shadowHandle,
 	BuildPerspectiveWorldToFlashlightMatrix( m_Shadows[shadowHandle].m_WorldToShadow, flashlightState );
 #endif
 											
-	shadowmgr->UpdateFlashlightState( m_Shadows[shadowHandle].m_ShadowHandle, flashlightState );
+	DoDSP_SubmitFlashlightState( m_Shadows[shadowHandle].m_ShadowHandle, flashlightState );
 }
 
 void CClientShadowMgr::DestroyFlashlight( ClientShadowHandle_t shadowHandle )
@@ -4764,7 +4832,7 @@ void CClientShadowMgr::ComputeShadowDepthTextures( const CViewSetup &viewSetup )
 
 			state.m_nShadowQuality = state.m_nShadowQuality | ( ( j + 1 ) << 16 );
 
-			shadowmgr->UpdateFlashlightState( shadow.m_ShadowHandle, state );
+			DoDSP_SubmitFlashlightState( shadow.m_ShadowHandle, state );
 		}
 #endif
 
