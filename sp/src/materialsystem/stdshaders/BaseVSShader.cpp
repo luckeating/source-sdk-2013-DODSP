@@ -49,16 +49,30 @@
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
+// DOD-SP: this file is also compiled into DOD-SP's own shader DLL (game_shader_dx6.dll, DODSP_SHADER_DLL).
+// INVARIANT: that DLL never registers a console variable under a name another shader DLL also
+// registers - the engine links same-named ConVars across DLLs into one, and DOD-SP's DLL loads
+// before Mapbase's, so Mapbase's ConVars would end up hanging off DOD-SP's. Its copies get a
+// "dodsp_" prefix instead. mat_fullbright is the one exception: the engine's material system owns
+// it (registered before any shader DLL, never unloaded), so linking to it is safe and wanted.
+#ifdef DODSP_SHADER_DLL
+#define SHADER_DLL_CVAR( name )	"dodsp_" name
+#else
+#define SHADER_DLL_CVAR( name )	name
+#endif
+
 static ConVar mat_fullbright( "mat_fullbright","0", FCVAR_CHEAT );
 
 // NOTE: This is externed in BaseVSShader.h so it needs to be here
-ConVar r_flashlightbrightness( "r_flashlightbrightness", "0.25", FCVAR_CHEAT );
+ConVar r_flashlightbrightness( SHADER_DLL_CVAR( "r_flashlightbrightness" ), "0.25", FCVAR_CHEAT );
 
 #ifdef MAPBASE
+#ifndef DODSP_SHADER_DLL
 // This constant should change with each Mapbase update
 ConVar mapbase_version_shaders( "mapbase_version_shaders", MAPBASE_VERSION, FCVAR_NONE, "The version of Mapbase currently being used in this mod's game_shader_dx9.dll" );
+#endif
 
-ConVar mat_specular_disable_on_missing( "mat_specular_disable_on_missing", "1", FCVAR_ARCHIVE, "Disables specular reflections on a material when the envmap cannot be found." );
+ConVar mat_specular_disable_on_missing( SHADER_DLL_CVAR( "mat_specular_disable_on_missing" ), "1", FCVAR_ARCHIVE, "Disables specular reflections on a material when the envmap cannot be found." );
 #endif
 
 // These functions are to be called from the shaders.
@@ -713,8 +727,8 @@ void CBaseVSShader::SetColorPixelShaderConstant( int nPixelReg, int colorVar, in
 }
 
 #ifdef _DEBUG
-ConVar mat_envmaptintoverride( "mat_envmaptintoverride", "-1" );
-ConVar mat_envmaptintscale( "mat_envmaptintscale", "-1" );
+ConVar mat_envmaptintoverride( SHADER_DLL_CVAR( "mat_envmaptintoverride" ), "-1" );
+ConVar mat_envmaptintscale( SHADER_DLL_CVAR( "mat_envmaptintscale" ), "-1" );
 #endif
 
 //-----------------------------------------------------------------------------

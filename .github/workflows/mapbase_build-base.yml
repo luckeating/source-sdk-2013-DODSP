@@ -118,6 +118,14 @@ jobs:
         path: dodsp_out/
         if-no-files-found: error
 
+    - name: Publish DOD-SP shader DLL symbols (for reading crash dumps; not needed to play)
+      if: inputs.project-group == 'dodspshaders'
+      uses: actions/upload-artifact@v4
+      with:
+        name: 'dodsp_shaders_symbols_win32_${{ inputs.configuration }}'
+        path: ${{inputs.branch}}/game/mod_hl2/bin/game_shader_dx6.pdb
+        if-no-files-found: warn
+
     - name: Publish map tools
       if: inputs.project-group == 'maptools'
       uses: actions/upload-artifact@v4

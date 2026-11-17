@@ -96,6 +96,21 @@ def main():
             if not name.lower().startswith("dodsp_"):
                 fail("%s uses shader file %s, which is not a dodsp_* one" % (os.path.basename(cpp), name))
 
+    # Console variables: DOD-SP's DLL never registers one under another shader DLL's name (the engine
+    # links same-named ConVars across DLLs, and ours loads first). mat_fullbright is the engine's own.
+    cvar_re = re.compile(r'^\s*(?:static\s+)?ConVar\s+\w+\s*\(\s*("([^"]*)"|SHADER_DLL_CVAR)', re.M)
+    shared_ok = {"mat_fullbright"}
+    for cpp in glob.glob(os.path.join(STDSHADERS, "dodsp", "*.cpp")) + [os.path.join(STDSHADERS, "BaseVSShader.cpp")]:
+        with open(cpp, encoding="latin-1") as f:
+            text = f.read()
+        guarded = re.sub(r"#ifndef DODSP_SHADER_DLL.*?#endif", "", text, flags=re.S)   # not compiled into our DLL
+        for m in cvar_re.finditer(guarded):
+            name = m.group(2)
+            if m.group(1) == "SHADER_DLL_CVAR" or name is None:
+                continue
+            if not name.startswith("dodsp_") and name not in shared_ok:
+                fail("%s registers ConVar %s in DOD-SP's DLL - give it a dodsp_ name (or SHADER_DLL_CVAR)" % (os.path.basename(cpp), name))
+
     # Combo headers: generated, up to date
     for src in sources:
         try:
