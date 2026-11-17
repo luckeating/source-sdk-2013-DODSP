@@ -37,6 +37,13 @@ $Group "shaders"
 	"mathlib"
 }
 
+// DOD-SP's own shader DLL only (never Mapbase's game_shader_dx9). See game_shader_dodsp.vpc.
+$Group "dodspshaders"
+{
+	"game_shader_generic_dodsp"
+	"mathlib"
+}
+
 $Group "everything"
 {
 	"captioncompiler"
