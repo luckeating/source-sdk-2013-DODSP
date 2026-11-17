@@ -165,7 +165,8 @@ If you learn something like this, add it here in the same commit as the fix.
   Mapbase's shaders).
 
 ## Lighting roadmap (one stage at a time)
-- Stages 1-3 done (3b4). Stage 4 (models' per-pixel sun) built; settled-prop fix in 8a582ff.
+- Stages 1-3 done (3b4). Stage 4 (models' per-pixel sun) confirmed 2026-11-17 with the settled-prop fix
+  (8a582ff, build 44157620634): props are sunlit from map load, no bumping needed.
 - **Stage 4b - soft sun shadows (contact hardening, PCSS)**, agreed 2026-11-17. Replaces the saved 3x3 PCF
   fix (`dodsp_sun_filter 3` made the saw-tooth worse). Per pixel: blocker search in the cascade ->
   penumbra width = (receiver - blocker depth) x sun angular size -> ~16-tap rotated Poisson PCF.
