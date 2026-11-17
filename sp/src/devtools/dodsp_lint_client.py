@@ -9,6 +9,13 @@ the tag 'dodsp-lint: static lighting guarded'.
 
 INVARIANT (one owner per fact): see OWNERS below - the sun modes and the static-prop "baked without the
 sun" mark each have one writer and one reader.
+
+INVARIANT (stage 4c, prop shadows follow the sun mode): clientshadowmgr.cpp only STORES the map's
+shadow_control direction, distance and colour; every shadow reads them through the getters that turn them
+into contact shadows while the per-pixel sun draws. So every line touching the stored values carries
+'dodsp-lint: map shadow value', and every ColorModulate (the shadow materials' colour) carries
+'dodsp-lint: shadow colour' (only DoDSP_ApplyShadowColor may write it). A new raw read would hand some
+shadows the map's long, slanted, dark shadow while the per-pixel sun already draws the real one.
 """
 import os
 import re
@@ -28,7 +35,26 @@ OWNERS = {
                        "materialsystem/stdshaders/dodsp/dodsp_sun_shader.cpp"},
     "DODSP_LVLFLAGS_PROPS_NOSUN_": {"public/dodsp_lightstyles.h", "utils/vrad/vrad.cpp",
                                     "game/client/dodsp/c_dodsp_sun_cascades.cpp"},
+    # stage 4c: the contact shadows are set in one place
+    "dodsp_contactshadow": {"game/client/clientshadowmgr.cpp"},
 }
+
+SHADOWMGR = os.path.join(CLIENT, "clientshadowmgr.cpp")
+SHADOW_RULES = [
+    (re.compile(r"\bm_SimpleShadowDir\b|\bm_flShadowCastDist\b|\bm_AmbientLightColor\b"), "dodsp-lint: map shadow value"),
+    (re.compile(r"\bColorModulate\s*\("), "dodsp-lint: shadow colour"),
+]
+
+
+def check_shadow_values():
+    bad = []
+    with open(SHADOWMGR, encoding="latin-1") as f:
+        for n, line in enumerate(f, 1):
+            code = line.split("//")[0]
+            for pattern, tag in SHADOW_RULES:
+                if pattern.search(code) and tag not in line:
+                    bad.append("clientshadowmgr.cpp:%d: %s  (needs '%s')" % (n, line.strip(), tag))
+    return bad
 
 
 def check_owners():
@@ -56,6 +82,13 @@ def main():
         for b in owner_bad:
             print("  " + b)
         return 1
+    shadow_bad = check_shadow_values()
+    if shadow_bad:
+        print("dodsp_lint_client: prop shadow values read around the sun-mode getters (stage 4c):")
+        for b in shadow_bad:
+            print("  " + b)
+        print("Read them through GetShadowDirection/GetShadowDistance/DoDSP_ShadowColor, or tag the line if it is a getter.")
+        return 1
     for dirpath, _, files in os.walk(CLIENT):
         for name in files:
             if not name.endswith((".cpp", ".h")):
@@ -72,7 +105,8 @@ def main():
             print("  " + b)
         print("Check DoDSP_SunShadersInUse() first (see c_physicsprop.cpp) and tag the line '%s'." % TAG)
         return 1
-    print("dodsp_lint_client: OK (no unguarded static model lighting in the client; sun facts have one owner each)")
+    print("dodsp_lint_client: OK (no unguarded static model lighting in the client; sun facts have one owner each; "
+          "prop shadows read through the sun-mode getters)")
     return 0
 
 

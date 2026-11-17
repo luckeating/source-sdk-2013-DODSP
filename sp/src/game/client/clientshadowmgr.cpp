@@ -91,6 +91,7 @@
 #include "debugoverlay_shared.h"
 #include "worldlight.h"
 #endif
+#include "dodsp/c_dodsp_sun_cascades.h"	// DoDSP_PerPixelSunDraws (stage 4c contact shadows)
 
 
 // memdbgon must be the last include file in a .cpp file!!!
@@ -106,6 +107,23 @@ static ConVar r_shadow_shortenfactor( "r_shadow_shortenfactor", "2" , 0, "Makes 
 static ConVar r_shadow_mincastintensity( "r_shadow_mincastintensity", "0.3", FCVAR_CHEAT, "Minimum brightness of a light to be classed as shadow casting", true, 0, false, 0 );
 #endif
 static ConVar r_flashlight_version2( "r_flashlight_version2", "0", FCVAR_CHEAT | FCVAR_DEVELOPMENTONLY );
+
+//-----------------------------------------------------------------------------
+// DOD-SP lighting stage 4c: contact shadows.
+// While the per-pixel sun draws (dodsp_sun_baked 0), the sun's own shadows come from the cascades, so the
+// engine's render-to-texture "blob" shadows stop pretending to be sun shadows: they fall straight down,
+// reach only dodsp_contactshadow_dist units below the object, and are lighter (dodsp_contactshadow_strength
+// of the map's shadow_control darkness). With the baked sun (dodsp_sun_baked 1) they are the map's again.
+// One owner: the map's shadow_control values are only STORED here (SetShadowDirection/Distance/Color);
+// every shadow reads them through the getters below, which apply the sun mode (CI lint: every read of the
+// stored values carries 'dodsp-lint: map shadow value', every ColorModulate 'dodsp-lint: shadow colour').
+// The sun mode itself has one owner too: c_dodsp_sun_cascades.cpp's DoDSP_PerPixelSunDraws.
+// INVARIANT (watchdog in PreRender): while contact shadows are on, the shadow materials carry the
+// contact colour and the shadow direction is straight down - otherwise an INVARIANT line, and re-apply.
+//-----------------------------------------------------------------------------
+static ConVar dodsp_contactshadows( "dodsp_contactshadows", "1", 0, "DOD-SP: while the per-pixel sun draws, prop shadows become short, straight-down, lighter contact shadows (0 = the map's shadow_control)" );
+static ConVar dodsp_contactshadow_dist( "dodsp_contactshadow_dist", "30", 0, "DOD-SP: how far (units) a contact shadow reaches below its object", true, 1.0f, true, 512.0f );
+static ConVar dodsp_contactshadow_strength( "dodsp_contactshadow_strength", "0.5", 0, "DOD-SP: contact shadow darkness, as a fraction of the map's shadow_control colour (1 = as dark, 0 = none)", true, 0.0f, true, 1.0f );
 
 ConVar r_flashlightdepthtexture( "r_flashlightdepthtexture", "1" );
 
@@ -1019,8 +1037,17 @@ private:
 #endif
 
 private:
-	Vector	m_SimpleShadowDir;
-	color32	m_AmbientLightColor;
+	// DOD-SP stage 4c (see the top of this file)
+	void	DoDSP_UpdateContactShadows();
+	void	DoDSP_ApplyShadowColor();
+	color32	DoDSP_ShadowColor() const;
+	bool	m_bDoDSPContact;			// contact shadows applied
+	float	m_flDoDSPContactDist;		// ... with this reach
+	float	m_flDoDSPContactStrength;	// ... and this darkness
+	bool	m_bDoDSPContactWarned;
+
+	Vector	m_SimpleShadowDir;		// dodsp-lint: map shadow value
+	color32	m_AmbientLightColor;	// dodsp-lint: map shadow value
 	CMaterialReference m_SimpleShadow;
 	CMaterialReference m_RenderShadow;
 	CMaterialReference m_RenderModelShadow;
@@ -1032,7 +1059,7 @@ private:
 	bool m_bRenderTargetNeedsClear;
 	bool m_bUpdatingDirtyShadows;
 	bool m_bThreaded;
-	float m_flShadowCastDist;
+	float m_flShadowCastDist;	// dodsp-lint: map shadow value
 	float m_flMinShadowArea;
 	CUtlRBTree< ClientShadowHandle_t, unsigned short >	m_DirtyShadows;
 	CUtlVector< ClientShadowHandle_t > m_TransparentShadows;
@@ -1272,6 +1299,10 @@ CClientShadowMgr::CClientShadowMgr() :
 {
 	m_nDepthTextureResolution = r_flashlightdepthres.GetInt();
 	m_bThreaded = false;
+	m_bDoDSPContact = false;
+	m_flDoDSPContactDist = 0.0f;
+	m_flDoDSPContactStrength = 1.0f;
+	m_bDoDSPContactWarned = false;
 }
 
 
@@ -1569,11 +1600,7 @@ void CClientShadowMgr::InitRenderToTextureShadows()
 		m_ShadowAllocator.Reset();
 		m_bRenderTargetNeedsClear = true;
 
-		float fr = (float)m_AmbientLightColor.r / 255.0f;
-		float fg = (float)m_AmbientLightColor.g / 255.0f;
-		float fb = (float)m_AmbientLightColor.b / 255.0f;
-		m_RenderShadow->ColorModulate( fr, fg, fb );
-		m_RenderModelShadow->ColorModulate( fr, fg, fb );
+		DoDSP_ApplyShadowColor();	// the colour the sun mode wants (DOD-SP stage 4c)
 
 		// Iterate over all existing textures and allocate shadow textures
 		for (ClientShadowHandle_t i = m_Shadows.Head(); i != m_Shadows.InvalidIndex(); i = m_Shadows.Next(i) )
@@ -1626,29 +1653,111 @@ void CClientShadowMgr::ShutdownRenderToTextureShadows()
 //-----------------------------------------------------------------------------
 void CClientShadowMgr::SetShadowColor( unsigned char r, unsigned char g, unsigned char b )
 {
-	float fr = (float)r / 255.0f;
-	float fg = (float)g / 255.0f;
-	float fb = (float)b / 255.0f;
-
-	// Hook the shadow color into the shadow materials
-	m_SimpleShadow->ColorModulate( fr, fg, fb );
-
-	if (m_RenderToTextureActive)
-	{
-		m_RenderShadow->ColorModulate( fr, fg, fb );
-		m_RenderModelShadow->ColorModulate( fr, fg, fb );
-	}
-
-	m_AmbientLightColor.r = r;
-	m_AmbientLightColor.g = g;
-	m_AmbientLightColor.b = b;
+	// DOD-SP: this stores the map's (shadow_control's) colour; the materials get what the sun mode wants
+	m_AmbientLightColor.r = r;	// dodsp-lint: map shadow value
+	m_AmbientLightColor.g = g;	// dodsp-lint: map shadow value
+	m_AmbientLightColor.b = b;	// dodsp-lint: map shadow value
+	DoDSP_ApplyShadowColor();
 }
 
 void CClientShadowMgr::GetShadowColor( unsigned char *r, unsigned char *g, unsigned char *b ) const
 {
-	*r = m_AmbientLightColor.r;
-	*g = m_AmbientLightColor.g;
-	*b = m_AmbientLightColor.b;
+	// the map's colour (what r_shadowcolor / shadow_control set), not the contact shadows' lighter one
+	*r = m_AmbientLightColor.r;	// dodsp-lint: map shadow value
+	*g = m_AmbientLightColor.g;	// dodsp-lint: map shadow value
+	*b = m_AmbientLightColor.b;	// dodsp-lint: map shadow value
+}
+
+//-----------------------------------------------------------------------------
+// DOD-SP stage 4c: the shadow colour the sun mode wants. Shadow colour is how much light is LEFT in a
+// shadow (255 = no shadow), so a lighter contact shadow moves each channel towards 255.
+//-----------------------------------------------------------------------------
+color32 CClientShadowMgr::DoDSP_ShadowColor() const
+{
+	color32 c = m_AmbientLightColor;	// dodsp-lint: map shadow value
+	if ( m_bDoDSPContact )
+	{
+		const float s = m_flDoDSPContactStrength;
+		c.r = (unsigned char)clamp( 255.0f - ( 255.0f - c.r ) * s + 0.5f, 0.0f, 255.0f );
+		c.g = (unsigned char)clamp( 255.0f - ( 255.0f - c.g ) * s + 0.5f, 0.0f, 255.0f );
+		c.b = (unsigned char)clamp( 255.0f - ( 255.0f - c.b ) * s + 0.5f, 0.0f, 255.0f );
+	}
+	return c;
+}
+
+// The one place the shadow materials get their colour
+void CClientShadowMgr::DoDSP_ApplyShadowColor()
+{
+	const color32 c = DoDSP_ShadowColor();
+	const float fr = c.r / 255.0f, fg = c.g / 255.0f, fb = c.b / 255.0f;
+	if ( m_SimpleShadow.IsValid() )
+		m_SimpleShadow->ColorModulate( fr, fg, fb );			// dodsp-lint: shadow colour
+	if ( m_RenderToTextureActive )
+	{
+		m_RenderShadow->ColorModulate( fr, fg, fb );			// dodsp-lint: shadow colour
+		m_RenderModelShadow->ColorModulate( fr, fg, fb );		// dodsp-lint: shadow colour
+	}
+}
+
+//-----------------------------------------------------------------------------
+// DOD-SP stage 4c: follows the sun mode, once per frame (PreRender). Contact shadows go on while the
+// per-pixel sun draws, and off (the map's shadow_control values) when it doesn't.
+//-----------------------------------------------------------------------------
+void CClientShadowMgr::DoDSP_UpdateContactShadows()
+{
+	const bool bWant = dodsp_contactshadows.GetBool() && DoDSP_PerPixelSunDraws();
+	const float flDist = dodsp_contactshadow_dist.GetFloat();
+	const float flStrength = dodsp_contactshadow_strength.GetFloat();
+	if ( bWant != m_bDoDSPContact || ( bWant && ( flDist != m_flDoDSPContactDist || flStrength != m_flDoDSPContactStrength ) ) )
+	{
+		if ( bWant != m_bDoDSPContact )
+			DevMsg( "DOD-SP contact shadows: %s\n", bWant ? "ON (per-pixel sun draws)" : "off (the map's shadow_control)" );
+		m_bDoDSPContact = bWant;
+		m_flDoDSPContactDist = flDist;
+		m_flDoDSPContactStrength = flStrength;
+		m_bDoDSPContactWarned = false;
+		DoDSP_ApplyShadowColor();
+		UpdateAllShadows();	// re-project every shadow with the new direction and reach
+		return;
+	}
+
+	// Watchdog: something wrote the shadow materials or the direction around the getters
+	if ( !m_RenderToTextureActive )
+		return;
+	const color32 c = DoDSP_ShadowColor();
+	float r, g, b;
+	m_RenderShadow->GetColorModulation( &r, &g, &b );
+	const float flTol = 1.5f / 255.0f;
+	const bool bColour = fabsf( r - c.r / 255.0f ) <= flTol && fabsf( g - c.g / 255.0f ) <= flTol && fabsf( b - c.b / 255.0f ) <= flTol;
+	// the direction a real shadow gets, through the whole getter chain (renderable overrides, local lights)
+	bool bDown = true;
+	if ( m_bDoDSPContact )
+	{
+		for ( ClientShadowHandle_t i = m_Shadows.Head(); i != m_Shadows.InvalidIndex(); i = m_Shadows.Next( i ) )
+		{
+			if ( ( m_Shadows[i].m_Flags & SHADOW_FLAGS_FLASHLIGHT ) != 0 )
+				continue;
+			IClientRenderable *pRenderable = ClientEntityList().GetClientRenderableFromHandle( m_Shadows[i].m_Entity );
+			if ( !pRenderable )
+				continue;
+#ifdef DYNAMIC_RTT_SHADOWS
+			bDown = GetShadowDirection( i ).z < -0.999f;
+#else
+			bDown = GetShadowDirection( pRenderable ).z < -0.999f;
+#endif
+			break;
+		}
+	}
+	if ( bColour && bDown )
+		return;
+	if ( !m_bDoDSPContactWarned )
+		Warning( "INVARIANT: DOD-SP contact shadows: the prop shadows drifted from what the sun mode wants (%s%s) - putting them back\n",
+				 bColour ? "" : "colour", bDown ? "" : ( bColour ? "direction" : ", direction" ) );
+	m_bDoDSPContactWarned = true;
+	if ( !bColour )
+		DoDSP_ApplyShadowColor();
+	if ( !bDown )
+		UpdateAllShadows();
 }
 
 
@@ -1727,7 +1836,7 @@ void CClientShadowMgr::RestoreRenderState()
 		m_Shadows[h].m_Flags |= SHADOW_FLAGS_TEXTURE_DIRTY;
 	}
 
-	SetShadowColor( m_AmbientLightColor.r, m_AmbientLightColor.g, m_AmbientLightColor.b );
+	SetShadowColor( m_AmbientLightColor.r, m_AmbientLightColor.g, m_AmbientLightColor.b );	// dodsp-lint: map shadow value
 	m_bRenderTargetNeedsClear = true;
 }
 
@@ -1808,8 +1917,8 @@ void CClientShadowMgr::UpdateAllShadows()
 //-----------------------------------------------------------------------------
 void CClientShadowMgr::SetShadowDirection( const Vector& dir )
 {
-	VectorCopy( dir, m_SimpleShadowDir );
-	VectorNormalize( m_SimpleShadowDir );
+	VectorCopy( dir, m_SimpleShadowDir );	// dodsp-lint: map shadow value
+	VectorNormalize( m_SimpleShadowDir );	// dodsp-lint: map shadow value
 
 	if ( m_RenderToTextureActive )
 	{
@@ -1824,7 +1933,11 @@ const Vector &CClientShadowMgr::GetShadowDirection() const
 	if ( !m_RenderToTextureActive )
 		return s_vecDown;
 
-	return m_SimpleShadowDir;
+	// DOD-SP stage 4c: contact shadows fall straight down
+	if ( m_bDoDSPContact )
+		return s_vecDown;
+
+	return m_SimpleShadowDir;	// dodsp-lint: map shadow value
 }
 
 
@@ -1833,10 +1946,14 @@ const Vector &CClientShadowMgr::GetShadowDirection() const
 //-----------------------------------------------------------------------------
 float CClientShadowMgr::GetShadowDistance( IClientRenderable *pRenderable ) const
 {
-	float flDist = m_flShadowCastDist;
+	float flDist = m_flShadowCastDist;	// dodsp-lint: map shadow value
 
 	// Allow the renderable to override the default
 	pRenderable->GetShadowCastDistance( &flDist, GetActualShadowCastType( pRenderable ) );
+
+	// DOD-SP stage 4c: contact shadows reach only a short way below the object, whatever it asks for
+	if ( m_bDoDSPContact )
+		flDist = MIN( flDist, m_flDoDSPContactDist );
 
 	return flDist;
 }
@@ -1845,6 +1962,10 @@ const Vector &CClientShadowMgr::GetShadowDirection( IClientRenderable *pRenderab
 {
 	Vector &vecResult = AllocTempVector();
 	vecResult = GetShadowDirection();
+
+	// DOD-SP stage 4c: contact shadows fall straight down, no per-object direction
+	if ( m_bDoDSPContact )
+		return vecResult;
 
 	// Allow the renderable to override the default
 	pRenderable->GetShadowCastDirection( &vecResult, GetActualShadowCastType( pRenderable ) );
@@ -1860,7 +1981,8 @@ const Vector &CClientShadowMgr::GetShadowDirection( ClientShadowHandle_t shadowH
 	IClientRenderable* pRenderable = ClientEntityList().GetClientRenderableFromHandle( m_Shadows[shadowHandle].m_Entity );
 	Assert( pRenderable );
 
-	if ( !IsShadowingFromWorldLights() )
+	// DOD-SP stage 4c: contact shadows fall straight down, not away from the nearest lamp
+	if ( !IsShadowingFromWorldLights() || m_bDoDSPContact )
 	{
 		return GetShadowDirection( pRenderable );
 	}
@@ -2010,13 +2132,14 @@ void CClientShadowMgr::UpdateShadowDirectionFromLocalLightSource( ClientShadowHa
 //-----------------------------------------------------------------------------
 void CClientShadowMgr::SetShadowDistance( float flMaxDistance )
 {
-	m_flShadowCastDist = flMaxDistance;
+	m_flShadowCastDist = flMaxDistance;	// dodsp-lint: map shadow value
 	UpdateAllShadows();
 }
 
 float CClientShadowMgr::GetShadowDistance( ) const
 {
-	return m_flShadowCastDist;
+	// DOD-SP stage 4c: the reach every shadow gets right now
+	return m_bDoDSPContact ? MIN( m_flShadowCastDist, m_flDoDSPContactDist ) : m_flShadowCastDist;	// dodsp-lint: map shadow value
 }
 
 
@@ -3258,6 +3381,9 @@ void CClientShadowMgr::PreRender()
 	VPROF_BUDGET( "CClientShadowMgr::PreRender", VPROF_BUDGETGROUP_SHADOW_RENDERING );
 	MDLCACHE_CRITICAL_SECTION();
 
+	// DOD-SP stage 4c: prop shadows follow the sun mode (before any shadow is re-projected this frame)
+	DoDSP_UpdateContactShadows();
+
 	//
 	// -- Shadow Depth Textures -----------------------
 	//
@@ -3355,7 +3481,7 @@ void CClientShadowMgr::PreRender()
 void CClientShadowMgr::UpdateDirtyShadow( ClientShadowHandle_t handle )
 {
 	Assert( m_Shadows.IsValidIndex( handle ) );
-	if ( IsShadowingFromWorldLights() )
+	if ( IsShadowingFromWorldLights() && !m_bDoDSPContact )	// DOD-SP 4c: contact shadows don't follow lamps
 	{
 		UpdateShadowDirectionFromLocalLightSource( handle );
 	}

@@ -30,4 +30,9 @@ void DoDSP_DrawSunCascadeView( const CViewSetup &mainView );
 // Returns false while the cascade has never rendered (no sun, maps off, map just loaded).
 bool DoDSP_GetSunCascade( int nCascade, ITexture **ppDepth, VMatrix *pWorldToTexture );
 
+// The one answer to "does the world draw with the per-pixel sun right now?" (DODSP_SUNMODE_DYNAMIC as
+// last published: dodsp_sun_baked 0 and the dynamic sun able to draw). Stage 4c: the prop shadows
+// (clientshadowmgr.cpp) become contact shadows while this is true.
+bool DoDSP_PerPixelSunDraws();
+
 #endif // C_DODSP_SUN_CASCADES_H

@@ -16,6 +16,8 @@
 // their vertex lighting can't switch the sun on and off like the lightmaps can.
 // INVARIANT (watchdog): such a map while the per-pixel sun can't draw leaves its static props with no
 // direct sun at all (nothing to put back - the bake has none), so the watchdog says so and why.
+// Stage 4c: what PublishSun decided about the dynamic sun is also the one answer the prop shadows read
+// (DoDSP_PerPixelSunDraws -> clientshadowmgr.cpp contact shadows).
 //
 // Stage 3b-1: dodsp_csm_view draws them top-right with DOD-SP's DODSP_SunCascadeDebug shader and a
 // ring on the point under the crosshair (green = the cascade says sunlit, red = in shadow), which
@@ -124,10 +126,10 @@ public:
 	CDoDSPSunCascades() : CAutoGameSystem( "CDoDSPSunCascades" ), m_bAllocated( false ), m_nRes( 0 ), m_bHaveSun( false ), m_nLastFrame( -1 ),
 		m_bViewMaterials( false ), m_bViewWarned( false ), m_bSunInvariantWarned( false ),
 		m_bPropsNoSun( false ), m_bPropsInvariantWarned( false ),
-		m_flSunSpreadDeg( 0.0f ), m_bReadable( false ) {}
+		m_flSunSpreadDeg( 0.0f ), m_bReadable( false ), m_bPerPixelSun( false ) {}
 
 	virtual void LevelInitPostEntity()	{ Reset(); EnsureTargets(); FindSun(); ReadPropsNoSun(); }
-	virtual void LevelShutdownPreEntity() { Reset(); m_bHaveSun = false; m_bPropsNoSun = false; m_flSunSpreadDeg = 0.0f; }
+	virtual void LevelShutdownPreEntity() { Reset(); m_bHaveSun = false; m_bPropsNoSun = false; m_flSunSpreadDeg = 0.0f; m_bPerPixelSun = false; }
 	virtual void Shutdown()				{ FreeTargets(); FreeViewMaterials(); }
 
 	void Render( const CViewSetup &mainView );
@@ -135,6 +137,7 @@ public:
 	void DrawView( const CViewSetup &mainView );
 	bool Get( int n, ITexture **ppDepth, VMatrix *pMat );
 	void Report() const;
+	bool PerPixelSunDraws() const { return m_bPerPixelSun; }
 
 private:
 	void Reset()
@@ -186,6 +189,7 @@ private:
 
 	float				m_flSunSpreadDeg;		// the light_environment's SunSpreadAngle (0 = none)
 	bool				m_bReadable;			// all cascades came out readable as raw depth
+	bool				m_bPerPixelSun;			// DODSP_SUNMODE_DYNAMIC as last published (DoDSP_PerPixelSunDraws)
 };
 
 static CDoDSPSunCascades s_DoDSPSunCascades;
@@ -528,6 +532,7 @@ void CDoDSPSunCascades::PublishSun()
 	const bool bDynamic = bCanDraw && s_SunBaked.IsValid() && !s_SunBaked.GetBool();
 	const bool bStaticProps = bCanDraw && m_bPropsNoSun;	// both sun modes (see the top of this file)
 	const int nModes = ( bDynamic ? DODSP_SUNMODE_DYNAMIC : 0 ) | ( bStaticProps ? DODSP_SUNMODE_STATICPROPS : 0 );
+	m_bPerPixelSun = ( nModes & DODSP_SUNMODE_DYNAMIC ) != 0;	// stage 4c: the prop shadows follow this
 
 	Vector vecSun( 0.0f, 0.0f, 0.0f );
 	if ( nModes )
@@ -736,6 +741,11 @@ void DoDSP_DrawSunCascadeView( const CViewSetup &mainView )
 bool DoDSP_GetSunCascade( int nCascade, ITexture **ppDepth, VMatrix *pWorldToTexture )
 {
 	return s_DoDSPSunCascades.Get( nCascade, ppDepth, pWorldToTexture );
+}
+
+bool DoDSP_PerPixelSunDraws()
+{
+	return s_DoDSPSunCascades.PerPixelSunDraws();
 }
 
 CON_COMMAND( dodsp_csm_report, "DOD-SP: the sun cascades - size, coverage and cost" )
