@@ -46,7 +46,7 @@
 // Cvars: dodsp_csm (1 = render), dodsp_csm_debug (1 = coverage boxes + stats), dodsp_csm_res,
 // dodsp_csm_size_near/mid, dodsp_csm_far_interval, dodsp_csm_slopebias, dodsp_csm_bias,
 // dodsp_csm_view (1 = draw the cascades on screen), dodsp_csm_view_size, dodsp_csm_view_bias,
-// dodsp_sun_scale, dodsp_sun_filter, dodsp_sun_normaloffset, dodsp_sun_bias, dodsp_sun_softness,
+// dodsp_sun_scale, dodsp_sun_normaloffset, dodsp_sun_bias, dodsp_sun_softness,
 // dodsp_sun_spread_default (the dynamic sun).
 // Command: dodsp_csm_report.
 //
@@ -91,9 +91,8 @@ static ConVar dodsp_csm_view( "dodsp_csm_view", "0", 0,
 	"green = that cascade says sunlit, red = in shadow. Needs DOD-SP's shader DLL and shader files." );
 static ConVar dodsp_csm_view_size( "dodsp_csm_view_size", "256", 0, "DOD-SP debug: on-screen size of each cascade in dodsp_csm_view, pixels" );
 static ConVar dodsp_sun_scale( "dodsp_sun_scale", "1", 0, "DOD-SP: brightness of the dynamic sun against the baked one (1 = exactly the light_environment)" );
-static ConVar dodsp_sun_filter( "dodsp_sun_filter", "1.5", 0, "DOD-SP: the dynamic sun's sharpest shadow edge (where things touch), filter radius in cascade texels" );
 static ConVar dodsp_sun_softness( "dodsp_sun_softness", "1", 0, "DOD-SP: scales the sun's size for soft shadows (1 = the light_environment's SunSpreadAngle, 0 = sharp)" );
-static ConVar dodsp_sun_spread_default( "dodsp_sun_spread_default", "2", 0, "DOD-SP: sun radius in degrees for soft shadows when the map's light_environment has no SunSpreadAngle" );
+static ConVar dodsp_sun_spread_default( "dodsp_sun_spread_default", "0.6", 0, "DOD-SP: sun radius in degrees for soft shadows when the map's light_environment has no SunSpreadAngle" );
 static ConVar dodsp_sun_normaloffset( "dodsp_sun_normaloffset", "1.5", 0, "DOD-SP: how far (in cascade texels) a surface is pushed out along its normal before the shadow test - fights shadow acne" );
 static ConVar dodsp_sun_bias( "dodsp_sun_bias", "0.0005", 0, "DOD-SP: depth bias of the dynamic sun's shadow test (0..1 of the cascade depth range)" );
 static ConVar dodsp_csm_view_bias( "dodsp_csm_view_bias", "0.002", 0, "DOD-SP debug: depth bias (0..1 of the cascade's depth) for the aim-point test in dodsp_csm_view" );
@@ -544,7 +543,7 @@ void CDoDSPSunCascades::PublishSun()
 	// texel-based sizes go out in cascade texture units (one texel = 1 / resolution)
 	const float flTexel = ( m_nRes > 0 ) ? 1.0f / m_nRes : 0.0f;
 	pRenderContext->SetVectorRenderingParameter( DODSP_RP_VEC_FILTER,
-		Vector( MAX( dodsp_sun_filter.GetFloat(), 0.5f ) * flTexel, MAX( dodsp_sun_normaloffset.GetFloat(), 0.0f ) * flTexel, (float)nModes ) );
+		Vector( flTexel, MAX( dodsp_sun_normaloffset.GetFloat(), 0.0f ) * flTexel, (float)nModes ) );
 	for ( int i = 0; i < DODSP_CASCADE_COUNT; i++ )
 		pRenderContext->SetIntRenderingParameter( DODSP_RP_INT_CASCADE0 + i, bValid ? (int)(intp)(ITexture *)m_Cascades[i].m_Depth : 0 );
 	if ( !bValid )

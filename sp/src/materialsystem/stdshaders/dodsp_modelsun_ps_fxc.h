@@ -8,7 +8,7 @@
 // Four constants. Each model pixel shader declares them itself, at registers that are free in its
 // base pass, BEFORE including this file (the register numbers live in the .fxc and in
 // dodsp_sun_shader.cpp's DoDSP_ModelSunPsReg - CI checks the two agree):
-//   g_DoDSP_MSun0   near cascade: x = scale, y = u offset, z = v offset;  w = smallest filter radius (texture units)
+//   g_DoDSP_MSun0   near cascade: x = scale, y = u offset, z = v offset;  w = one cascade texel (texture units)
 //   g_DoDSP_MSun1   mid cascade:  x, y, z as above;                       w = direction to the sun .x
 //   g_DoDSP_MSun2   far cascade:  x, y, z as above;                       w = direction to the sun .y
 //   g_DoDSP_MSun3   rgb = sun colour (the engine's light units),          w = tan( sun's angular radius )
@@ -47,7 +47,7 @@ float DoDSP_ModelSunShadow( float4 sunCoord )
 	DoDSP_Soft_t soft;
 	soft.flRange = max( sunCoord.w, 1.0f );
 	soft.flTanSun = g_DoDSP_MSun3.w;
-	soft.flMinRadius = g_DoDSP_MSun0.w;
+	soft.flTexel = g_DoDSP_MSun0.w;
 	return DoDSP_ShadowFromCascades( DoDSP_ModelCascade( g_DoDSP_MSun0, sunCoord.xyz ),
 									 DoDSP_ModelCascade( g_DoDSP_MSun1, sunCoord.xyz ),
 									 DoDSP_ModelCascade( g_DoDSP_MSun2, sunCoord.xyz ),
