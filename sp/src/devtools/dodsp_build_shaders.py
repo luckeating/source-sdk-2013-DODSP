@@ -14,8 +14,13 @@ Fails the build (exit 1) when an INVARIANT breaks:
   - the combo headers dodsp/<name>.inc are exactly what dodsp_shader_inc.py generates from the .fxc,
     and their numbering equals the numbering ShaderCompile2 compiled the .vcs with
   - every listed .fxc produced its .vcs
-  - no dodsp_ shader source uses a pixel/vertex constant register above c31 (the 2013 engine keeps
-    32 pixel constants; a write above that overflows its storage - the stage 3b-2 crash)
+  - pixel shader constants stay inside c0..c31: the 2013 engine keeps exactly 32 pixel constants
+    even on SM3 cards, and a write above that overflows its storage (found 2026-11-15, lost in the
+    revert to stock, re-found 2026-11-17 as the buildcubemaps crash). Checked for every listed pixel
+    shader and every header it includes, and for every literal pixel-constant write in our C++
+  - the sun's registers in dodsp_sun_fxc.h and DODSP_PSREG_* in dodsp_sun_shader.cpp agree, and no
+    other literal pixel-constant write in our C++ lands on them (a line that only runs on Xbox 360
+    says so with a "dodsp-lint: x360 only" comment)
 
 usage: python dodsp_build_shaders.py <out_dir>
 """
@@ -63,6 +68,82 @@ def combo_names(fxc_path):
             if m:
                 names.append(m.group(2))
     return names
+
+
+MAX_PS_CONST = 32       # hardwareconfig m_NumPixelShaderConstants in the 2013 engine
+
+
+def strip_comments(text):
+    """Comments out, line count kept (so reported line numbers stay right)."""
+    text = re.sub(r"/\*.*?\*/", lambda m: "\n" * m.group(0).count("\n"), text, flags=re.S)
+    return re.sub(r"//[^\n]*", "", text)
+
+
+def find_header(name):
+    want = os.path.basename(name).lower()
+    for f in os.listdir(STDSHADERS):
+        if f.lower() == want:
+            return os.path.join(STDSHADERS, f)
+    return None
+
+
+def include_closure(path):
+    seen, todo = [], [path]
+    while todo:
+        p = todo.pop()
+        if p in seen:
+            continue
+        seen.append(p)
+        with open(p, encoding="latin-1") as f:
+            for inc in re.findall(r'#\s*include\s*"([^"]+)"', strip_comments(f.read())):
+                h = find_header(inc)
+                if h:
+                    todo.append(h)
+    return seen
+
+
+def check_constants(sources):
+    """INVARIANT: pixel shader constants c0..c31 only; the sun's slots have one owner."""
+    reg_re = re.compile(r"register\s*\(\s*c(\d+)\s*\)")
+    for src in sources:
+        if "_ps" not in os.path.basename(src).lower():
+            continue                                    # vertex shaders really have 256 constants
+        for path in include_closure(os.path.join(STDSHADERS, src)):
+            with open(path, encoding="latin-1") as f:
+                for n, line in enumerate(strip_comments(f.read()).split("\n"), 1):
+                    for m in reg_re.finditer(line):
+                        if int(m.group(1)) >= MAX_PS_CONST:
+                            fail("%s:%d (in pixel shader %s) uses c%s - only c0..c31 exist in this engine"
+                                 % (os.path.basename(path), n, src, m.group(1)))
+
+    # The sun's slots: shader side vs C++ side
+    with open(os.path.join(STDSHADERS, "dodsp_sun_fxc.h"), encoding="latin-1") as f:
+        sun_regs = sorted(int(r) for r in re.findall(r"g_DoDSP_\w+\s*:\s*register\s*\(\s*c(\d+)\s*\)",
+                                                     strip_comments(f.read())))
+    with open(os.path.join(STDSHADERS, "dodsp", "dodsp_sun_shader.cpp"), encoding="latin-1") as f:
+        enum = dict((k, int(v)) for k, v in re.findall(r"\bDODSP_PSREG_(\w+)\s*=\s*(\d+)", strip_comments(f.read())))
+    first, count = enum.get("SUNCOLOR"), enum.get("COUNT")
+    if first is None or count is None or sun_regs != list(range(first, first + count)):
+        fail("sun registers disagree: dodsp_sun_fxc.h uses %s, dodsp_sun_shader.cpp says c%s x %s"
+             % (sun_regs, first, count))
+    sun_slots = set(sun_regs)
+
+    # Every literal pixel-constant write in our C++
+    write_re = re.compile(r"SetPixelShaderConstant\w*\s*\(\s*(\d+)\s*(?:,\s*[^,;]*?(?:,\s*(\d+))?)?\s*\)")
+    for cpp in glob.glob(os.path.join(STDSHADERS, "dodsp", "*.cpp")):
+        with open(cpp, encoding="latin-1") as f:
+            raw = f.read()
+        raw_lines = raw.split("\n")
+        for n, line in enumerate(strip_comments(raw).split("\n"), 1):
+            for m in write_re.finditer(line):
+                reg = int(m.group(1))
+                cnt = int(m.group(2)) if m.group(2) else 1
+                if reg + cnt > MAX_PS_CONST:
+                    fail("%s:%d writes pixel constant c%d (x%d) - only c0..c31 exist in this engine"
+                         % (os.path.basename(cpp), n, reg, cnt))
+                if sun_slots & set(range(reg, reg + cnt)) and "dodsp-lint: x360 only" not in raw_lines[n - 1]:
+                    fail("%s:%d writes c%d, one of the sun's slots (dodsp_sun_fxc.h owns c%d..c%d)"
+                         % (os.path.basename(cpp), n, reg, min(sun_slots), max(sun_slots)))
 
 
 def main():
@@ -113,15 +194,7 @@ def main():
             if not name.startswith("dodsp_") and name not in shared_ok:
                 fail("%s registers ConVar %s in DOD-SP's DLL - give it a dodsp_ name (or SHADER_DLL_CVAR)" % (os.path.basename(cpp), name))
 
-    # Constant registers: c0..c31 only, in every dodsp_ shader source and header
-    reg_re = re.compile(r'register\s*\(\s*c(\d+)\s*\)')
-    for path in glob.glob(os.path.join(STDSHADERS, "dodsp_*.fxc")) + glob.glob(os.path.join(STDSHADERS, "dodsp_*.h")):
-        with open(path, encoding="latin-1") as f:
-            for n, line in enumerate(f, 1):
-                for m in reg_re.finditer(line.split("//")[0]):
-                    if int(m.group(1)) > 31:
-                        fail("%s:%d uses constant register c%s - only c0..c31 exist in this engine"
-                             % (os.path.basename(path), n, m.group(1)))
+    check_constants(sources)
 
     # Combo headers: generated, up to date
     for src in sources:

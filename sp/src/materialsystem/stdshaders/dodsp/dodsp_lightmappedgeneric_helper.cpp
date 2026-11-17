@@ -1577,12 +1577,12 @@ void DrawLightmappedGeneric_DX9_Internal(CBaseVSShader *pShader, IMaterialVar** 
 			atten[1] = flashlightState.m_fLinearAtten;
 			atten[2] = flashlightState.m_fQuadraticAtten;
 			atten[3] = flashlightState.m_FarZ;
-			DynamicCmdsOut.SetPixelShaderConstant( 13, atten, 1 );
+			DynamicCmdsOut.SetPixelShaderConstant( 13, atten, 1 );	// dodsp-lint: x360 only (inside hasFlashlight && IsX360())
 
 			pos[0] = flashlightState.m_vecLightOrigin[0];		// Set the flashlight origin
 			pos[1] = flashlightState.m_vecLightOrigin[1];
 			pos[2] = flashlightState.m_vecLightOrigin[2];
-			DynamicCmdsOut.SetPixelShaderConstant( 14, pos, 1 );
+			DynamicCmdsOut.SetPixelShaderConstant( 14, pos, 1 );	// dodsp-lint: x360 only (inside hasFlashlight && IsX360())
 
 			pShader->BindTexture( SHADER_SAMPLER13, flashlightState.m_pSpotlightTexture, flashlightState.m_nSpotlightTextureFrame );
 
@@ -1596,7 +1596,7 @@ void DrawLightmappedGeneric_DX9_Internal(CBaseVSShader *pShader, IMaterialVar** 
 				tweaks[0] = ShadowFilterFromState( flashlightState );
 				tweaks[1] = ShadowAttenFromState( flashlightState );
 				pShader->HashShadow2DJitter( flashlightState.m_flShadowJitterSeed, &tweaks[2], &tweaks[3] );
-				DynamicCmdsOut.SetPixelShaderConstant( 19, tweaks, 1 );
+				DynamicCmdsOut.SetPixelShaderConstant( 19, tweaks, 1 );	// dodsp-lint: x360 only (inside hasFlashlight && IsX360())
 
 				// Dimensions of screen, used for screen-space noise map sampling
 				float vScreenScale[4] = {1280.0f / 32.0f, 720.0f / 32.0f, 0, 0};
