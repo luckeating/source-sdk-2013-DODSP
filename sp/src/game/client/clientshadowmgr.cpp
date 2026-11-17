@@ -4931,8 +4931,12 @@ void CClientShadowMgr::DoDSP_Report()
 	static const char *s_pszFilter[] = { "NVIDIA hardware PCF", "AMD depth texture, compared in the shader", "AMD Fetch4, compared in the shader" };
 	int nFilter = g_pMaterialSystemHardwareConfig ? g_pMaterialSystemHardwareConfig->GetShadowFilterMode() : -1;
 	Msg( "  card shadow mode %d: %s\n", nFilter, ( nFilter >= 0 && nFilter < 3 ) ? s_pszFilter[nFilter] : "unknown" );
-	Msg( "  debug view %d, models %s (dodsp_sunshadow_models), softness %.2f texels (dodsp_sunshadow_softness)\n", dodsp_sunshadow_debug.GetInt(),
-		 dodsp_sunshadow_models.GetBool() ? "lit per pixel" : "stock", dodsp_sunshadow_softness.GetFloat() );
+	// Say why models are stock: they need both dodsp_sunshadow_models 1 and the darken-only sun
+	const char *pszModels = !dodsp_sunshadow_models.GetBool() ? "stock - dodsp_sunshadow_models is 0"
+		: !dodsp_sun_darken.GetBool() ? "stock - dodsp_sunshadow_models is 1 but needs dodsp_sun_darken 1"
+		: "lit per pixel (dodsp_sunshadow_models 1)";
+	Msg( "  debug view %d, models %s, softness %.2f texels (dodsp_sunshadow_softness)\n", dodsp_sunshadow_debug.GetInt(),
+		 pszModels, dodsp_sunshadow_softness.GetFloat() );
 }
 
 CON_COMMAND( dodsp_sunshadow_report, "DOD-SP: state of the sun's static/dynamic shadow maps" )

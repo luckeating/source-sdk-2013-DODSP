@@ -17,6 +17,9 @@ INVARIANTS checked:
   6. Every listed vertex shader that lights from the engine's light list (GetVertexAttenForLight,
      DoLighting) has a helper that calls DoDSP_SetModelSunState on every draw - otherwise it
      would read whatever sun flag the previous draw left behind.
+  8. The brush shader reads its two sun maps only through DoDSP_BrushSunRemoval
+     (dodsp_sun_brush_ps.h), which samples both through the same taps. Reading them separately
+     with different filters darkens the edge of every baked (static) shadow.
 
 usage: python lint_shader_registers.py <stdshaders dir>
 """
@@ -118,6 +121,15 @@ def main(folder):
                       % (sorted(shader_regs.items()), sorted(our_regs.items())))
     if len(set(shader_regs.values())) != len(shader_regs):
         errors.append("INVARIANT: two sun constants share a register: %s" % sorted(shader_regs.items()))
+
+    # 8. one owner for the brush removal: both maps through the same taps
+    if "DoDSP_BrushSunRemoval(" not in stext:
+        errors.append("INVARIANT: lightmappedgeneric_ps2_3_x.h must read its sun maps through "
+                      "DoDSP_BrushSunRemoval (dodsp_sun_brush_ps.h)")
+    for m in re.finditer(r"\b(DoDSP_SunVisibility\w*|DoDSP_SunTap)\s*\(", stext):
+        errors.append("INVARIANT: lightmappedgeneric_ps2_3_x.h calls %s directly - read both sun maps "
+                      "through DoDSP_BrushSunRemoval so they share taps (or baked shadow edges darken)"
+                      % m.group(1))
 
     errors += check_model_sun(folder, listed)
 

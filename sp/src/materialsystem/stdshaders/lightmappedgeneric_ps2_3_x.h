@@ -208,7 +208,7 @@ const float4 g_DoDSPSunColor		: register( c20 );	// rgb = baked sun, w = strengt
 const float4 g_DoDSPSunDir			: register( c26 );	// xyz = direction light travels, w = 1/map resolution
 const float4 g_DoDSPSunTweaks		: register( c27 );	// x = 1 compare depth by hand (AMD: no hardware PCF), y = debug view (0 off, 1 verdict, 2 raw coordinates), z = softness (texels)
 
-#include "dodsp_sun_ps.h"
+#include "dodsp_sun_brush_ps.h"
 #else
 #define DODSP_SUNSHADOW 0
 #endif
@@ -585,12 +585,12 @@ HALF4 main( PS_INPUT i ) : COLOR
 		float3 vSunTap = float3( saturate( vSun.xy ), min( vSun.z, 0.99999f ) );
 
 		// Always fetched (no sun = white textures, zero constants = nothing removed).
-		// Static map: did VRAD's sun reach here (2x2, it only gates the removal). Full map: is
-		// anything blocking it now (4x4, spaced by dodsp_sunshadow_softness = the soft edge).
-		float flStatic = DoDSP_SunVisibility2x2( DoDSPSunStaticSampler, vSunTap, g_DoDSPSunDir.w, g_DoDSPSunTweaks.x );
-		float flDynamic = DoDSP_SunVisibility4x4( DoDSPSunDynamicSampler, vSunTap, g_DoDSPSunDir.w, max( g_DoDSPSunTweaks.z, 0.25f ), g_DoDSPSunTweaks.x );
+		// Both maps through the same taps (dodsp_sun_brush_ps.h): x = static, y = full, z = remove.
+		float3 vDoDSPSun = DoDSP_BrushSunRemoval( DoDSPSunStaticSampler, DoDSPSunDynamicSampler, vSunTap, g_DoDSPSunDir.w, max( g_DoDSPSunTweaks.z, 0.25f ), g_DoDSPSunTweaks.x );
+		float flStatic = vDoDSPSun.x;
+		float flDynamic = vDoDSPSun.y;
 
-		float flRemove = g_DoDSPSunColor.w * flNdotL * flInsideXY * flInsideZ * flStatic * ( 1.0f - flDynamic );
+		float flRemove = g_DoDSPSunColor.w * flNdotL * flInsideXY * flInsideZ * vDoDSPSun.z;
 		diffuseLighting = max( diffuseLighting - g_DoDSPSunColor.rgb * flRemove, 0.0f );
 
 		// Debug view (dodsp_sunshadow_debug), replaces the lighting:
@@ -609,7 +609,7 @@ HALF4 main( PS_INPUT i ) : COLOR
 			else if ( flInsideXY * flInsideZ < 0.5f )
 				diffuseLighting = float3( 0.3f, 0.0f, 0.3f );
 			else
-				diffuseLighting = float3( flStatic * ( 1.0f - flDynamic ), flStatic * flDynamic, 0.4f * ( 1.0f - flStatic ) );
+				diffuseLighting = float3( vDoDSPSun.z, flDynamic, 0.4f * ( 1.0f - flStatic ) );
 		}
 	}
 #endif
