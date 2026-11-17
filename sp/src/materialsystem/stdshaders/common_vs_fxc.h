@@ -897,9 +897,15 @@ float GetVertexAttenForLight( const float3 worldPos, int lightNum, bool bUseStat
 // from the model's centre. The pixel shader uses it outside the sun map (the stock verdict).
 float DoDSP_EngineSunVisible()
 {
+	// The light-enabled booleans, like GetVertexAttenForLight: the integer light count can't be
+	// used here (the compiler would need it in a float register too - error X4509)
 	float flSun = 0.0f;
-	for ( int i = 0; i < g_nLightCount; i++ )
-		flSun = max( flSun, cLightInfo[i].color.w );
+	[unroll]
+	for ( int i = 0; i < 4; i++ )
+	{
+		if ( g_bLightEnabled[i] )
+			flSun = max( flSun, cLightInfo[i].color.w );
+	}
 	return flSun;
 }
 #endif

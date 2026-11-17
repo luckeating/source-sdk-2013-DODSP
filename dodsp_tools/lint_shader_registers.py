@@ -12,6 +12,8 @@ INVARIANTS checked:
      else claims that slot for the model shaders: no listed vertex shader declares it, and the
      model helpers neither write it nor a 2-register transform onto SPECIFIC_CONST_2 (c50-c51)
      in MAPBASE builds. (Other shaders' helpers may use c51 for their own vertex shaders.)
+  7. No listed shader uses register( D3DVERTEXTEXTURESAMPLER0, ... ): old fxc syntax that
+     current compilers reject (error X3089) - only found after the compile job has started.
   6. Every listed vertex shader that lights from the engine's light list (GetVertexAttenForLight,
      DoLighting) has a helper that calls DoDSP_SetModelSunState on every draw - otherwise it
      would read whatever sun flag the previous draw left behind.
@@ -167,6 +169,14 @@ def check_model_sun(folder, listed):
         errors.append("INVARIANT: SHADER_SPECIFIC_CONST_3 is no longer c51 for DX9 vertex shaders (%s)" % dx9_const3)
     if not mreg or int(mreg.group(1)) != 51:
         errors.append("INVARIANT: DODSP_VSREG_SUN_FLAGS in dodsp_modelsun.h must be 51 (= SHADER_SPECIFIC_CONST_3)")
+
+    for fxc in listed:
+        path = find_file(folder, fxc)
+        for f in (includes_closure(folder, path) if path else []):
+            with open(f, encoding="latin-1") as fh:
+                if re.search(r"register\s*\(\s*D3DVERTEXTEXTURESAMPLER", strip_comments(fh.read())):
+                    errors.append("INVARIANT: %s uses register( D3DVERTEXTEXTURESAMPLERn, ... ) - current compilers "
+                                  "reject it (X3089); in vs_3_0 write register( sN )" % os.path.basename(f))
 
     for fxc in listed:
         if "_vs" not in fxc.lower():

@@ -86,7 +86,9 @@ const float4 g_vMiscParams4					: register( SHADER_SPECIFIC_CONST_9 );
 //		 cMorphTargetTextureDim.z = 4tuples/morph
 const float3 cMorphTargetTextureDim			: register( SHADER_SPECIFIC_CONST_10 );
 const float4 cMorphSubrect					: register( SHADER_SPECIFIC_CONST_11 );
-sampler2D morphSampler						: register( D3DVERTEXTEXTURESAMPLER0, s0 );
+// DOD-SP: was register( D3DVERTEXTEXTURESAMPLER0, s0 ) - old fxc syntax current compilers reject (X3089);
+// in vs_3_0, s0 is vertex texture sampler 0 (SHADER_VERTEXTEXTURE_SAMPLER0)
+sampler2D morphSampler						: register( s0 );
 #endif
 
 struct VS_INPUT
