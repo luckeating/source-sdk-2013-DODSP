@@ -139,6 +139,11 @@ If you learn something like this, add it here in the same commit as the fix.
   material still without the per-pixel sun. `dodsp_lightmap_report` / `_here` (compiled lightmap vs
   what the material wants) stay as the check for real compile mismatches.
 - `mat_luxels 1` draws garbage (solid blue patches) in this setup. Don't diagnose with it.
+- **The owner plays with `mat_hdr_level 0` (LDR), and every lighting test so far was in LDR.** A
+  `-hdr`-only VRAD writes no LDR lighting (log: `LDR lightdata 0`) and the map draws fullbright
+  (2026-11-17). Give compile lines with `-ldr` (or both passes). HDR with the DOD-SP shaders is untested.
+  Owner's VRAD line: `-game $gamedir -ldr -final -dodsp_sunstyle [-StaticPropLighting] -StaticPropPolys
+  -textureshadows $path\$file` (Hammer's $light_exe is our Mapbase vrad in the SDK 2013 SP bin).
 - Hammer expert compile: every `-option` goes BEFORE `$path\$file` in a tool's parameters. An
   option after the map name is read as the map name, the tool prints usage and the compile fails.
 - The engine writes no crash logs. Ours (c_dodsp_crashlog.cpp) writes `DOD-SP\dodsp_crash.txt` and
