@@ -73,6 +73,11 @@ If you learn something like this, add it here in the same commit as the fix.
   directional light the engine hands them (`cLightInfo[i].color.w == 1`), i.e. the engine's
   once-per-model sun. Static props with baked vertex lighting (`STATIC_LIGHT`) keep VRAD's baked sun
   and get no per-pixel sun (vradstaticprops bakes the sun style into them).
+- **Static props compiled WITHOUT `-StaticPropLighting` get no per-pixel sun either** (tested 2026-11-17,
+  `dodsp_sun_baked 0`): sun-facing quoins/shutters drew dark grey next to sunlit plaster. The engine
+  lights them its own way at map load, not like moving props. So Stage 4d keeps `-StaticPropLighting`
+  and adds the per-pixel sun to the STATIC_LIGHT shader path (VRAD bakes static props minus the direct
+  sun). Don't retry the "skip the bake" shortcut.
 - **Sleeping physics props bake their lighting once** (`C_PhysicsProp`, `r_PhysPropStaticLighting`): when
   a prop settles, `RecomputeStaticLighting` bakes the engine's lights as they are at that moment and the
   prop then draws with `STUDIO_STATIC_LIGHTING` (the STATIC_LIGHT shader path: no per-pixel sun). With
