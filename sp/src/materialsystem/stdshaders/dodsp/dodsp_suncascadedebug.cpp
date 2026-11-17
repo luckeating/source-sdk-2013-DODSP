@@ -1,4 +1,6 @@
 //===================== DOD-SP sun cascade debug view =====================//
+// DOD-SP crash hunt: the CI builds extra test DLLs with DODSP_BISECT_* defined to leave parts out. Normal builds are unaffected.
+#if !defined( DODSP_BISECT_NO_DEBUG )
 //
 // Lighting stage 3b-1. The first DOD-SP shader with compiled shader files (dodsp_*.vcs), so it
 // proves the ShaderCompile2 -> .vcs -> game pipeline, and it shows the sun cascades on screen with
@@ -81,3 +83,4 @@ BEGIN_VS_SHADER( DODSP_SunCascadeDebug, "DOD-SP stage 3b-1: draws a sun cascade 
 	}
 
 END_SHADER
+#endif // bisect switch

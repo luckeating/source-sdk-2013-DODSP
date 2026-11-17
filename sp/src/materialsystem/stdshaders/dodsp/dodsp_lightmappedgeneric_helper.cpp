@@ -1,4 +1,6 @@
 //========= Copyright Valve Corporation, All rights reserved. ============//
+// DOD-SP crash hunt: the CI builds extra test DLLs with DODSP_BISECT_* defined to leave parts out. Normal builds are unaffected.
+#if !defined( DODSP_BISECT_NO_BRUSH )
 //
 // DOD-SP copy of Mapbase 8.0's lightmappedgeneric_dx9_helper.cpp, drawing DODSP_LightmappedGeneric
 // and DODSP_WorldVertexTransition (lighting stage 3b-2). Generated once by a script and then kept
@@ -1651,3 +1653,4 @@ void DrawLightmappedGeneric_DX9(CBaseVSShader *pShader, IMaterialVar** params,
 	//
 	//DrawLightmappedGeneric_DX9_Internal( pShader, params, hasFlashlight, pShaderAPI, pShaderShadow, info, pContextDataPtr );
 }
+#endif // bisect switch

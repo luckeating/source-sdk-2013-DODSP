@@ -1,4 +1,6 @@
 //===================== DOD-SP sun (shader DLL side) =====================//
+// DOD-SP crash hunt: the CI builds extra test DLLs with DODSP_BISECT_* defined to leave parts out. Normal builds are unaffected.
+#if !defined( DODSP_BISECT_NO_BRUSH )
 //
 // See dodsp_sun_shader.h. Lighting stage 3b-2.
 //
@@ -123,3 +125,4 @@ const char *DoDSP_BrushUnsupported( IMaterialVar **params, const LightmappedGene
 	#undef INTVAL
 	return NULL;
 }
+#endif // bisect switch
