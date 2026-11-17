@@ -117,6 +117,7 @@ double		g_flStartTime;
 bool		g_bStaticPropLighting = false;
 bool        g_bStaticPropPolys = false;
 bool        g_bTextureShadows = false;
+bool		g_bDoDSPSunStyle = false;
 bool        g_bDisablePropSelfShadowing = false;
 
 
@@ -2360,6 +2361,10 @@ int ParseCommandLine( int argc, char **argv, bool *onlydetail )
 		{
 			g_bStaticPropLighting = true;
 		}
+		else if ( !Q_stricmp( argv[i], "-dodsp_sunstyle" ) )
+		{
+			g_bDoDSPSunStyle = true;
+		}
 		else if ( !stricmp( argv[i], "-StaticPropNormals" ) )
 		{
 			g_bShowStaticPropNormals = true;
@@ -2862,6 +2867,9 @@ void PrintUsage( int argc, char **argv )
 		"                          on terrain. The compile will take longer, but it will gather\n"
 		"                          light across a wider area.\n"
         "  -StaticPropLighting   : generate backed static prop vertex lighting\n"
+        "  -dodsp_sunstyle : DOD-SP: put the light_environment's direct sunlight in its own light\n"
+        "                    style (31) so the game can switch it off and draw the sun itself.\n"
+        "                    Its bounce, the sky ambient and all other lights stay baked as usual.\n"
         "  -StaticPropPolys   : Perform shadow tests of static props at polygon precision\n"
         "  -OnlyStaticProps   : Only perform direct static prop lighting (vrad debug option)\n"
 		"  -StaticPropNormals : when lighting static props, just show their normal vector\n"

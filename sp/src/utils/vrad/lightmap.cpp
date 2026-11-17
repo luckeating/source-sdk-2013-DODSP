@@ -22,6 +22,7 @@
 #include "mathlib/quantize.h"
 #include "bitmap/imageformat.h"
 #include "coordsize.h"
+#include "dodsp_lightstyles.h"
 
 enum
 {
@@ -1480,6 +1481,20 @@ static void ParseLightEnvironment( entity_t* e, directlight_t* dl )
 
 	ParseLightGeneric( e, dl );
 
+	// DOD-SP (-dodsp_sunstyle): the sun's direct light goes in its own light style so the game can
+	// switch it off and draw the sun itself. Only the direct light: the sky ambient below stays in
+	// style 0, and BuildPatchLights bounces the sun into style 0 as well.
+	if ( g_bDoDSPSunStyle && !gSkyLight )
+	{
+		if ( dl->light.style != 0 )
+		{
+			Error( "-dodsp_sunstyle: the light_environment already has light style %d (a targetname makes it "
+				   "switchable, or its style keyvalue is set). Remove the name/style so DOD-SP can give the sun "
+				   "style %d.\n", dl->light.style, DODSP_LIGHTSTYLE_SUN );
+		}
+		dl->light.style = DODSP_LIGHTSTYLE_SUN;
+	}
+
 	char *angle_str=ValueForKeyWithDefault( e, "SunSpreadAngle" );
 	if (angle_str)
 	{
@@ -1614,6 +1629,30 @@ void CreateDirectLights (void)
 	}
 
 	qprintf ("%i direct lights\n", numdlights);
+
+	// DOD-SP INVARIANT: DODSP_LIGHTSTYLE_SUN belongs to the sun's direct light alone, so switching
+	// that style can never switch anything else.
+	int nSunStyleLights = 0;
+	for ( directlight_t *pCheck = activelights; pCheck != NULL; pCheck = pCheck->next )
+	{
+		if ( pCheck->light.style != DODSP_LIGHTSTYLE_SUN )
+			continue;
+		if ( pCheck != gSkyLight )
+		{
+			Error( "INVARIANT: DOD-SP light style %d is reserved for the sun, but a %s light at %.0f %.0f %.0f uses it. "
+				   "Give that light another style.\n", DODSP_LIGHTSTYLE_SUN,
+				   pCheck->light.type == emit_spotlight ? "spot" : "point",
+				   pCheck->light.origin.x, pCheck->light.origin.y, pCheck->light.origin.z );
+		}
+		nSunStyleLights++;
+	}
+	if ( g_bDoDSPSunStyle )
+	{
+		if ( nSunStyleLights )
+			Msg( "DOD-SP: the sun's direct light is in light style %d (its bounce and the sky ambient stay in style 0)\n", DODSP_LIGHTSTYLE_SUN );
+		else
+			Warning( "DOD-SP: -dodsp_sunstyle given, but the map has no light_environment - nothing to separate\n" );
+	}
 	// exit(1);
 }
 
@@ -3214,6 +3253,23 @@ void BuildPatchLights( int facenum )
 	for (i = 0; i < fl->numsamples; i++)
 	{
 		AddSampleToPatch( &fl->sample[i], fl->light[k][0][i], facenum);
+	}
+
+	// DOD-SP: the sun's direct light lives in its own style (-dodsp_sunstyle), but its bounce must
+	// stay baked in style 0 whether the game switches the direct sun off or not - so the sun's
+	// samples light the patches exactly as they do when the sun is in style 0.
+	if ( g_bDoDSPSunStyle )
+	{
+		for ( int kSun = 0; kSun < MAXLIGHTMAPS && f->styles[kSun] != 255; kSun++ )
+		{
+			if ( f->styles[kSun] != DODSP_LIGHTSTYLE_SUN )
+				continue;
+			for (i = 0; i < fl->numsamples; i++)
+			{
+				AddSampleToPatch( &fl->sample[i], fl->light[kSun][0][i], facenum);
+			}
+			break;
+		}
 	}
 
 	// check for a valid face

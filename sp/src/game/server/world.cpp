@@ -31,6 +31,7 @@
 #include "engine/IStaticPropMgr.h"
 #include "particle_parse.h"
 #include "globalstate.h"
+#include "dodsp_lightstyles.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -593,6 +594,28 @@ const char *GetDefaultLightstyleString( int styleIndex )
 	return "m";
 }
 
+//-----------------------------------------------------------------------------
+// DOD-SP: the baked direct sun. Maps compiled with VRAD -dodsp_sunstyle keep the light_environment's
+// direct light in its own light style (dodsp_lightstyles.h); this is its only switch. Everything
+// else that VRAD baked (the sun's bounce, the sky ambient, every other light) is untouched.
+//-----------------------------------------------------------------------------
+static void DoDSP_ApplySunStyle();
+static void DoDSP_SunBakedChanged( IConVar *pVar, const char *pOldValue, float flOldValue )
+{
+	DoDSP_ApplySunStyle();
+}
+ConVar dodsp_sun_baked( "dodsp_sun_baked", "1", FCVAR_NONE,
+	"DOD-SP: 1 = show the map's baked direct sunlight (stock look). 0 = switch it off, leaving its bounce and "
+	"the sky ambient. Only maps compiled with VRAD -dodsp_sunstyle have a separate sun; the console says which "
+	"at map load.", DoDSP_SunBakedChanged );
+
+static void DoDSP_ApplySunStyle()
+{
+	if ( !GetWorldEntity() )
+		return;	// no map loaded; Precache applies it when one is
+	engine->LightStyle( DODSP_LIGHTSTYLE_SUN, dodsp_sun_baked.GetBool() ? "m" : "a" );
+}
+
 void CWorld::Precache( void )
 {
 	g_WorldEntity = this;
@@ -676,6 +699,9 @@ void CWorld::Precache( void )
 	}
 
 	// styles 32-62 are assigned by the light program for switchable lights
+
+	// DOD-SP: style 31 is the baked direct sun (dodsp_lightstyles.h)
+	DoDSP_ApplySunStyle();
 
 	// 63 testing
 	engine->LightStyle(63, "a");

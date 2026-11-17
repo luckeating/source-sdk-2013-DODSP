@@ -10,6 +10,7 @@
 //=============================================================================//
 
 #include "vrad.h"
+#include "dodsp_lightstyles.h"
 #include "mathlib/vector.h"
 #include "UtlBuffer.h"
 #include "utlvector.h"
@@ -982,9 +983,10 @@ void ComputeDirectLightingAtPoint( Vector &position, Vector &normal, Vector &out
 	int cluster = ClusterFromPoint( position );
 	for ( directlight_t *dl = activelights; dl != NULL; dl = dl->next )
 	{
-		if ( dl->light.style )
+		// skip lights with style - except the DOD-SP sun (-dodsp_sunstyle): static prop vertex
+		// lighting has no light styles, so the sun stays baked into it as before
+		if ( dl->light.style && !( g_bDoDSPSunStyle && dl->light.style == DODSP_LIGHTSTYLE_SUN ) )
 		{
-			// skip lights with style
 			continue;
 		}
 

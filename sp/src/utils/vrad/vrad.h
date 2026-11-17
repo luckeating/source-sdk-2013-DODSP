@@ -287,6 +287,7 @@ extern float g_flSkySampleScale;								// extra sampling factor for indirect li
 extern bool g_bLargeDispSampleRadius;
 extern bool g_bStaticPropPolys;
 extern bool g_bTextureShadows;
+extern bool g_bDoDSPSunStyle;	// -dodsp_sunstyle: sun direct light in DODSP_LIGHTSTYLE_SUN
 extern bool g_bShowStaticPropNormals;
 extern bool g_bDisablePropSelfShadowing;
 

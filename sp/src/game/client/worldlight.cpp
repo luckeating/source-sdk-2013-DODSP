@@ -24,6 +24,7 @@
 #include "filesystem.h"
 #include "client_factorylist.h" // FactoryList_Retrieve
 #include "eiface.h" // IVEngineServer
+#include "dodsp_lightstyles.h"
 
 static IVEngineServer *g_pEngineServer = NULL;
 
@@ -143,6 +144,36 @@ bool CWorldLights::Init()
 }
 
 //-----------------------------------------------------------------------------
+// DOD-SP: say at map load whether this map's direct sun can be switched (VRAD -dodsp_sunstyle),
+// so dodsp_sun_baked never silently does nothing.
+// INVARIANT: only the sun may use DODSP_LIGHTSTYLE_SUN (VRAD refuses to compile otherwise).
+//-----------------------------------------------------------------------------
+static void DoDSP_ReportSunStyle( const dworldlight_t *pLights, int nLights )
+{
+	int iSun = -1;
+	for ( int i = 0; i < nLights; i++ )
+	{
+		if ( pLights[i].type == emit_skylight )
+			iSun = i;
+		else if ( pLights[i].style == DODSP_LIGHTSTYLE_SUN )
+			Warning( "INVARIANT: DOD-SP light style %d is the sun's, but a light at %.0f %.0f %.0f uses it - "
+					 "switching the sun will switch it too\n", DODSP_LIGHTSTYLE_SUN,
+					 pLights[i].origin.x, pLights[i].origin.y, pLights[i].origin.z );
+	}
+
+	ConVarRef sunBaked( "dodsp_sun_baked" );
+	const bool bBaked = !sunBaked.IsValid() || sunBaked.GetBool();
+	if ( iSun < 0 )
+		Msg( "DOD-SP sun: this map has no light_environment\n" );
+	else if ( pLights[iSun].style == DODSP_LIGHTSTYLE_SUN )
+		Msg( "DOD-SP sun: separate (compiled with -dodsp_sunstyle) - baked direct sun is %s (dodsp_sun_baked %d)\n",
+			 bBaked ? "SHOWN" : "OFF", bBaked ? 1 : 0 );
+	else
+		Msg( "DOD-SP sun: not separate (compiled without -dodsp_sunstyle) - the direct sun is baked in with "
+			 "everything else, so dodsp_sun_baked does nothing on this map\n" );
+}
+
+//-----------------------------------------------------------------------------
 // Purpose: get all world lights from the BSP
 //-----------------------------------------------------------------------------
 void CWorldLights::LevelInitPreEntity()
@@ -196,6 +227,8 @@ void CWorldLights::LevelInitPreEntity()
 	g_pFullFileSystem->Close(hFile);
 
 	DevMsg("CWorldLights: load successful (%d lights at 0x%p)\n", m_nWorldLights, m_pWorldLights);
+
+	DoDSP_ReportSunStyle( m_pWorldLights, m_nWorldLights );
 
 #ifdef MAPBASE
 	// Now that the lights have been gathered, begin separating them into lists for each PVS cluster.

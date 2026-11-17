@@ -7,6 +7,7 @@
 #include "vrad.h"
 #include "leaf_ambient_lighting.h"
 #include "bsplib.h"
+#include "dodsp_lightstyles.h"
 #include "vraddetailprops.h"
 #include "mathlib/anorms.h"
 #include "pacifier.h"
@@ -149,9 +150,14 @@ void ComputeAmbientFromSphericalSamples( int iThread, const Vector &vStart, Vect
 		// Now that we've got a ray, see what surface we've hit
 		Vector lightStyleColors[MAX_LIGHTSTYLES];
 		lightStyleColors[0].Init();	// We only care about light style 0 here.
+		lightStyleColors[DODSP_LIGHTSTYLE_SUN].Init();
 		CalcRayAmbientLighting( iThread, vStart, vEnd, tanTheta, lightStyleColors );
 	
 		radcolor[i] = lightStyleColors[0];
+		// DOD-SP (-dodsp_sunstyle): light bouncing off a sunlit floor is indirect light for a model,
+		// so it stays in the ambient cube whether or not the game draws the direct sun itself
+		if ( g_bDoDSPSunStyle )
+			radcolor[i] += lightStyleColors[DODSP_LIGHTSTYLE_SUN];
 	}
 
 	// accumulate samples into radiant box
