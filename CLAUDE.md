@@ -323,6 +323,9 @@ If you learn something like this, add it here in the same commit as the fix.
   the baked lamp (floor 3.05 / 3.09 unclipped, unlit areas 1.00 = a constant units factor) -> DODSP_LAMP_BAKE_MATCH
   = 1/3.07 (measured, not derived; re-measure on a second lamp); (2) the cone edge drew as stair steps (128-texel
   cookie, hard edge) -> 512 texels, each the average of 4x4 points.
+  CONFIRMED 2026-11-18 (build 44348802435): smooth cone edge, live brightness in the baked range (floor 0.060-0.084
+  linear vs baked 0.076, camera moved slightly), chair shadow sharp - owner: "holy shit that is crispy". KNOWN-GOOD
+  for stage 5-1. Still to confirm the 1/3.07 on a second lamp with another brightness/falloff.
 - Stage 6: extras. **SSAO** (screen-space ambient occlusion: contact darkening from what's on screen),
   and then blob shadows OFF entirely while the per-pixel sun draws (agreed 2026-11-17). Also cubemap
   normalization / specular occlusion (the owner's idea). HDR moved up: it is the standard since 2026-11-18.
