@@ -266,6 +266,8 @@ If you learn something like this, add it here in the same commit as the fix.
   MISTAKE 2026-11-17 (build 44239160931): the first "off" default was `dodsp_contactshadows 0`, which meant
   "the map's shadow_control" - the stock blob shadows came back. A switch named for one feature can't also
   mean "none": the setting now names every choice (0 none / 1 contact / 2 the map's) and 0 is none.
+  CONFIRMED 2026-11-17 (build 44241790052, client.dll + server.dll): the new defaults load on launch (per-pixel sun,
+  softness 0.3, no prop shadows) and the sun fallback works. KNOWN-GOOD for everything after stage 4.
 - Stage 5: deferred lamps (can reuse the 4b filter).
 - Stage 6: extras. **SSAO** (screen-space ambient occlusion: contact darkening from what's on screen),
   and then blob shadows OFF entirely while the per-pixel sun draws (agreed 2026-11-17). Also cubemap
