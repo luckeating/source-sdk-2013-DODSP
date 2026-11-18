@@ -157,7 +157,7 @@ CON_COMMAND( dodsp_prop_light, "DOD-SP: the light the engine gives the prop unde
 		const int nAttach = pStudio->IllumPositionAttachmentIndex();
 		if ( nAttach > 0 && pAnim->GetAttachment( nAttach, mat ) )
 		{
-			MatrixGetColumn( mat, 3, vecIllum );
+			VectorTransform( pStudio->illumposition, mat, vecIllum );	// as the engine does
 			pszIllum = "attachment";
 		}
 		else
@@ -178,14 +178,33 @@ CON_COMMAND( dodsp_prop_light, "DOD-SP: the light the engine gives the prop unde
 	UTIL_TraceLine( vecIllum + Vector( 0, 0, 1 ), vecIllum - Vector( 0, 0, 512 ), MASK_SOLID_BRUSHONLY, pEnt, COLLISION_GROUP_NONE, &trDown );
 	const float flAboveFloor = ( vecIllum.z + 1.0f ) - trDown.endpos.z - 1.0f;
 
+	// what DOD-SP hands the engine instead (c_dodsp_lightorigin.cpp), if anything
+	char szFix[160];
+	Q_strncpy( szFix, "DOD-SP keeps the model's own point", sizeof( szFix ) );
+	if ( pAnim )
+	{
+		const char *pszWhy = "";
+		const Vector *pFix = pAnim->DoDSP_LightingOrigin( pEnt->EntityToWorldTransform(), &pszWhy );
+		if ( pFix )
+		{
+			Vector vecFixTotal( 0, 0, 0 );
+			Vector cubeFix[6];
+			for ( int i = 0; i < 6; i++ )
+				cubeFix[i].Init();
+			engine->ComputeLighting( *pFix, &vecToEye, false, vecFixTotal, cubeFix );
+			Q_snprintf( szFix, sizeof( szFix ), "DOD-SP lights it from its middle (%s): ambient %.0f", pszWhy,
+						DoDSP_Screen( DoDSP_Lum( DoDSP_CubeLight( cubeFix, vecToEye ) ) ) );
+		}
+	}
+
 	static ConVarRef s_SunBaked( "dodsp_sun_baked" );
 	Msg( "DOD-SP prop light: %s (%s) | at box centre: ambient %.0f + lamps %.0f, cube up %.0f down %.0f sides %.0f | "
-		 "at the engine's origin (%s, %.0f units above the floor%s): ambient %.0f + lamps %.0f | floor under it %.0f | prop/floor %.2f | "
+		 "at the model's own lighting point (%s, %.0f units above the floor%s): ambient %.0f + lamps %.0f | %s | floor under it %.0f | prop/floor %.2f | "
 		 "materials: %s | sun %s\n",
 		 modelinfo->GetModelName( pModel ), pszClass,
 		 DoDSP_Screen( flAmbient ), DoDSP_Screen( flLamps ),
 		 DoDSP_Screen( DoDSP_Lum( cube[4] ) ), DoDSP_Screen( DoDSP_Lum( cube[5] ) ), DoDSP_Screen( flSides ),
-		 pszIllum, flAboveFloor, bInSolid ? ", INSIDE SOLID" : "", DoDSP_Screen( flIllumAmbient ), DoDSP_Screen( flIllumLamps ),
+		 pszIllum, flAboveFloor, bInSolid ? ", INSIDE SOLID" : "", DoDSP_Screen( flIllumAmbient ), DoDSP_Screen( flIllumLamps ), szFix,
 		 DoDSP_Screen( flFloor ),
 		 flFloor > 1e-5f ? ( flAmbient + flLamps ) / flFloor : 0.0f,
 		 szMaterials,

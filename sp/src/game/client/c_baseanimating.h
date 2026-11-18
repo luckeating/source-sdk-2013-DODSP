@@ -152,6 +152,10 @@ public:
 	virtual int DrawModel( int flags );
 	virtual int	InternalDrawModel( int flags );
 	virtual bool OnInternalDrawModel( ClientModelRenderInfo_t *pInfo );
+
+	// DOD-SP (dodsp/c_dodsp_lightorigin.cpp): the point this model is lit from when the model's own
+	// one is outside it or inside solid, else NULL. ppszWhy (optional) says which.
+	const Vector *DoDSP_LightingOrigin( const matrix3x4_t &modelToWorld, const char **ppszWhy = NULL );
 	virtual bool OnPostInternalDrawModel( ClientModelRenderInfo_t *pInfo );
 	void		DoInternalDrawModel( ClientModelRenderInfo_t *pInfo, DrawModelState_t *pState, matrix3x4_t *pBoneToWorldArray = NULL );
 
@@ -664,6 +668,13 @@ private:
 
 	EHANDLE							m_hLightingOrigin;
 	EHANDLE							m_hLightingOriginRelative;
+
+	// DOD-SP lighting point (DoDSP_LightingOrigin)
+	enum { DODSP_LIGHTORIGIN_UNKNOWN = 0, DODSP_LIGHTORIGIN_ENGINE, DODSP_LIGHTORIGIN_MOVED };
+	int								m_nDoDSPLightOrigin = DODSP_LIGHTORIGIN_UNKNOWN;
+	Vector							m_vecDoDSPLightCheckedAt;		// the model's own point when last checked
+	Vector							m_vecDoDSPLightingOrigin;		// the point used instead
+	const char						*m_pszDoDSPLightWhy = "";
 
 	// These are compared against each other to determine if the entity should muzzle flash.
 	CNetworkVar( unsigned char, m_nMuzzleFlashParity );

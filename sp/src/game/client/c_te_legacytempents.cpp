@@ -982,7 +982,7 @@ int BreakModelDrawHelper( C_LocalTempEntity *entity, int flags )
 	const Vector *pLightingOrigin = g_BreakableHelper.GetLightingOrigin( entity );
 	if ( pLightingOrigin )
 	{
-		sInfo.pLightingOrigin = pLightingOrigin;
+		sInfo.pLightingOrigin = pLightingOrigin;	// dodsp-lint: lighting origin (breakable gibs: the parent's)
 	}
 
 	int drawn = modelrender->DrawModelEx( sInfo );

@@ -68,6 +68,25 @@ SHADOW_RULES = [
 ]
 
 
+# Every model is lit from the point C_BaseAnimating::DoDSP_LightingOrigin decides (or a mapper's own
+# lighting origin); a new write of pLightingOrigin elsewhere would skip that check (lit from inside a wall).
+LIGHTORIGIN_WRITE = re.compile(r"(\.|->)\s*pLightingOrigin\s*=(?!=)")
+
+
+def check_lighting_origin():
+    bad = []
+    for dirpath, _, files in os.walk(CLIENT):
+        for name in files:
+            if not name.endswith((".cpp", ".h")):
+                continue
+            path = os.path.join(dirpath, name)
+            with open(path, encoding="latin-1") as f:
+                for n, line in enumerate(f, 1):
+                    if LIGHTORIGIN_WRITE.search(line.split("//")[0]) and "dodsp-lint: lighting origin" not in line:
+                        bad.append("%s:%d: %s" % (os.path.relpath(path, ROOT), n, line.strip()))
+    return bad
+
+
 def check_shadow_values():
     bad = []
     with open(SHADOWMGR, encoding="latin-1") as f:
@@ -108,6 +127,12 @@ def main():
     if baked_bad:
         print("dodsp_lint_client: code sets dodsp_sun_baked (the player's choice) - set dodsp_sun_fallback instead:")
         for b in baked_bad:
+            print("  " + b)
+        return 1
+    origin_bad = check_lighting_origin()
+    if origin_bad:
+        print("dodsp_lint_client: a model's lighting point is set around DoDSP_LightingOrigin:")
+        for b in origin_bad:
             print("  " + b)
         return 1
     shadow_bad = check_shadow_values()

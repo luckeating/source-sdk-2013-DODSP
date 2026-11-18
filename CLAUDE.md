@@ -319,4 +319,18 @@ If you learn something like this, add it here in the same commit as the fix.
   them (linear). So the engine lights each model by what its ORIGIN sees, the sun included - a second sun on
   models that "one sun on models" was meant to prevent, gated per model by one point. Probe v2 prints ambient
   and lamps at that origin separately so the sun's way in (a light, or folded into the ambient cube) shows.
+  PROBE v2 RESULTS 2026-11-18 (build 44256478924):
+  - chair2 in the sun outdoors: own point = box centre, ambient 148 + lamps 240. "lamps 240" = the ENGINE's sun,
+    still handed to models at full strength although style 31 is off; our shader drops it (one sun on models).
+  - chair2 in the shade (the black one): own point fine (21 units up, open), ambient 23 vs floor 20 (1.41). On
+    screen: back bar 0.33 linear = floor 0.31, SEAT 0.028 = 10x darker, though in the sun the seat is as bright
+    as the floor. One material (furniture_chair01a, DODSP_VertexLitGeneric, envmap). OPEN: something kills the
+    seat's ambient only - next check is the same chair on Mapbase's own shaders (+dodsp_sunshader 0).
+  - plate models/ww2/ro1-dish.mdl (phong): its own point is INSIDE SOLID ~378 units away, the engine reads
+    ambient 169 there vs 43 at its middle -> the glowing plates. FIX (c_dodsp_lightorigin.cpp): every model is
+    lit from a point inside its own bounds (+8 units) in open space; else from its middle, lifted out of
+    solid. One owner, called from C_BaseAnimating::InternalDrawModel (C_PhysicsProp's OnInternalDrawModel
+    never calls the base, so the hook can't live there). A mapper's LightingOrigin wins. Console names each
+    corrected model once per map; INVARIANT if no open point exists. Lint: every `->pLightingOrigin =` /
+    `.pLightingOrigin =` carries `dodsp-lint: lighting origin`. `dodsp_lightorigin_fix 0` = engine's points.
 - Confirmed 2026-11-17: `buildcubemaps` no longer crashes with the sun shaders loaded (3b4).

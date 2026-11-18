@@ -3454,7 +3454,7 @@ bool C_BaseAnimating::OnInternalDrawModel( ClientModelRenderInfo_t *pInfo )
 	}
 	if ( m_hLightingOrigin )
 	{
-		pInfo->pLightingOrigin = &(m_hLightingOrigin->GetAbsOrigin());
+		pInfo->pLightingOrigin = &(m_hLightingOrigin->GetAbsOrigin());	// dodsp-lint: lighting origin (the mapper's own)
 	}
 
 	return true;
@@ -3556,6 +3556,11 @@ int C_BaseAnimating::InternalDrawModel( int flags )
 		// Turns the origin + angles into a matrix
 		AngleMatrix( pInfo->angles, pInfo->origin, pInfo->modelToWorld );
 	}
+
+	// DOD-SP: never light a model from a point outside it or inside solid (dodsp/c_dodsp_lightorigin.cpp).
+	// A mapper's own lighting origin wins.
+	if ( !pInfo->pLightingOrigin && !pInfo->pLightingOffset )
+		pInfo->pLightingOrigin = DoDSP_LightingOrigin( *pInfo->pModelToWorld );	// dodsp-lint: lighting origin
 
 	DrawModelState_t state;
 	matrix3x4_t *pBoneToWorld = NULL;
