@@ -298,7 +298,10 @@ If you learn something like this, add it here in the same commit as the fix.
   Files: dodsp_gbuffer_fxc.h, dodsp_gbufferdebug_ps30.fxc, dodsp/dodsp_gbufferdebug.cpp, the five scene PS
   (lightmappedgeneric ps2_3_x.h + flashlight, vertexlit plain/bump, skin), dodsp_shaders_dx9_30.txt,
   game_shader_dodsp.vpc, dodsp_shaders.h ("5a"), dodsp_build_shaders.py, c_dodsp_lamps.cpp/.h, viewrender.cpp,
-  client_hl2.vpc, dodsp_lint_client.py. Undo: `dodsp_lamps_gbuffer 0` (nothing bound, shaders unchanged in
+  client_hl2.vpc, dodsp_lint_client.py. FIRST BUILD FAILED (44284904121, X3000 'DoDSP_PS_OUTPUT' in the three model
+  PS): the include sat inside their `#if !FLASHLIGHT` sun block, so flashlight variants didn't see it. A header the
+  whole shader needs goes outside every #if; check_gbuffer now fails on a conditional include.
+  Undo: `dodsp_lamps_gbuffer 0` (nothing bound, shaders unchanged in
   effect), or the 4b shader DLL/.vcs + previous client.dll (build 44265747599).
 - Stage 6: extras. **SSAO** (screen-space ambient occlusion: contact darkening from what's on screen),
   and then blob shadows OFF entirely while the per-pixel sun draws (agreed 2026-11-17). Also cubemap

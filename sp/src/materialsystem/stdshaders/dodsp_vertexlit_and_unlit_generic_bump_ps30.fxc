@@ -82,8 +82,8 @@ const float4 g_DoDSP_MSun1				: register( c23 );	// DOD-SP sun
 const float4 g_DoDSP_MSun2				: register( c24 );	// DOD-SP sun
 const float4 g_DoDSP_MSun3				: register( c25 );	// DOD-SP sun
 #include "dodsp_modelsun_ps_fxc.h"
-#include "dodsp_gbuffer_fxc.h"	// DOD-SP: the lamps' G-buffer (stage 5a)
 #endif
+#include "dodsp_gbuffer_fxc.h"	// DOD-SP: the lamps' G-buffer (stage 5a; every variant, flashlight too)
 
 sampler BaseTextureSampler					: register( s0 );
 sampler EnvmapSampler						: register( s1 );

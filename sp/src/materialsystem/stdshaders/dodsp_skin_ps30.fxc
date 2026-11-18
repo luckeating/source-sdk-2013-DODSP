@@ -67,8 +67,8 @@ const float4 g_DoDSP_MSun3				: register( c18 );	// DOD-SP sun
 #define DODSP_SAMPLER_MID	s10
 #define DODSP_SAMPLER_FAR	s11
 #include "dodsp_modelsun_ps_fxc.h"
-#include "dodsp_gbuffer_fxc.h"	// DOD-SP: the lamps' G-buffer (stage 5a)
 #endif
+#include "dodsp_gbuffer_fxc.h"	// DOD-SP: the lamps' G-buffer (stage 5a; every variant, flashlight too)
 const float4 g_FresnelSpecParams					: register( PSREG_FRESNEL_SPEC_PARAMS );			// xyz are fresnel, w is specular boost
 const float4 g_SpecularRimParams					: register( PSREG_SPEC_RIM_PARAMS );				// xyz are specular tint color, w is rim power
 PixelShaderLightInfo cLightInfo[3]					: register( PSREG_LIGHT_INFO_ARRAY );				// 2 registers each - 6 registers total (4th light spread across w's)

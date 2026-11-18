@@ -262,6 +262,21 @@ def check_gbuffer(sources):
         if not base.endswith("_ps30.fxc") or base in GBUFFER_EXEMPT:
             continue
         text = open(os.path.join(STDSHADERS, src), encoding="latin-1").read()
+        # The G-buffer header must be included in EVERY variant: 5a's first build had it inside the model
+        # shaders' '#if !FLASHLIGHT' block, so the flashlight variants failed (X3000) 15 minutes in.
+        depth, seen = 0, False
+        for line in strip_comments(text).splitlines():
+            d = line.strip()
+            if re.match(r"#\s*if", d):
+                depth += 1
+            elif re.match(r"#\s*endif", d):
+                depth -= 1
+            elif re.match(r'#\s*include\s+"dodsp_gbuffer_fxc\.h"', d):
+                seen = True
+                if depth != 0:
+                    fail("%s: dodsp_gbuffer_fxc.h is included inside an #if - some variants won't know DoDSP_PS_OUTPUT" % base)
+        if not seen and not re.search(r'#include\s+"dodsp_lightmappedgeneric_ps2_3_x\.h"', text):
+            fail("%s: does not include dodsp_gbuffer_fxc.h" % base)
         for inc in re.findall(r'#include\s+"(dodsp_\w+\.h)"', text):   # main may live in one of our headers
             path = os.path.join(STDSHADERS, inc)
             if os.path.exists(path):
