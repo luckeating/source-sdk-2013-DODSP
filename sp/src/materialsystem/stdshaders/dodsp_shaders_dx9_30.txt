@@ -4,6 +4,7 @@
 //
 dodsp_screenspace_vs30.fxc
 dodsp_suncascadedebug_ps30.fxc
+dodsp_gbufferdebug_ps30.fxc
 dodsp_lightmappedgeneric_vs30.fxc
 dodsp_lightmappedgeneric_ps30.fxc
 dodsp_lightmappedgeneric_flashlight_vs30.fxc

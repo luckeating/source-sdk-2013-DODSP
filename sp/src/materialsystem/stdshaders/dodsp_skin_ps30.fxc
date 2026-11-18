@@ -67,6 +67,7 @@ const float4 g_DoDSP_MSun3				: register( c18 );	// DOD-SP sun
 #define DODSP_SAMPLER_MID	s10
 #define DODSP_SAMPLER_FAR	s11
 #include "dodsp_modelsun_ps_fxc.h"
+#include "dodsp_gbuffer_fxc.h"	// DOD-SP: the lamps' G-buffer (stage 5a)
 #endif
 const float4 g_FresnelSpecParams					: register( PSREG_FRESNEL_SPEC_PARAMS );			// xyz are fresnel, w is specular boost
 const float4 g_SpecularRimParams					: register( PSREG_SPEC_RIM_PARAMS );				// xyz are specular tint color, w is rim power
@@ -131,7 +132,7 @@ struct PS_INPUT
 
 
 
-float4 main( PS_INPUT i ) : COLOR
+DoDSP_PS_OUTPUT main( PS_INPUT i )	// DOD-SP stage 5a: colour + the lamps' G-buffer
 {
 	bool bWrinkleMap = WRINKLEMAP ? true : false;
 	bool bDoDiffuseWarp = LIGHTWARPTEXTURE ? true : false;
@@ -424,5 +425,7 @@ float4 main( PS_INPUT i ) : COLOR
 	bool bWriteDepthToAlpha = ( WRITE_DEPTH_TO_DESTALPHA != 0 ) && ( WRITEWATERFOGTODESTALPHA == 0 );
 
 	//FIXME: need to take dowaterfog into consideration
-	return FinalOutput( float4( result, alpha ), fogFactor, PIXELFOGTYPE, TONEMAP_SCALE_LINEAR, bWriteDepthToAlpha, vProjPos.z );
+	// worldSpaceNormal is normalized above; never the additive flashlight pass
+	return DoDSP_GBuffer( FinalOutput( float4( result, alpha ), fogFactor, PIXELFOGTYPE, TONEMAP_SCALE_LINEAR, bWriteDepthToAlpha, vProjPos.z ),
+						  albedo, worldSpaceNormal, length( i.worldVertToEyeVectorXYZ_tangentSpaceVertToEyeVectorZ.xyz ), FLASHLIGHT == 0 );
 }

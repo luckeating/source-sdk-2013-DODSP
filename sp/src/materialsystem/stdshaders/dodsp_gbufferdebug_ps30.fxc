@@ -1,0 +1,33 @@
+//===================== DOD-SP lamps: G-buffer debug view (stage 5a) =====================//
+//
+// Draws one of the lamps' G-buffer targets (see dodsp_gbuffer_fxc.h) as a picture. Used only by
+// dodsp_lamps_view (c_dodsp_lamps.cpp); never on map materials.
+//   mode 0  albedo as it is (the surface colours without any light)
+//   mode 1  world normal, x y z -> red green blue (0.5 = facing nowhere along that axis);
+//           MAGENTA = nothing written there (a surface the lamps would not light)
+//   mode 2  distance from the eye, black = close, white = g_vParams.y units or more;
+//           MAGENTA = nothing written there
+//
+//=============================================================================//
+
+#include "common_ps_fxc.h"
+
+sampler GBufferSampler	: register( s0 );
+const float4 g_vParams	: register( c0 );	// x = mode, y = 1 / distance drawn white
+
+struct PS_INPUT
+{
+	float2 texCoord		: TEXCOORD0;
+};
+
+float4 main( PS_INPUT i ) : COLOR
+{
+	float4 g = tex2D( GBufferSampler, i.texCoord );
+	const float3 vMagenta = float3( 1.0f, 0.0f, 1.0f );
+	float3 vColor = g.rgb;													// mode 0
+	if ( g_vParams.x > 1.5f )
+		vColor = ( g.x > 0.0f ) ? saturate( g.x * g_vParams.y ).xxx : vMagenta;	// mode 2
+	else if ( g_vParams.x > 0.5f )
+		vColor = ( dot( g.xyz, g.xyz ) > 0.25f ) ? g.xyz * 0.5f + 0.5f : vMagenta;	// mode 1
+	return float4( vColor, 1.0f );
+}

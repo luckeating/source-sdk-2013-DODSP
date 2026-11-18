@@ -275,7 +275,31 @@ If you learn something like this, add it here in the same commit as the fix.
   mean "none": the setting now names every choice (0 none / 1 contact / 2 the map's) and 0 is none.
   CONFIRMED 2026-11-17 (build 44241790052, client.dll + server.dll): the new defaults load on launch (per-pixel sun,
   softness 0.3, no prop shadows) and the sun fallback works. KNOWN-GOOD for everything after stage 4.
-- Stage 5: deferred lamps (can reuse the 4b filter).
+- **Stage 5 - every lamp drawn live** (owner's call 2026-11-18: option 2, all existing light/light_spot, with a
+  falloff range; a per-lamp opt-out can come later). Same idea as the sun: VRAD puts the lamps' DIRECT light in
+  its own light style that the game switches off; their bounce stays baked. Deferred, because our shaders have
+  no room for per-lamp constants (32 pixel constants, skin uses all 16 samplers): the brush and model shaders
+  also write each opaque pixel's albedo / world normal / eye distance to render targets 1..3
+  (`dodsp_gbuffer_fxc.h`), bound only around the main view's opaque pass (viewrender.cpp
+  CBaseWorldView::DrawExecute, VIEW_MAIN, `DoDSP_LampsBeginGBuffer`/`End`); the lamps are then added in screen
+  space. Shadows: world + static props rendered ONCE per lamp at map load and kept; moving things (player,
+  NPCs, physics props) re-rendered only for lamps within `dodsp_lamp_range` of the player. Stages: 5a G-buffer
+  probe, 5b VRAD lamp style (+ do models lose the engine's lamp light when the style is off? measure with
+  dodsp_prop_light "lamps"), 5c lamp light with the stored shadows, 5d moving shadows + falloff.
+  **5a (probe) BUILT 2026-11-18.** Layout: RT1 albedo.rgb, RT2 world normal.xyz (0 = not lit by the lamps; the
+  client clears to 0), RT3 .x eye distance; .a = the pixel's own alpha in all three (blended decals blend all).
+  All RGBA16F, like HDR's RT0 (MRT wants one bit depth): HDR float only. Additive flashlight passes write 0
+  (DoDSP_GBufferNone). Unbound targets drop the extra outputs, so no combo. Risks it checks: MRT works on the
+  2014 engine at all; what writes nothing (Mapbase-fallback materials, decal/overlay shaders, UnlitGeneric);
+  whether shaders that don't write COLOR1..3 leave garbage there. Test: `dodsp_lamps_view 1` (bottom panels:
+  albedo | normal | distance, magenta = no data), `dodsp_lamps_check` (aim point read back vs a trace).
+  Guards: build script `check_gbuffer` (every scene pixel shader returns through DoDSP_GBuffer/None), lint OWNERS
+  (`DoDSP_LampsBeginGBuffer`, `_rt_DODSP_G`), INVARIANT at map load if the targets aren't RGBA16F screen-sized.
+  Files: dodsp_gbuffer_fxc.h, dodsp_gbufferdebug_ps30.fxc, dodsp/dodsp_gbufferdebug.cpp, the five scene PS
+  (lightmappedgeneric ps2_3_x.h + flashlight, vertexlit plain/bump, skin), dodsp_shaders_dx9_30.txt,
+  game_shader_dodsp.vpc, dodsp_shaders.h ("5a"), dodsp_build_shaders.py, c_dodsp_lamps.cpp/.h, viewrender.cpp,
+  client_hl2.vpc, dodsp_lint_client.py. Undo: `dodsp_lamps_gbuffer 0` (nothing bound, shaders unchanged in
+  effect), or the 4b shader DLL/.vcs + previous client.dll (build 44265747599).
 - Stage 6: extras. **SSAO** (screen-space ambient occlusion: contact darkening from what's on screen),
   and then blob shadows OFF entirely while the per-pixel sun draws (agreed 2026-11-17). Also cubemap
   normalization / specular occlusion (the owner's idea). HDR moved up: it is the standard since 2026-11-18.

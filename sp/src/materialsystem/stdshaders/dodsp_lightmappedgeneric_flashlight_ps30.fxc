@@ -38,6 +38,7 @@
 #include "shader_constant_register_map.h"
 #include "common_flashlight_fxc.h"
 #include "common_lightmappedgeneric_fxc.h"
+#include "dodsp_gbuffer_fxc.h"	// DOD-SP: additive pass, adds nothing to the lamps' G-buffer
 
 const float4 g_vShadowTweaks				: register( PSREG_ENVMAP_TINT__SHADOW_TWEAKS );
 const float4 g_FogParams					: register( PSREG_FOG_PARAMS );
@@ -135,7 +136,7 @@ float4 SampleNormal( sampler s, PS_INPUT i )
 
 }
 
-float4 main( PS_INPUT i ) : COLOR
+DoDSP_PS_OUTPUT main( PS_INPUT i )
 {
 	bool bBase2 = WORLDVERTEXTRANSITION ? true : false;
 	bool bBump  = (NORMALMAP != 0) ? true : false;
@@ -153,7 +154,7 @@ float4 main( PS_INPUT i ) : COLOR
 	if ( dot(ltz + gto, float3(1,1,1)) > 0 )
 	{
 		clip (-1);
-		return float4(0,0,0,0);
+		return DoDSP_GBufferNone( float4(0,0,0,0) );
 	}
 	else
 	{
@@ -163,7 +164,7 @@ float4 main( PS_INPUT i ) : COLOR
 		if ( dot(spotColor.xyz, float3(1,1,1)) <= 0 )
 		{
 			clip(-1);
-			return float4(0,0,0,0);
+			return DoDSP_GBufferNone( float4(0,0,0,0) );
 		}
 		else
 		{
@@ -325,7 +326,7 @@ float4 main( PS_INPUT i ) : COLOR
 #endif
 
 	float fogFactor = CalcPixelFogFactor( PIXELFOGTYPE, g_FogParams, g_EyePos.z, i.worldPos_worldTransition.z, i.projPos.z );
-	return FinalOutput( float4(outColor, baseColor.a) , fogFactor, PIXELFOGTYPE, TONEMAP_SCALE_LINEAR );
+	return DoDSP_GBufferNone( FinalOutput( float4(outColor, baseColor.a) , fogFactor, PIXELFOGTYPE, TONEMAP_SCALE_LINEAR ) );
 
 	// so we can jump over all of the above
 #if ( defined( _X360 ) )

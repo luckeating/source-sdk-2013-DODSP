@@ -248,6 +248,42 @@ def check_raw_depth():
                      "(tag the line 'dodsp-lint: x360 only' if it only runs on the Xbox 360)" % (base, n, m.group(1)))
 
 
+# Stage 5a: shaders that draw what the lamps light. The debug views draw panels, not the scene.
+GBUFFER_EXEMPT = {"dodsp_suncascadedebug_ps30.fxc", "dodsp_gbufferdebug_ps30.fxc"}
+
+
+def check_gbuffer(sources):
+    """Stage 5a. INVARIANT: every DOD-SP pixel shader that draws the scene writes the lamps' G-buffer
+    (render targets 1..3, dodsp_gbuffer_fxc.h): main returns DoDSP_PS_OUTPUT and every return in it
+    goes through DoDSP_GBuffer (lit pixels) or DoDSP_GBufferNone (additive passes). A pixel shader
+    that writes only COLOR0 while targets 1..3 are bound leaves them undefined - garbage lamp light."""
+    for src in sources:
+        base = os.path.basename(src)
+        if not base.endswith("_ps30.fxc") or base in GBUFFER_EXEMPT:
+            continue
+        text = open(os.path.join(STDSHADERS, src), encoding="latin-1").read()
+        for inc in re.findall(r'#include\s+"(dodsp_\w+\.h)"', text):   # main may live in one of our headers
+            path = os.path.join(STDSHADERS, inc)
+            if os.path.exists(path):
+                text += "\n" + open(path, encoding="latin-1").read()
+        code = strip_comments(text)
+        code = re.sub(r"#if\s+LIGHTING_PREVIEW.*?#else", "", code, flags=re.S)   # pinned 0..0, never compiled
+        m = re.search(r"\bDoDSP_PS_OUTPUT\s+main\s*\(", code)
+        if not m:
+            fail("%s: main does not return DoDSP_PS_OUTPUT - the lamps' G-buffer (dodsp_gbuffer_fxc.h) is not written" % base)
+            continue
+        start = code.index("{", m.end())
+        depth, end = 0, start
+        for end in range(start, len(code)):
+            depth += {"{": 1, "}": -1}.get(code[end], 0)
+            if depth == 0:
+                break
+        for r in re.finditer(r"\breturn\b\s*([^;]*);", code[start:end]):
+            if not re.match(r"DoDSP_GBuffer(None)?\s*\(", r.group(1)):
+                fail("%s: 'return %s' in main skips the lamps' G-buffer - wrap it in DoDSP_GBuffer / DoDSP_GBufferNone"
+                     % (base, r.group(1).strip()[:60]))
+
+
 def main():
     if len(sys.argv) != 2:
         print(__doc__)
@@ -298,6 +334,7 @@ def main():
 
     check_constants(sources)
     check_raw_depth()
+    check_gbuffer(sources)
 
     # Combo headers: generated, up to date
     for src in sources:

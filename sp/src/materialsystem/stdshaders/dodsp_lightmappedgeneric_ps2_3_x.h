@@ -54,6 +54,7 @@
 #include "common_flashlight_fxc.h"
 #include "common_lightmappedgeneric_fxc.h"
 #include "dodsp_sun_fxc.h"		// DOD-SP: the sun
+#include "dodsp_gbuffer_fxc.h"	// DOD-SP: the lamps' G-buffer (stage 5a)
 
 #if SEAMLESS
 #define USE_FAST_PATH 1
@@ -224,7 +225,7 @@ struct PS_INPUT
 #if LIGHTING_PREVIEW == 2
 LPREVIEW_PS_OUT main( PS_INPUT i ) : COLOR
 #else
-HALF4 main( PS_INPUT i ) : COLOR
+DoDSP_PS_OUTPUT main( PS_INPUT i )	// DOD-SP stage 5a: colour + the lamps' G-buffer
 #endif
 {
 	bool bBaseTexture2 = BASETEXTURE2 ? true : false;
@@ -669,7 +670,8 @@ HALF4 main( PS_INPUT i ) : COLOR
 	alpha = fogFactor;
 #endif
 
-	return FinalOutput( float4( result.rgb, alpha ), fogFactor, PIXELFOGTYPE, TONEMAP_SCALE_LINEAR, bWriteDepthToAlpha, i.worldPos_projPosZ.w );
+	return DoDSP_GBuffer( FinalOutput( float4( result.rgb, alpha ), fogFactor, PIXELFOGTYPE, TONEMAP_SCALE_LINEAR, bWriteDepthToAlpha, i.worldPos_projPosZ.w ),
+						  albedo.xyz, normalize( worldSpaceNormal ), length( worldVertToEyeVector ), true );
 
 #endif
 }

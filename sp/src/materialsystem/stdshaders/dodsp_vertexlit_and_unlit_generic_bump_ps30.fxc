@@ -82,6 +82,7 @@ const float4 g_DoDSP_MSun1				: register( c23 );	// DOD-SP sun
 const float4 g_DoDSP_MSun2				: register( c24 );	// DOD-SP sun
 const float4 g_DoDSP_MSun3				: register( c25 );	// DOD-SP sun
 #include "dodsp_modelsun_ps_fxc.h"
+#include "dodsp_gbuffer_fxc.h"	// DOD-SP: the lamps' G-buffer (stage 5a)
 #endif
 
 sampler BaseTextureSampler					: register( s0 );
@@ -157,7 +158,7 @@ float4 FinalOutputConst( const float4 vShaderColor, float pixelFogFactor, float 
 	return result;
 }
 
-float4 main( PS_INPUT i ) : COLOR
+DoDSP_PS_OUTPUT main( PS_INPUT i )	// DOD-SP stage 5a: colour + the lamps' G-buffer
 {
 	bool bCubemap = CUBEMAP ? true : false;
 	bool bDiffuseLighting = DIFFUSELIGHTING ? true : false;
@@ -360,9 +361,10 @@ float4 main( PS_INPUT i ) : COLOR
 #endif
 
 #if defined( SHADER_MODEL_PS_2_0 )
-	return FinalOutput( float4( result.rgb, alpha ), fogFactor, PIXELFOGTYPE, TONEMAP_SCALE_LINEAR, false, i.worldPos_projPosZ.w );
+	return DoDSP_GBufferNone( FinalOutput( float4( result.rgb, alpha ), fogFactor, PIXELFOGTYPE, TONEMAP_SCALE_LINEAR, false, i.worldPos_projPosZ.w ) );
 #else
-	return FinalOutput( float4( result.rgb, alpha ), fogFactor, g_fPixelFogType, TONEMAP_SCALE_LINEAR, g_fWriteDepthToAlpha, i.worldPos_projPosZ.w );
+	return DoDSP_GBuffer( FinalOutput( float4( result.rgb, alpha ), fogFactor, g_fPixelFogType, TONEMAP_SCALE_LINEAR, g_fWriteDepthToAlpha, i.worldPos_projPosZ.w ),
+						  albedo, normalize( worldSpaceNormal ), length( DoDSP_VertToEye( i ) ), bDiffuseLighting && !bFlashlight );
 #endif
 
 }

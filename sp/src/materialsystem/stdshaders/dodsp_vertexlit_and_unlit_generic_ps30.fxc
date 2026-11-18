@@ -57,6 +57,7 @@ const float4 g_DoDSP_MSun1				: register( c16 );	// DOD-SP sun
 const float4 g_DoDSP_MSun2				: register( c17 );	// DOD-SP sun
 const float4 g_DoDSP_MSun3				: register( c18 );	// DOD-SP sun
 #include "dodsp_modelsun_ps_fxc.h"
+#include "dodsp_gbuffer_fxc.h"	// DOD-SP: the lamps' G-buffer (stage 5a)
 #endif
  
 const float4 g_EnvmapTint_TintReplaceFactor		: register( c0 );
@@ -211,7 +212,7 @@ float4 FinalOutputConst( const float4 vShaderColor, float pixelFogFactor, float 
 #if LIGHTING_PREVIEW == 2
 LPREVIEW_PS_OUT main( PS_INPUT i ) : COLOR
 #else
-float4 main( PS_INPUT i ) : COLOR
+DoDSP_PS_OUTPUT main( PS_INPUT i )	// DOD-SP stage 5a: colour + the lamps' G-buffer
 #endif
 {
 	bool bDetailTexture = DETAILTEXTURE ? true : false;
@@ -497,11 +498,13 @@ float4 main( PS_INPUT i ) : COLOR
 	#if (PIXELFOGTYPE == PIXEL_FOG_TYPE_HEIGHT)
 		alpha = lerp( alpha, fogFactor, g_fWriteWaterFogToDestAlpha );
 	#endif
-	return FinalOutput( float4( result.rgb, alpha ), fogFactor, PIXELFOGTYPE, TONEMAP_SCALE_LINEAR, false, i.projPos.z );
+	return DoDSP_GBufferNone( FinalOutput( float4( result.rgb, alpha ), fogFactor, PIXELFOGTYPE, TONEMAP_SCALE_LINEAR, false, i.projPos.z ) );
 #else // 2b or higher
 	float fogFactor = CalcPixelFogFactor( g_fPixelFogType, g_FogParams, g_EyePos.xyz, i.worldPos_projPosZ.xyz, i.projPos.z );
 	alpha = lerp( alpha, fogFactor, g_fWriteWaterFogToDestAlpha ); // Use the fog factor if it's height fog
-	return FinalOutput( float4( result.rgb, alpha ), fogFactor, g_fPixelFogType, TONEMAP_SCALE_LINEAR, g_fWriteDepthToAlpha, i.projPos.z );
+	// the lamps light what the engine lights (DIFFUSELIGHTING), never the additive flashlight pass
+	return DoDSP_GBuffer( FinalOutput( float4( result.rgb, alpha ), fogFactor, g_fPixelFogType, TONEMAP_SCALE_LINEAR, g_fWriteDepthToAlpha, i.projPos.z ),
+						  albedo, normalize( i.worldSpaceNormal ), length( DoDSP_VertToEye( i ) ), bDiffuseLighting && !bFlashlight );
 #endif
 
 #endif
