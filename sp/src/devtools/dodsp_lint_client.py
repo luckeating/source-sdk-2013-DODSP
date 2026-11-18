@@ -40,6 +40,9 @@ OWNERS = {
     "dodsp_sun_propshadows": {"game/client/clientshadowmgr.cpp"},
     # "the per-pixel sun can't draw here, show the baked one": the client writes it, the server reads it
     "dodsp_sun_fallback": {"game/server/world.cpp", "game/client/dodsp/c_dodsp_sun_cascades.cpp"},
+    # "does this map draw with HDR lighting?" - DoDSP_DrawsHDR (cdll_int.h declares it, viewpostprocess.cpp is Valve's own use)
+    "MapHasHDRLighting": {"game/client/dodsp/c_dodsp_sun_cascades.cpp", "game/client/viewpostprocess.cpp",
+                          "public/cdll_int.h"},
 }
 
 # dodsp_sun_baked is the player's choice (default 0). Code never sets it: the old watchdog's

@@ -170,11 +170,16 @@ If you learn something like this, add it here in the same commit as the fix.
   material still without the per-pixel sun. `dodsp_lightmap_report` / `_here` (compiled lightmap vs
   what the material wants) stay as the check for real compile mismatches.
 - `mat_luxels 1` draws garbage (solid blue patches) in this setup. Don't diagnose with it.
-- **The owner plays with `mat_hdr_level 0` (LDR), and every lighting test so far was in LDR.** A
-  `-hdr`-only VRAD writes no LDR lighting (log: `LDR lightdata 0`) and the map draws fullbright
-  (2026-11-17). Give compile lines with `-ldr` (or both passes). HDR with the DOD-SP shaders: first tested 2026-11-18 (props light correctly there, see the prop-darkness log; sun, fog, cubemaps not yet checked).
-  Owner's VRAD line: `-game $gamedir -ldr -final -dodsp_sunstyle [-StaticPropLighting] -StaticPropPolys
+- **DOD-SP is played and lit in HDR (`mat_hdr_level 2`), owner's call 2026-11-18 ("far superior").** In LDR the
+  engine's model lighting draws props in the shade ~10x too dark (see the prop-darkness log), so LDR is not supported.
+  Every test before 2026-11-18 was LDR. Compile with `-both` (an `-ldr`-only map has no HDR lighting and draws in
+  LDR; a `-hdr`-only map has no LDR lighting and draws fullbright in LDR, 2026-11-17). One owner for "is this map
+  drawn in HDR": `DoDSP_DrawsHDR()` (c_dodsp_sun_cascades.cpp; lint OWNERS `MapHasHDRLighting`); the console says
+  `DOD-SP HDR: on` at map load, or warns why not (HDR off / map without HDR lighting) and what to type.
+  Owner's VRAD line: `-game $gamedir -both -final -dodsp_sunstyle -StaticPropLighting -StaticPropPolys
   -textureshadows $path\$file` (Hammer's $light_exe is our Mapbase vrad in the SDK 2013 SP bin).
+  Still to check in HDR: sun brightness vs the baked sun, fog, cubemaps (build them in HDR), exposure
+  (env_tonemap_controller).
 - Hammer expert compile: every `-option` goes BEFORE `$path\$file` in a tool's parameters. An
   option after the map name is read as the map name, the tool prints usage and the compile fails.
 - The engine writes no crash logs. Ours (c_dodsp_crashlog.cpp) writes `DOD-SP\dodsp_crash.txt` and
@@ -273,8 +278,7 @@ If you learn something like this, add it here in the same commit as the fix.
 - Stage 5: deferred lamps (can reuse the 4b filter).
 - Stage 6: extras. **SSAO** (screen-space ambient occlusion: contact darkening from what's on screen),
   and then blob shadows OFF entirely while the per-pixel sun draws (agreed 2026-11-17). Also cubemap
-  normalization / specular occlusion (the owner's idea). **HDR** (owner: "later"): test and fix the
-  DOD-SP shaders and sun intensity under `mat_hdr_level 2`; compiles then need both `-ldr` and `-hdr` passes.
+  normalization / specular occlusion (the owner's idea). HDR moved up: it is the standard since 2026-11-18.
 
 ## Open known issues (lighting)
 - The door entity doesn't cast into the sun cascades.

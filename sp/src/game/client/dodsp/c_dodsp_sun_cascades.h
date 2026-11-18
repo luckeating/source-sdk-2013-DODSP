@@ -35,4 +35,9 @@ bool DoDSP_GetSunCascade( int nCascade, ITexture **ppDepth, VMatrix *pWorldToTex
 // (clientshadowmgr.cpp) become contact shadows while this is true.
 bool DoDSP_PerPixelSunDraws();
 
+// The one answer to "does the engine draw this map with its HDR lighting?" (HDR on AND the map compiled with
+// HDR lighting, VRAD -both/-hdr). DOD-SP is lit for HDR: in LDR the engine's model lighting draws props in the
+// shade ~10x too dark (found 2026-11-18). The sun's brightness and the static-prop mark follow this.
+bool DoDSP_DrawsHDR();
+
 #endif // C_DODSP_SUN_CASCADES_H

@@ -132,7 +132,7 @@ public:
 		m_bPropsNoSun( false ), m_bPropsInvariantWarned( false ),
 		m_flSunSpreadDeg( 0.0f ), m_bReadable( false ), m_bPerPixelSun( false ), m_bFallbackInvariantWarned( false ) {}
 
-	virtual void LevelInitPostEntity()	{ Reset(); EnsureTargets(); FindSun(); ReadPropsNoSun(); }
+	virtual void LevelInitPostEntity()	{ Reset(); EnsureTargets(); FindSun(); ReadPropsNoSun(); ReportHDR(); }
 	virtual void LevelShutdownPreEntity()
 	{
 		Reset(); m_bHaveSun = false; m_bPropsNoSun = false; m_flSunSpreadDeg = 0.0f; m_bPerPixelSun = false;
@@ -146,6 +146,7 @@ public:
 	void DrawView( const CViewSetup &mainView );
 	bool Get( int n, ITexture **ppDepth, VMatrix *pMat );
 	void Report() const;
+	void ReportHDR() const;
 	bool PerPixelSunDraws() const { return m_bPerPixelSun; }
 
 private:
@@ -495,7 +496,7 @@ void CDoDSPSunCascades::ReadPropsNoSun()
 	if ( !bRead )
 		return;
 
-	const bool bHDR = g_pMaterialSystemHardwareConfig->GetHDREnabled() && engine->MapHasHDRLighting();
+	const bool bHDR = DoDSP_DrawsHDR();
 	m_bPropsNoSun = ( flags.m_LevelFlags & ( bHDR ? DODSP_LVLFLAGS_PROPS_NOSUN_HDR : DODSP_LVLFLAGS_PROPS_NOSUN_NONHDR ) ) != 0;
 	if ( m_bPropsNoSun )
 		Msg( "DOD-SP sun: this map's static props were baked without the direct sun - the game draws it on them per pixel\n" );
@@ -572,7 +573,7 @@ void CDoDSPSunCascades::PublishSun()
 	Vector vecSun( 0.0f, 0.0f, 0.0f );
 	if ( nModes )
 	{
-		const bool bHDR = g_pMaterialSystemHardwareConfig->GetHDREnabled() && engine->MapHasHDRLighting();
+		const bool bHDR = DoDSP_DrawsHDR();
 		Vector vecIntensity;
 		if ( g_pWorldLights && g_pWorldLights->GetSunIntensity( bHDR, vecIntensity ) )
 			vecSun = vecIntensity * MAX( dodsp_sun_scale.GetFloat(), 0.0f );
@@ -781,6 +782,24 @@ bool DoDSP_GetSunCascade( int nCascade, ITexture **ppDepth, VMatrix *pWorldToTex
 bool DoDSP_PerPixelSunDraws()
 {
 	return s_DoDSPSunCascades.PerPixelSunDraws();
+}
+
+bool DoDSP_DrawsHDR()
+{
+	return g_pMaterialSystemHardwareConfig->GetHDREnabled() && engine->MapHasHDRLighting();
+}
+
+// One line at map load: is this map drawn the way DOD-SP is lit (HDR)? If not, say why and what to do.
+void CDoDSPSunCascades::ReportHDR() const
+{
+	if ( DoDSP_DrawsHDR() )
+		Msg( "DOD-SP HDR: on\n" );
+	else if ( !g_pMaterialSystemHardwareConfig->GetHDREnabled() )
+		Warning( "DOD-SP HDR: off (mat_hdr_level %d) - DOD-SP is lit for HDR, in LDR props in the shade draw far too dark. "
+				 "Type mat_hdr_level 2, then reload the map\n", ConVarRef( "mat_hdr_level" ).GetInt() );
+	else
+		Warning( "DOD-SP HDR: this map has no HDR lighting (VRAD ran with -ldr only), so it draws in LDR and props in the "
+				 "shade draw far too dark. Recompile with -both\n" );
 }
 
 CON_COMMAND( dodsp_csm_report, "DOD-SP: the sun cascades - size, coverage and cost" )
