@@ -196,6 +196,7 @@ If you learn something like this, add it here in the same commit as the fix.
   `dodsp_sun_baked 1` itself, which would have stuck for every later map once 0 became the default. Maps
   without a separate sun also never get the per-pixel sun on top (it used to add a second sun there).
   The fallback lives in server.dll: client.dll and server.dll must come from one build.
+- Stage 5: `dodsp_lamps_baked 0` (live lamps drawn live), `dodsp_lamps_scale 1`, `dodsp_lamps_shadows 1` reset too.
 - `dodsp_sunshader` is read once per game start. Changing it mid-game does nothing until a restart.
 
 ## Owner-side pitfalls seen
@@ -276,40 +277,45 @@ If you learn something like this, add it here in the same commit as the fix.
   mean "none": the setting now names every choice (0 none / 1 contact / 2 the map's) and 0 is none.
   CONFIRMED 2026-11-17 (build 44241790052, client.dll + server.dll): the new defaults load on launch (per-pixel sun,
   softness 0.3, no prop shadows) and the sun fallback works. KNOWN-GOOD for everything after stage 4.
-- **Stage 5 - every lamp drawn live** (owner's call 2026-11-18: option 2, all existing light/light_spot, with a
-  falloff range; a per-lamp opt-out can come later). Same idea as the sun: VRAD puts the lamps' DIRECT light in
-  its own light style that the game switches off; their bounce stays baked. Deferred, because our shaders have
-  no room for per-lamp constants (32 pixel constants, skin uses all 16 samplers): the brush and model shaders
-  also write each opaque pixel's albedo / world normal / eye distance to render targets 1..3
-  (`dodsp_gbuffer_fxc.h`), bound only around the main view's opaque pass (viewrender.cpp
-  CBaseWorldView::DrawExecute, VIEW_MAIN, `DoDSP_LampsBeginGBuffer`/`End`); the lamps are then added in screen
-  space. Shadows: world + static props rendered ONCE per lamp at map load and kept; moving things (player,
-  NPCs, physics props) re-rendered only for lamps within `dodsp_lamp_range` of the player. Stages: 5a G-buffer
-  probe, 5b VRAD lamp style (+ do models lose the engine's lamp light when the style is off? measure with
-  dodsp_prop_light "lamps"), 5c lamp light with the stored shadows, 5d moving shadows + falloff.
-  **5a (probe) BUILT 2026-11-18.** Layout: RT1 albedo.rgb, RT2 world normal.xyz (0 = not lit by the lamps; the
-  client clears to 0), RT3 .x eye distance; .a = the pixel's own alpha in all three (blended decals blend all).
-  Formats follow RT0 (see PROBE RESULT 1 below). Additive flashlight passes write 0
-  (DoDSP_GBufferNone). Unbound targets drop the extra outputs, so no combo. Risks it checks: MRT works on the
-  2014 engine at all; what writes nothing (Mapbase-fallback materials, decal/overlay shaders, UnlitGeneric);
-  whether shaders that don't write COLOR1..3 leave garbage there. Test: `dodsp_lamps_view 1` (bottom panels:
-  albedo | normal | distance, magenta = no data), `dodsp_lamps_check` (aim point read back vs a trace).
-  Guards: build script `check_gbuffer` (every scene pixel shader returns through DoDSP_GBuffer/None), lint OWNERS
-  (`DoDSP_LampsBeginGBuffer`, `_rt_DODSP_G`), INVARIANT at map load if the targets aren't RGBA16F screen-sized.
-  Files: dodsp_gbuffer_fxc.h, dodsp_gbufferdebug_ps30.fxc, dodsp/dodsp_gbufferdebug.cpp, the five scene PS
-  (lightmappedgeneric ps2_3_x.h + flashlight, vertexlit plain/bump, skin), dodsp_shaders_dx9_30.txt,
-  game_shader_dodsp.vpc, dodsp_shaders.h ("5a"), dodsp_build_shaders.py, c_dodsp_lamps.cpp/.h, viewrender.cpp,
-  client_hl2.vpc, dodsp_lint_client.py. FIRST BUILD FAILED (44284904121, X3000 'DoDSP_PS_OUTPUT' in the three model
-  PS): the include sat inside their `#if !FLASHLIGHT` sun block, so flashlight variants didn't see it. A header the
-  whole shader needs goes outside every #if; check_gbuffer now fails on a conditional include.
-  PROBE RESULT 1 (build 44287491699): `the G-buffer was never written (HDR is not the float kind)` - the owner's
-  `mat_hdr_level 2` is INTEGER HDR (Source's usual on PC: an 8-bit screen, tone-mapped in the shaders), not float.
-  So the formats now follow render target 0 (D3D9 MRT: one bit depth): integer -> RGBA8888, RGBA8888, R32F; float
-  -> RGBA16F x3 (`DoDSP_GBufferFormat`). Normals are stored *0.5+0.5 (8 bits hold no negatives). Every bound target
-  must share the screen's multisampling: MSAA on = G-buffer off (`WhyOff`, the one answer, said once per map).
-  Open: does the engine's sRGB write also gamma-encode targets 1..2? dodsp_lamps_check prints both readings.
-  Undo: `dodsp_lamps_gbuffer 0` (nothing bound, shaders unchanged in
-  effect), or the 4b shader DLL/.vcs + previous client.dll (build 44265747599).
+- **Stage 5 - live lamps, HAND-PLACED, FORWARD (owner's call 2026-11-18, final).** The mapper marks a `light_spot`
+  as a live lamp (key `_dodsp_live 1`, in dodsp.fgd); everything about the lamp (colour, brightness, cone, falloff)
+  has ONE owner: that light entity. VRAD bakes only its BOUNCE; its direct light goes to a light style the game
+  switches off while the lamp draws live (same idea as the sun's style 31; fallback = baked). The game draws each
+  live lamp the engine's forward way - a projected texture (Mapbase's env_projectedtexture path, shadowed, an
+  additive pass per lit surface, already in our shaders' flashlight variants). Forward keeps MSAA. Plan: 5-1 VRAD
+  style + server/client lamp + FGD key (no shader build); 5-2 soft (PCSS) lamp shadows in the flashlight passes,
+  raw-depth lamp shadow maps (shader build); 5-3 cost: shadow maps re-rendered only when something moved, budget
+  (Mapbase: 5 shadowed at once, `-numshadowtextures`). Point lights (6 faces) only if a map needs them.
+  **REJECTED: deferred lamps (5a, every light live).** Built and probed 2026-11-18 (builds 44287491699, 44296304491):
+  the shaders wrote albedo/normal/distance to render targets 1..3 in the main opaque pass. D3D9 MRT needs every
+  bound target to share render target 0's bit depth (the owner's HDR is INTEGER: 8-bit screen, not float) AND its
+  multisampling - so MSAA had to go (the owner won't take FXAA; SMAA or a second geometry pass were the only ways
+  around). Deferred + MSAA properly needs per-sample reads (D3D10.1); averaging G-buffer samples invents surfaces
+  -> halos. Lessons kept: integer HDR on PC (`GetHDRType() == HDR_TYPE_INTEGER`), MRT bit-depth/multisample rules,
+  a header the whole shader needs goes outside every #if (5a's first build failed X3000 on flashlight variants).
+  If SSAO (stage 6) wants normals/depth, it meets the same MSAA rule: plan a separate pass. The 5a client code is
+  removed in 5-1 (nothing binds targets 1..3, so the shaders' extra outputs are dropped); the shader outputs and
+  check_gbuffer go with 5-2's shader build.
+  **5-1 BUILT 2026-11-18.** VRAD (lightmap.cpp): `"_dodsp_live" "1"` on a light_spot (key added by hand, SmartEdit off -
+  no FGD shipped yet) -> style `DODSP_LIGHTSTYLE_LAMPS` (30), INVARIANT style 30 <=> live; point lights (180-degree
+  cones) stay baked with a warning. Bounce stays in style 0 for every style `DoDSP_StyleBounceStays` (sun, lamps):
+  BuildPatchLights, leaf ambient, static-prop indirect. Live lamps are NOT in the world-lights lump (the engine
+  ignores styles when lighting models from it - the sun's worldlight lit models at full strength with style 31 off -
+  so they'd light every model twice); VRAD writes them per pass to the pak: `dodsp/lamps_hdr.txt` / `_ldr.txt`
+  (KeyValues: origin, normal, intensity /255, attn c l q, cone stopdot stopdot2 exponent, radius, fade). Server
+  (world.cpp): `dodsp_lamps_baked` (player, default 0) + `dodsp_lamps_fallback` (client-written) -> style 30.
+  Client (c_dodsp_lamps.cpp, one owner): one engine flashlight per lamp (CreateFlashlight + UpdateProjectedTexture
+  every frame), cookie = VRAD's cone formula per texel (procedural, stored sRGB-encoded because the flashlight
+  sampler reads sRGB), attenuation VRAD 1/(c+ld+qd^2) -> shader c'+l'/d+q'/d^2 (exact for one term, approximated
+  for mixed - `dodsp_lamps` says which), colour = intensity / dodsp_r_flashlightbrightness (0.25) x
+  `dodsp_lamps_scale`. Range = _distance / hard-falloff end / where the light drops below `dodsp_lamps_cutoff`, cap
+  `dodsp_lamps_maxrange`. The shader's flashlight fades the light from 60% to 100% of FarZ and its SHADOW with the
+  attenuation unless m_flShadowAtten = 0 (set). Known gaps: in fallback (baked) models get no lamp direct light
+  (it isn't in the world lights); more shadowed lamps in view than shadow maps (5) -> the rest draw unshadowed
+  ("Too many shadow maps this frame!") until 5-3. Files: dodsp_lightstyles.h, vrad.h, lightmap.cpp,
+  leaf_ambient_lighting.cpp, vraddetailprops.cpp, world.cpp, c_dodsp_lamps.cpp (c_dodsp_lamps.h removed),
+  viewrender.cpp (5a hooks removed), dodsp_lint_client.py. Undo: `dodsp_lamps_baked 1` (the baked lamps; no rebuild),
+  or the previous VRAD + recompile (the lamp is an ordinary baked light again).
 - Stage 6: extras. **SSAO** (screen-space ambient occlusion: contact darkening from what's on screen),
   and then blob shadows OFF entirely while the per-pixel sun draws (agreed 2026-11-17). Also cubemap
   normalization / specular occlusion (the owner's idea). HDR moved up: it is the standard since 2026-11-18.

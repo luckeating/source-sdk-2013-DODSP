@@ -1309,6 +1309,29 @@ static void ParseLightSpot( entity_t* e, directlight_t* dl )
 	}
 
 	SetLightFalloffParams(e,dl);
+
+	// DOD-SP stage 5: a live lamp. Its direct light goes in its own style so the game can switch it
+	// off and draw the lamp itself; its bounce stays in style 0 (BuildPatchLights). Only real spots:
+	// the game draws a lamp as one projected texture, which can't cover a whole sphere.
+	if ( IntForKey( e, "_dodsp_live" ) != 0 )
+	{
+		if ( dl->light.type != emit_spotlight )
+		{
+			Warning( "DOD-SP: the live lamp at %.0f %.0f %.0f has 180-degree cones (a point light) - only spots can be live; "
+					 "it stays baked\n", dl->light.origin.x, dl->light.origin.y, dl->light.origin.z );
+		}
+		else if ( dl->light.style != 0 )
+		{
+			Error( "DOD-SP: the live lamp at %.0f %.0f %.0f already has light style %d (a targetname makes it switchable, or "
+				   "its style keyvalue is set). Remove the name/style so DOD-SP can give it style %d.\n",
+				   dl->light.origin.x, dl->light.origin.y, dl->light.origin.z, dl->light.style, DODSP_LIGHTSTYLE_LAMPS );
+		}
+		else
+		{
+			dl->light.style = DODSP_LIGHTSTYLE_LAMPS;
+			dl->m_bDoDSPLive = true;
+		}
+	}
 }
 
 // NOTE: This is just a heuristic.  It traces a finite number of rays to find sky
@@ -1646,6 +1669,23 @@ void CreateDirectLights (void)
 		}
 		nSunStyleLights++;
 	}
+	// DOD-SP INVARIANT: DODSP_LIGHTSTYLE_LAMPS belongs to live lamps alone (stage 5), and every live lamp has it
+	int nLiveLamps = 0;
+	for ( directlight_t *pCheck = activelights; pCheck != NULL; pCheck = pCheck->next )
+	{
+		if ( ( pCheck->light.style == DODSP_LIGHTSTYLE_LAMPS ) != pCheck->m_bDoDSPLive )
+		{
+			Error( "INVARIANT: DOD-SP light style %d is reserved for live lamps (\"_dodsp_live\" \"1\" on a light_spot), but a %s "
+				   "light at %.0f %.0f %.0f %s. Give it another style or mark it live.\n", DODSP_LIGHTSTYLE_LAMPS,
+				   pCheck->light.type == emit_spotlight ? "spot" : "point",
+				   pCheck->light.origin.x, pCheck->light.origin.y, pCheck->light.origin.z,
+				   pCheck->m_bDoDSPLive ? "is live without the style" : "uses it" );
+		}
+		nLiveLamps += pCheck->m_bDoDSPLive ? 1 : 0;
+	}
+	if ( nLiveLamps )
+		Msg( "DOD-SP: %d live lamp%s - direct light in light style %d (drawn live by the game), bounce in style 0\n",
+			 nLiveLamps, nLiveLamps == 1 ? "" : "s", DODSP_LIGHTSTYLE_LAMPS );
 	if ( g_bDoDSPSunStyle )
 	{
 		if ( nSunStyleLights )
@@ -1669,8 +1709,40 @@ void ExportDirectLightsToWorldLights()
 	// In case the level has already been VRADed.
 	*pNumworldlights = 0;
 
+	// DOD-SP stage 5: live lamps stay out of the world lights (the engine would light every model with
+	// them as well as the game's live lamp - it ignores light styles there) and go to the map's pak
+	// file instead, for this pass (LDR or HDR). Values are the world-light ones (intensity / 255).
+	CUtlBuffer lampBuf( 0, 0, CUtlBuffer::TEXT_BUFFER );
+	lampBuf.Printf( "\"DODSP_Lamps\"\n{\n" );
+	int nLampsOut = 0;
+	for ( dl = activelights; dl != NULL; dl = dl->next )
+	{
+		if ( !dl->m_bDoDSPLive )
+			continue;
+		const Vector vecI = dl->light.intensity * ( 1.0f / 255.0f );
+		lampBuf.Printf( "\t\"lamp\"\n\t{\n" );
+		lampBuf.Printf( "\t\t\"origin\" \"%f %f %f\"\n", dl->light.origin.x, dl->light.origin.y, dl->light.origin.z );
+		lampBuf.Printf( "\t\t\"normal\" \"%f %f %f\"\n", dl->light.normal.x, dl->light.normal.y, dl->light.normal.z );
+		lampBuf.Printf( "\t\t\"intensity\" \"%f %f %f\"\n", vecI.x, vecI.y, vecI.z );
+		lampBuf.Printf( "\t\t\"attn\" \"%f %f %f\"\n", dl->light.constant_attn, dl->light.linear_attn, dl->light.quadratic_attn );
+		lampBuf.Printf( "\t\t\"cone\" \"%f %f %f\"\n", dl->light.stopdot, dl->light.stopdot2, dl->light.exponent );
+		lampBuf.Printf( "\t\t\"radius\" \"%f\"\n", dl->light.radius );
+		lampBuf.Printf( "\t\t\"fade\" \"%f %f\"\n", dl->m_flStartFadeDistance, dl->m_flEndFadeDistance );
+		lampBuf.Printf( "\t}\n" );
+		nLampsOut++;
+	}
+	lampBuf.Printf( "}\n" );
+	if ( nLampsOut )
+	{
+		const char *pszFile = g_bHDR ? DODSP_LAMPS_FILE_HDR : DODSP_LAMPS_FILE_LDR;
+		AddBufferToPak( GetPakFile(), pszFile, lampBuf.Base(), lampBuf.TellPut(), true );
+		Msg( "DOD-SP: %d live lamp%s written to %s (not in the world lights)\n", nLampsOut, nLampsOut == 1 ? "" : "s", pszFile );
+	}
+
 	for (dl = activelights; dl != NULL; dl = dl->next )
 	{
+		if ( dl->m_bDoDSPLive )
+			continue;	// DOD-SP: in the pak file above
 		dworldlight_t *wl = &dworldlights[(*pNumworldlights)++];
 
 		if (*pNumworldlights > MAX_MAP_WORLDLIGHTS)
@@ -3255,20 +3327,17 @@ void BuildPatchLights( int facenum )
 		AddSampleToPatch( &fl->sample[i], fl->light[k][0][i], facenum);
 	}
 
-	// DOD-SP: the sun's direct light lives in its own style (-dodsp_sunstyle), but its bounce must
-	// stay baked in style 0 whether the game switches the direct sun off or not - so the sun's
-	// samples light the patches exactly as they do when the sun is in style 0.
-	if ( g_bDoDSPSunStyle )
+	// DOD-SP: the sun's (-dodsp_sunstyle) and the live lamps' (stage 5) direct light live in their own
+	// styles, but their bounce must stay baked in style 0 whether the game switches the direct light
+	// off or not - so those samples light the patches exactly as they would from style 0.
+	// One owner for which styles: DoDSP_StyleBounceStays (dodsp_lightstyles.h).
+	for ( int kSep = 1; kSep < MAXLIGHTMAPS && f->styles[kSep] != 255; kSep++ )
 	{
-		for ( int kSun = 0; kSun < MAXLIGHTMAPS && f->styles[kSun] != 255; kSun++ )
+		if ( !DoDSP_StyleBounceStays( f->styles[kSep] ) )
+			continue;
+		for (i = 0; i < fl->numsamples; i++)
 		{
-			if ( f->styles[kSun] != DODSP_LIGHTSTYLE_SUN )
-				continue;
-			for (i = 0; i < fl->numsamples; i++)
-			{
-				AddSampleToPatch( &fl->sample[i], fl->light[kSun][0][i], facenum);
-			}
-			break;
+			AddSampleToPatch( &fl->sample[i], fl->light[kSep][0][i], facenum);
 		}
 	}
 

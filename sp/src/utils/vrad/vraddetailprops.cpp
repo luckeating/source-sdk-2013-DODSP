@@ -717,25 +717,20 @@ void ComputeIndirectLightingAtPoint( Vector &position, Vector &normal, Vector &o
 		}
 
 
-		// DOD-SP (-dodsp_sunstyle): the sunlit surface's direct sun lives in its own style, but the
-		// light it bounces onto a prop is indirect light and must stay in the prop's bake - the same
-		// rule as the leaf ambient cubes (leaf_ambient_lighting.cpp). Slot 0 is read as before; the
-		// sun's slot is added when it is another one.
-		int nSlots[2] = { 0, -1 };
-		if ( g_bDoDSPSunStyle )
+		// DOD-SP (-dodsp_sunstyle, stage 5 live lamps): a sunlit or lamp-lit surface's direct light lives
+		// in its own style, but the light it bounces onto a prop is indirect light and must stay in the
+		// prop's bake - the same rule as the leaf ambient cubes. Slot 0 is read as before; every slot
+		// whose style DoDSP_StyleBounceStays is added.
+		COMPILE_TIME_ASSERT( MAXLIGHTMAPS == 4 );	// the initializer below
+		int nSlots[MAXLIGHTMAPS] = { 0, -1, -1, -1 };
+		for ( int k = 1, n = 1; k < MAXLIGHTMAPS && surfEnum.m_pSurface->styles[k] != 255; k++ )
 		{
-			for ( int k = 1; k < MAXLIGHTMAPS && surfEnum.m_pSurface->styles[k] != 255; k++ )
-			{
-				if ( surfEnum.m_pSurface->styles[k] == DODSP_LIGHTSTYLE_SUN )
-				{
-					nSlots[1] = k;
-					break;
-				}
-			}
+			if ( DoDSP_StyleBounceStays( surfEnum.m_pSurface->styles[k] ) )	// sun, live lamps
+				nSlots[n++] = k;
 		}
 
 		Vector lightmapColor( 0.0f, 0.0f, 0.0f );
-		for ( int iSlot = 0; iSlot < 2; iSlot++ )
+		for ( int iSlot = 0; iSlot < MAXLIGHTMAPS; iSlot++ )
 		{
 			const int nSlot = nSlots[iSlot];
 			if ( nSlot < 0 )

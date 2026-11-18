@@ -83,7 +83,6 @@
 #include "C_Env_Projected_Texture.h"
 
 #include "dodsp/c_dodsp_sun_cascades.h"
-#include "dodsp/c_dodsp_lamps.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -2537,7 +2536,6 @@ void CViewRender::RenderView( const CViewSetup &view, int nClearFlags, int whatT
 
 	// DOD-SP: the sun cascade debug view (dodsp_csm_view), on top of everything else
 	DoDSP_DrawSunCascadeView( view );
-	DoDSP_DrawLampsView( view );	// DOD-SP: the lamps' G-buffer (dodsp_lamps_view)
 
 	Render2DEffectsPostHUD( view );
 
@@ -6092,12 +6090,8 @@ void CBaseWorldView::DrawExecute( float waterHeight, view_id_t viewID, float wat
 
 	if ( m_DrawFlags & DF_DRAW_ENTITITES )
 	{
-		// DOD-SP stage 5: the main view's opaque pass also writes the lamps' G-buffer (c_dodsp_lamps.cpp)
-		const bool bDoDSPGBuffer = ( viewID == VIEW_MAIN ) && DoDSP_LampsBeginGBuffer();
 		DrawWorld( waterZAdjust );
 		DrawOpaqueRenderables( DepthMode );
-		if ( bDoDSPGBuffer )
-			DoDSP_LampsEndGBuffer();	// before anything translucent draws
 
 #ifdef TF_CLIENT_DLL
 		bool bVisionOverride = ( localplayer_visionflags.GetInt() & ( 0x01 ) ); // Pyro-vision Goggles

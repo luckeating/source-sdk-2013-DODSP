@@ -622,6 +622,32 @@ static void DoDSP_ApplySunStyle()
 	engine->LightStyle( DODSP_LIGHTSTYLE_SUN, bBaked ? "m" : "a" );
 }
 
+//-----------------------------------------------------------------------------
+// DOD-SP stage 5: the live lamps' baked direct light (light_spots marked "_dodsp_live", VRAD puts their
+// direct light in DODSP_LIGHTSTYLE_LAMPS). Same rule as the sun: the player's choice, plus a fallback
+// the client sets when it can't draw the lamps live - never neither, never both.
+//-----------------------------------------------------------------------------
+static void DoDSP_ApplyLampStyle();
+static void DoDSP_LampsBakedChanged( IConVar *pVar, const char *pOldValue, float flOldValue )
+{
+	DoDSP_ApplyLampStyle();
+}
+ConVar dodsp_lamps_baked( "dodsp_lamps_baked", "0", FCVAR_NONE,
+	"DOD-SP: 0 = live lamps drawn live with real-time shadows (default). 1 = their baked light (stock look).",
+	DoDSP_LampsBakedChanged );
+// Set by the client every frame (c_dodsp_lamps.cpp, its only writer): 1 = it can't draw the live lamps here
+ConVar dodsp_lamps_fallback( "dodsp_lamps_fallback", "1", FCVAR_NONE,
+	"DOD-SP internal, set by the game every frame - don't set it by hand. 1 = the live lamps can't draw here, "
+	"so their baked light shows.", DoDSP_LampsBakedChanged );
+
+static void DoDSP_ApplyLampStyle()
+{
+	if ( !GetWorldEntity() )
+		return;	// no map loaded; Precache applies it when one is
+	const bool bBaked = dodsp_lamps_baked.GetBool() || dodsp_lamps_fallback.GetBool();
+	engine->LightStyle( DODSP_LIGHTSTYLE_LAMPS, bBaked ? "m" : "a" );
+}
+
 void CWorld::Precache( void )
 {
 	g_WorldEntity = this;
@@ -706,8 +732,9 @@ void CWorld::Precache( void )
 
 	// styles 32-62 are assigned by the light program for switchable lights
 
-	// DOD-SP: style 31 is the baked direct sun (dodsp_lightstyles.h)
+	// DOD-SP: style 31 is the baked direct sun, style 30 the live lamps' baked direct light (dodsp_lightstyles.h)
 	DoDSP_ApplySunStyle();
+	DoDSP_ApplyLampStyle();
 
 	// 63 testing
 	engine->LightStyle(63, "a");

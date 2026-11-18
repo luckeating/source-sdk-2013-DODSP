@@ -151,13 +151,15 @@ void ComputeAmbientFromSphericalSamples( int iThread, const Vector &vStart, Vect
 		Vector lightStyleColors[MAX_LIGHTSTYLES];
 		lightStyleColors[0].Init();	// We only care about light style 0 here.
 		lightStyleColors[DODSP_LIGHTSTYLE_SUN].Init();
+		lightStyleColors[DODSP_LIGHTSTYLE_LAMPS].Init();
 		CalcRayAmbientLighting( iThread, vStart, vEnd, tanTheta, lightStyleColors );
 	
 		radcolor[i] = lightStyleColors[0];
-		// DOD-SP (-dodsp_sunstyle): light bouncing off a sunlit floor is indirect light for a model,
-		// so it stays in the ambient cube whether or not the game draws the direct sun itself
-		if ( g_bDoDSPSunStyle )
-			radcolor[i] += lightStyleColors[DODSP_LIGHTSTYLE_SUN];
+		// DOD-SP (-dodsp_sunstyle, stage 5 live lamps): light bouncing off a sunlit or lamp-lit floor is
+		// indirect light for a model, so it stays in the ambient cube whether or not the game draws the
+		// direct light itself (DoDSP_StyleBounceStays). Styles a map doesn't use read 0.
+		radcolor[i] += lightStyleColors[DODSP_LIGHTSTYLE_SUN];
+		radcolor[i] += lightStyleColors[DODSP_LIGHTSTYLE_LAMPS];
 	}
 
 	// accumulate samples into radiant box

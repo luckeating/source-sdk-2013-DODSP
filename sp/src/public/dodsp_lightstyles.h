@@ -4,7 +4,7 @@
 // brightness) and the client (which reports what a map was compiled with) all include this.
 //
 // Valve's layout: 0-12 the stock patterns (0 = always on), 32-62 handed out by VBSP to named
-// (switchable) lights, 63 testing. 13-31 are unused, so DOD-SP takes 31.
+// (switchable) lights, 63 testing. 13-31 are unused, so DOD-SP takes 31 (sun) and 30 (live lamps).
 //
 //===================================================================================//
 #ifndef DODSP_LIGHTSTYLES_H
@@ -24,5 +24,24 @@
 // INVARIANT: the mark is set exactly when that pass baked static props without the direct sun.
 #define DODSP_LVLFLAGS_PROPS_NOSUN_NONHDR	0x00010000
 #define DODSP_LVLFLAGS_PROPS_NOSUN_HDR		0x00020000
+
+// Live lamps (lighting stage 5): every light_spot the mapper marks "_dodsp_live" "1". Their direct light
+// goes in this style, which the server turns off while the game draws the lamps itself (projected
+// textures, c_dodsp_lamps.cpp) and on as the fallback (dodsp_lamps_baked / dodsp_lamps_fallback).
+// Their bounce stays in style 0. VRAD keeps live lamps OUT of the world-lights lump (the engine
+// would light every model with them a second time: it ignores light styles there - the sun's
+// worldlight lights models at full strength with style 31 off) and writes them to the map's pak
+// file instead (DODSP_LAMPS_FILE_*), one file per lighting pass.
+// INVARIANT: only live lamps use this style, and every live lamp is in the pak file.
+#define DODSP_LIGHTSTYLE_LAMPS	30
+#define DODSP_LAMPS_FILE_LDR	"dodsp/lamps_ldr.txt"
+#define DODSP_LAMPS_FILE_HDR	"dodsp/lamps_hdr.txt"
+
+// The one answer to "does this style's light still bounce in style 0?" - the styles DOD-SP takes a
+// light's DIRECT light out of, to draw it itself. Their bounce is indirect light and stays baked.
+inline bool DoDSP_StyleBounceStays( int nStyle )
+{
+	return nStyle == DODSP_LIGHTSTYLE_SUN || nStyle == DODSP_LIGHTSTYLE_LAMPS;
+}
 
 #endif // DODSP_LIGHTSTYLES_H

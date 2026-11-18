@@ -43,10 +43,9 @@ OWNERS = {
     # "does this map draw with HDR lighting?" - DoDSP_DrawsHDR (cdll_int.h declares it, viewpostprocess.cpp is Valve's own use)
     "MapHasHDRLighting": {"game/client/dodsp/c_dodsp_sun_cascades.cpp", "game/client/viewpostprocess.cpp",
                           "public/cdll_int.h"},
-    # stage 5: the lamps' G-buffer is bound only around the main view's opaque pass, by one owner
-    "DoDSP_LampsBeginGBuffer": {"game/client/viewrender.cpp", "game/client/dodsp/c_dodsp_lamps.cpp",
-                                "game/client/dodsp/c_dodsp_lamps.h"},
-    "_rt_DODSP_G": {"game/client/dodsp/c_dodsp_lamps.cpp"},
+    # stage 5 live lamps: the server's fallback has one client writer; the pak file names one owner each side
+    "dodsp_lamps_fallback": {"game/server/world.cpp", "game/client/dodsp/c_dodsp_lamps.cpp"},
+    "DODSP_LAMPS_FILE_": {"public/dodsp_lightstyles.h", "utils/vrad/lightmap.cpp", "game/client/dodsp/c_dodsp_lamps.cpp"},
 }
 
 # dodsp_sun_baked is the player's choice (default 0). Code never sets it: the old watchdog's

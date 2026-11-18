@@ -90,6 +90,7 @@ struct directlight_t
 	float m_flStartFadeDistance;
 	float m_flEndFadeDistance;
 	float m_flCapDist;										// max distance to feed in
+	bool m_bDoDSPLive;										// DOD-SP stage 5: a live lamp (style DODSP_LIGHTSTYLE_LAMPS); calloc'd false
 
 	directlight_t(void)
 	{

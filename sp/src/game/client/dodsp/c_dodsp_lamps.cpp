@@ -1,411 +1,463 @@
-//===================== DOD-SP lamps =====================//
+//===================== DOD-SP live lamps =====================//
 //
-// Lighting stage 5: every lamp in the map is drawn live, the way stage 4 draws the sun. VRAD puts
-// the lamps' direct light in a light style the game switches off (5b); their bounce stays baked.
+// Lighting stage 5: the lamps the mapper marks live ("_dodsp_live" "1" on a light_spot) are drawn by
+// the game, with real-time shadows, the engine's FORWARD way: one projected texture each (the same
+// path as env_projectedtexture / the flashlight: an additive pass over every surface the lamp
+// reaches, shadowed from a depth map). Forward keeps MSAA - the deferred design (5a) did not and was
+// rejected 2026-11-18 (CLAUDE.md).
 //
-// Our shaders have no room left for per-lamp constants (32 pixel constants; the skin shader uses
-// all 16 samplers), so the lamps are added AFTER the opaque scene, in screen space ("deferred"):
-// the brush and model shaders also write each opaque pixel's albedo, world normal and distance
-// from the eye to three extra render targets (dodsp_gbuffer_fxc.h). This file owns those targets.
+// One owner for each lamp: its light entity. VRAD (lightmap.cpp) bakes the lamp's bounce into style
+// 0, puts its direct light in DODSP_LIGHTSTYLE_LAMPS (switched off by the server while the lamps draw
+// live), keeps it OUT of the world lights (the engine would light every model with it a second time)
+// and writes the lamp as VRAD lit it to the map's pak file: DODSP_LAMPS_FILE_HDR / _LDR. This file
+// reads that and nothing else - colour, brightness, cone and falloff are the baked lamp's own.
 //
-// STAGE 5a (this file so far) is the probe: the G-buffer only, no lamp light yet. The risk it
-// checks first: that the 2014 engine lets our shaders write render targets 1..3 during the main
-// view's opaque pass, and which surfaces end up without G-buffer data.
+// How the bake's numbers become a projected texture:
+//   cone      VRAD: x cos(angle to the axis) x fringe((cos - stopdot2) / (stopdot - stopdot2))^exponent.
+//             The projected texture's "cookie" texture holds exactly that, per texel (CDoDSPLampCookie).
+//   distance  VRAD: 1 / (c + l d + q d^2). The engine's flashlight shader: c' + l'/d + q'/d^2. A lamp
+//             with one term maps exactly (the default light: quadratic only); mixed terms use the
+//             strongest at half the lamp's range - dodsp_lamps says which lamps are approximate.
+//   colour    VRAD's intensity / the shaders' flashlight scale (0.25 in HDR, dodsp_r_flashlightbrightness)
+//             x dodsp_lamps_scale (1 = as baked; for calibration).
 //
-// INVARIANT: the G-buffer is bound only around the main view's opaque pass (DoDSP_LampsBeginGBuffer
-// / DoDSP_LampsEndGBuffer, viewrender.cpp) - never while anything translucent, a shadow map or
-// another view draws - and is cleared to 0 ("not lit by the lamps") before it. One owner: this file.
-// Guards: the console line at map load (formats and sizes the card gave), an INVARIANT line if
-// they are wrong (the G-buffer then stays off), and dodsp_lamps_check (the pixel you aim at, read
-// back and compared with a trace).
+// INVARIANT: a live lamp shows exactly once - live (style 30 off) or baked (style 30 on, server's
+// dodsp_lamps_baked / dodsp_lamps_fallback), never both, never neither. This file is the only writer
+// of dodsp_lamps_fallback. Guards: the console line at map load (how many lamps, which file, drawn
+// live or why not), `dodsp_lamps` (every lamp: cone, range, colour, attenuation exact/approximate),
+// an INVARIANT line if the fallback cvar won't take, lint OWNERS (dodsp_lamps_fallback, the pak names).
 //
-//========================================================//
+//=============================================================//
 
 #include "cbase.h"
-#include "c_dodsp_lamps.h"
-#include "c_dodsp_sdkshaders.h"
-#include "c_dodsp_shaderdll.h"
-#include "c_dodsp_sun_cascades.h"
+#include "c_dodsp_sun_cascades.h"	// DoDSP_DrawsHDR
+#include "dodsp_lightstyles.h"
 #include "igamesystem.h"
-#include "c_baseplayer.h"
-#include "view_shared.h"
+#include "iclientshadowmgr.h"
+#include "filesystem.h"
+#include "KeyValues.h"
 #include "materialsystem/imaterialsystem.h"
 #include "materialsystem/itexture.h"
-#include "materialsystem/imaterialvar.h"
 #include "materialsystem/imaterialsystemhardwareconfig.h"
-#include "materialsystem/materialsystem_config.h"	// MaterialSystem_Config_t (the AA setting)
 #include "materialsystem/MaterialSystemUtil.h"
-#include "KeyValues.h"
-#include "dodsp_shaders.h"
+#include "vtf/vtf.h"
+#include "bitmap/imageformat.h"
+#include "pixelwriter.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
-static ConVar dodsp_lamps_gbuffer( "dodsp_lamps_gbuffer", "1", 0,
-	"DOD-SP stage 5: the main view writes the lamps' G-buffer (albedo, normal, distance) - 0 = off" );
-static ConVar dodsp_lamps_view( "dodsp_lamps_view", "0", 0,
-	"DOD-SP stage 5a debug: show the lamps' G-buffer on screen (bottom: albedo | normal | distance)" );
-static ConVar dodsp_lamps_view_far( "dodsp_lamps_view_far", "2000", 0,
-	"DOD-SP stage 5a debug: the distance drawn white in dodsp_lamps_view" );
+static ConVar dodsp_lamps_scale( "dodsp_lamps_scale", "1", 0,
+	"DOD-SP: live lamp brightness x this (1 = as VRAD baked it; for calibration against dodsp_lamps_baked 1)" );
+static ConVar dodsp_lamps_shadows( "dodsp_lamps_shadows", "1", 0, "DOD-SP: live lamps cast real-time shadows" );
+static ConVar dodsp_lamps_nearz( "dodsp_lamps_nearz", "4", 0, "DOD-SP: live lamps light nothing closer than this to the bulb" );
+static ConVar dodsp_lamps_cutoff( "dodsp_lamps_cutoff", "0.0005", 0,
+	"DOD-SP: a live lamp without its own falloff distance reaches as far as its light stays above this (lightmap units)" );
+static ConVar dodsp_lamps_maxrange( "dodsp_lamps_maxrange", "2048", 0, "DOD-SP: no live lamp reaches further than this" );
 
-enum
+#define DODSP_LAMP_COOKIE_RES	128
+#define DODSP_LAMP_MAX_FOV		170.0f	// a projected texture's frustum must stay well under 180 degrees
+
+//-----------------------------------------------------------------------------
+// One lamp as VRAD baked it (DODSP_LAMPS_FILE_*)
+//-----------------------------------------------------------------------------
+struct DoDSPLampData_t
 {
-	DODSP_GBUF_ALBEDO = 0,
-	DODSP_GBUF_NORMAL,
-	DODSP_GBUF_DIST,
-	DODSP_GBUF_COUNT
+	Vector	m_vecOrigin;
+	Vector	m_vecDir;			// where it shines
+	Vector	m_vecIntensity;		// world-light units (VRAD's / 255)
+	float	m_flAttn[3];		// VRAD: 1 / ( c + l d + q d^2 )
+	float	m_flStopDot;		// cos of the inner cone half-angle
+	float	m_flStopDot2;		// cos of the outer cone half-angle
+	float	m_flExponent;
+	float	m_flRadius;			// _distance, 0 = none
+	float	m_flFadeStart, m_flFadeEnd;	// hard falloff (end > start when set)
 };
 
-static const char *s_pszGBufferName[DODSP_GBUF_COUNT] = { "_rt_DODSP_GAlbedo", "_rt_DODSP_GNormal", "_rt_DODSP_GDist" };
-
-// The formats follow render target 0, because D3D9 wants every bound target at one bit depth:
-// integer HDR (the PC's usual, 8 bits a channel) -> RGBA8888, RGBA8888, R32F (32 bits each);
-// float HDR (RGBA16F) -> RGBA16F x3 (64 bits each). Found 2026-11-18: the owner's HDR is integer.
-static bool DoDSP_FloatHDR()
-{
-	return g_pMaterialSystemHardwareConfig->GetHDRType() == HDR_TYPE_FLOAT;
-}
-
-static ImageFormat DoDSP_GBufferFormat( int nTarget, bool bFloat )
-{
-	if ( bFloat )
-		return IMAGE_FORMAT_RGBA16161616F;
-	return ( nTarget == DODSP_GBUF_DIST ) ? IMAGE_FORMAT_R32F : IMAGE_FORMAT_RGBA8888;
-}
-
-// A half float (IEEE 754 binary16) to a float
-static float DoDSP_HalfToFloat( unsigned short h )
-{
-	const int nSign = ( h >> 15 ) & 1, nExp = ( h >> 10 ) & 31, nMant = h & 1023;
-	float f;
-	if ( nExp == 0 )
-		f = ldexpf( (float)nMant, -24 );						// subnormal
-	else if ( nExp == 31 )
-		f = nMant ? 0.0f : FLT_MAX;								// NaN reads as 0, infinity as huge
-	else
-		f = ldexpf( (float)( nMant | 1024 ), nExp - 25 );
-	return nSign ? -f : f;
-}
-
-class CDoDSPLamps : public CAutoGameSystem
+//-----------------------------------------------------------------------------
+// The cone as a texture: what VRAD multiplies a spot's light by, per direction (see the top)
+//-----------------------------------------------------------------------------
+class CDoDSPLampCookie : public ITextureRegenerator
 {
 public:
-	CDoDSPLamps() : CAutoGameSystem( "CDoDSPLamps" ), m_bAllocated( false ), m_bReady( false ), m_bBound( false ),
-		m_bViewMaterials( false ), m_bViewWarned( false ), m_nBoundFrames( 0 ), m_bFloat( false ), m_bOffReported( false ) {}
+	CDoDSPLampCookie( float flStopDot, float flStopDot2, float flExponent, float flTanHalfFov )
+		: m_flStopDot( flStopDot ), m_flStopDot2( flStopDot2 ), m_flExponent( flExponent ), m_flTan( flTanHalfFov ) {}
 
-	virtual void LevelInitPostEntity()	{ EnsureTargets(); m_nBoundFrames = 0; m_bOffReported = false; }
-	virtual void Shutdown()				{ FreeViewMaterials(); FreeTargets(); }
+	virtual void RegenerateTextureBits( ITexture *pTexture, IVTFTexture *pVTFTexture, Rect_t *pRect )
+	{
+		const int w = pVTFTexture->Width(), h = pVTFTexture->Height();
+		CPixelWriter writer;
+		writer.SetPixelMemory( pVTFTexture->Format(), pVTFTexture->ImageData( 0, 0, 0 ), pVTFTexture->RowSizeInBytes( 0 ) );
+		for ( int y = 0; y < h; y++ )
+		{
+			writer.Seek( 0, y );
+			for ( int x = 0; x < w; x++ )
+			{
+				// the border stays black, so nothing outside the cone is ever lit (the sampler clamps)
+				float flValue = 0.0f;
+				if ( x > 0 && y > 0 && x < w - 1 && y < h - 1 )
+				{
+					const float u = ( ( x + 0.5f ) / w * 2.0f - 1.0f ) * m_flTan;
+					const float v = ( ( y + 0.5f ) / h * 2.0f - 1.0f ) * m_flTan;
+					const float flCos = 1.0f / sqrtf( 1.0f + u * u + v * v );	// cos of the angle to the axis
+					flValue = Cone( flCos );
+				}
+				// the flashlight samplers read the cookie as sRGB: store gamma so the shader gets this value back
+				const int c = clamp( (int)( SrgbLinearToGamma( flValue ) * 255.0f + 0.5f ), 0, 255 );
+				writer.WritePixel( c, c, c, 255 );
+			}
+		}
+	}
+	virtual void Release() { delete this; }
 
-	bool BeginGBuffer();
-	void EndGBuffer();
-	void DrawView( const CViewSetup &mainView );
-	void Check();
+	// VRAD's spot falloff (lightmap.cpp GatherSampleLightSSE, emit_spotlight), for one direction
+	float Cone( float flCos ) const
+	{
+		if ( flCos <= m_flStopDot2 )
+			return 0.0f;
+		float flFringe = 1.0f;
+		if ( flCos <= m_flStopDot && m_flStopDot > m_flStopDot2 )
+		{
+			flFringe = clamp( ( flCos - m_flStopDot2 ) / ( m_flStopDot - m_flStopDot2 ), 0.0f, 1.0f );
+			if ( m_flExponent != 0.0f && m_flExponent != 1.0f )
+				flFringe = powf( flFringe, m_flExponent );
+		}
+		return flCos * flFringe;
+	}
 
 private:
-	void EnsureTargets();
-	void FreeTargets();
-	bool EnsureViewMaterials();
-	void FreeViewMaterials();
-	bool ReadCentre( int nTarget, float flOut[4] );
-	const char *WhyOff() const;
+	float m_flStopDot, m_flStopDot2, m_flExponent, m_flTan;
+};
 
-	bool				m_bAllocated;
-	bool				m_bReady;			// all three targets exist in the format and size asked for
-	bool				m_bBound;			// between Begin and End
-	CTextureReference	m_Targets[DODSP_GBUF_COUNT];
+//-----------------------------------------------------------------------------
+// The live lamps
+//-----------------------------------------------------------------------------
+class CDoDSPLamps : public CAutoGameSystemPerFrame
+{
+public:
+	CDoDSPLamps() : CAutoGameSystemPerFrame( "CDoDSPLamps" ), m_bLive( false ), m_bFallbackWarned( false ) { m_szFile[0] = 0; }
 
-	CMaterialReference	m_ViewMat[DODSP_GBUF_COUNT];
-	IMaterialVar		*m_pViewParams[DODSP_GBUF_COUNT];
-	bool				m_bViewMaterials;
-	bool				m_bViewWarned;
-	int					m_nBoundFrames;		// frames the G-buffer was written this map (dodsp_lamps_check)
-	bool				m_bFloat;			// the targets were made for float HDR (else integer HDR)
-	bool				m_bOffReported;		// "G-buffer off" said once this map
+	virtual void LevelInitPostEntity();
+	virtual void LevelShutdownPreEntity()	{ DestroyLamps(); m_Lamps.Purge(); m_szFile[0] = 0; }
+	virtual void PreRender();
+
+	void Report() const;
+
+private:
+	struct Lamp_t
+	{
+		DoDSPLampData_t			m_Data;
+		FlashlightState_t		m_State;
+		CTextureReference		m_Cookie;
+		ClientShadowHandle_t	m_hLight;
+		bool					m_bApprox;	// its distance falloff is approximated (mixed attenuation terms)
+		bool					m_bFovClipped;
+		float					m_flRange;
+	};
+
+	bool Load();
+	void BuildState( int nLamp, Lamp_t &lamp );
+	void CreateLamps();
+	void DestroyLamps();
+	const char *WhyNotLive() const;
+	void SetFallback( bool bFallback );
+
+	CUtlVector< Lamp_t >	m_Lamps;
+	char					m_szFile[64];	// where they came from this map
+	bool					m_bLive;		// the flashlights exist right now
+	bool					m_bFallbackWarned;
 };
 
 static CDoDSPLamps s_DoDSPLamps;
 
-void CDoDSPLamps::EnsureTargets()
+static bool DoDSP_ParseVec( KeyValues *pKV, const char *pszKey, Vector &v )
 {
-	if ( m_bAllocated && m_bFloat == DoDSP_FloatHDR() )
-		return;
-	FreeTargets();
-	m_bFloat = DoDSP_FloatHDR();
-	if ( !g_pMaterialSystemHardwareConfig->SupportsShaderModel_3_0() )
-	{
-		Warning( "DOD-SP lamps: this graphics card has no shader model 3.0 - no live lamps\n" );
-		m_bAllocated = true;
-		return;
-	}
+	const char *psz = pKV->GetString( pszKey, NULL );
+	return psz && sscanf( psz, "%f %f %f", &v.x, &v.y, &v.z ) == 3;
+}
 
-	materials->BeginRenderTargetAllocation();
-	for ( int i = 0; i < DODSP_GBUF_COUNT; i++ )
+bool CDoDSPLamps::Load()
+{
+	m_Lamps.Purge();
+	m_szFile[0] = 0;
+	// the set VRAD lit the lightmaps in use with; the other set if the map has only that one
+	const bool bHDR = DoDSP_DrawsHDR();
+	const char *pszFiles[2] = { bHDR ? DODSP_LAMPS_FILE_HDR : DODSP_LAMPS_FILE_LDR, bHDR ? DODSP_LAMPS_FILE_LDR : DODSP_LAMPS_FILE_HDR };
+	KeyValues *pKV = new KeyValues( "DODSP_Lamps" );
+	bool bLoaded = false;
+	for ( int i = 0; i < 2 && !bLoaded; i++ )
 	{
-		ITexture *pTex = materials->CreateNamedRenderTargetTextureEx( s_pszGBufferName[i], 1, 1, RT_SIZE_FULL_FRAME_BUFFER,
-			DoDSP_GBufferFormat( i, m_bFloat ), MATERIAL_RT_DEPTH_NONE, TEXTUREFLAGS_CLAMPS | TEXTUREFLAGS_CLAMPT | TEXTUREFLAGS_POINTSAMPLE );
-		m_Targets[i].Init( pTex );
-		if ( pTex )
-			pTex->DecrementReferenceCount();	// created with one reference; the CTextureReference holds it now
+		if ( pKV->LoadFromFile( g_pFullFileSystem, pszFiles[i], "GAME" ) )
+		{
+			Q_strncpy( m_szFile, pszFiles[i], sizeof( m_szFile ) );
+			bLoaded = true;
+		}
 	}
-	materials->EndRenderTargetAllocation();
-	m_bAllocated = true;
+	if ( bLoaded )
+	{
+		for ( KeyValues *pLamp = pKV->GetFirstTrueSubKey(); pLamp; pLamp = pLamp->GetNextTrueSubKey() )
+		{
+			DoDSPLampData_t d;
+			Vector vecAttn, vecCone, vecFade( 0, 0, 0 );
+			if ( !DoDSP_ParseVec( pLamp, "origin", d.m_vecOrigin ) || !DoDSP_ParseVec( pLamp, "normal", d.m_vecDir ) ||
+				 !DoDSP_ParseVec( pLamp, "intensity", d.m_vecIntensity ) || !DoDSP_ParseVec( pLamp, "attn", vecAttn ) ||
+				 !DoDSP_ParseVec( pLamp, "cone", vecCone ) )
+			{
+				Warning( "INVARIANT: DOD-SP lamps: a lamp in %s is missing a value - skipped (recompile with this build's VRAD)\n", m_szFile );
+				continue;
+			}
+			sscanf( pLamp->GetString( "fade", "0 0" ), "%f %f", &vecFade.x, &vecFade.y );
+			d.m_flAttn[0] = vecAttn.x; d.m_flAttn[1] = vecAttn.y; d.m_flAttn[2] = vecAttn.z;
+			d.m_flStopDot = vecCone.x; d.m_flStopDot2 = vecCone.y; d.m_flExponent = vecCone.z;
+			d.m_flRadius = pLamp->GetFloat( "radius", 0.0f );
+			d.m_flFadeStart = vecFade.x; d.m_flFadeEnd = vecFade.y;
+			VectorNormalize( d.m_vecDir );
+			Lamp_t &lamp = m_Lamps[m_Lamps.AddToTail()];
+			lamp.m_Data = d;
+			lamp.m_hLight = CLIENTSHADOW_INVALID_HANDLE;
+			lamp.m_bApprox = lamp.m_bFovClipped = false;
+			lamp.m_flRange = 0.0f;
+		}
+	}
+	pKV->deleteThis();
+	return m_Lamps.Count() > 0;
+}
 
-	int nScreenW, nScreenH;
-	materials->GetBackBufferDimensions( nScreenW, nScreenH );
-	const char *pszWhy = NULL;
-	for ( int i = 0; i < DODSP_GBUF_COUNT && !pszWhy; i++ )
+// The projected texture that draws one lamp the way VRAD baked it (see the top of the file)
+void CDoDSPLamps::BuildState( int nLamp, Lamp_t &lamp )
+{
+	const DoDSPLampData_t &d = lamp.m_Data;
+	FlashlightState_t &state = lamp.m_State;
+	state = FlashlightState_t();
+
+	// cone -> frustum just wider than the outer cone; the cookie draws the cone inside it
+	const float flOuterDeg = RAD2DEG( acosf( clamp( d.m_flStopDot2, -1.0f, 1.0f ) ) );
+	const float flFov = MIN( 2.0f * flOuterDeg * 1.05f + 2.0f, DODSP_LAMP_MAX_FOV );
+	lamp.m_bFovClipped = ( 2.0f * flOuterDeg > DODSP_LAMP_MAX_FOV );
+	const float flTanHalf = tanf( DEG2RAD( flFov * 0.5f ) );
+
+	// distance: VRAD's 1/(c + l d + q d^2) as the shader's c' + l'/d + q'/d^2
+	const float c = d.m_flAttn[0], l = d.m_flAttn[1], q = d.m_flAttn[2];
+	const float flBright = MAX( d.m_vecIntensity.x, MAX( d.m_vecIntensity.y, d.m_vecIntensity.z ) );
+	const float flCutoff = MAX( dodsp_lamps_cutoff.GetFloat(), 1e-6f );
+	float flRange = dodsp_lamps_maxrange.GetFloat();
+	if ( d.m_flRadius > 0.0f )
+		flRange = MIN( flRange, d.m_flRadius );
+	if ( d.m_flFadeEnd > d.m_flFadeStart && d.m_flFadeEnd > 0.0f )
+		flRange = MIN( flRange, d.m_flFadeEnd );
+	// where VRAD's light drops below the cutoff: c + l d + q d^2 = flBright / flCutoff
+	const float k = flBright / flCutoff;
+	if ( q > 0.0f )
+		flRange = MIN( flRange, ( -l + sqrtf( MAX( l * l - 4.0f * q * ( c - k ), 0.0f ) ) ) / ( 2.0f * q ) );
+	else if ( l > 0.0f )
+		flRange = MIN( flRange, ( k - c ) / l );
+	flRange = MAX( flRange, dodsp_lamps_nearz.GetFloat() + 16.0f );
+	lamp.m_flRange = flRange;
+
+	const int nTerms = ( c > 0.0f ? 1 : 0 ) + ( l > 0.0f ? 1 : 0 ) + ( q > 0.0f ? 1 : 0 );
+	lamp.m_bApprox = nTerms > 1;
+	float flC = 0.0f, flL = 0.0f, flQ = 0.0f;
+	if ( nTerms <= 1 )
 	{
-		ITexture *pTex = m_Targets[i];
-		if ( !pTex || pTex->IsError() )
-			pszWhy = "a target could not be created";
-		else if ( pTex->GetImageFormat() != DoDSP_GBufferFormat( i, m_bFloat ) )
-			pszWhy = "the card gave another format than asked for";
-		else if ( pTex->GetActualWidth() != nScreenW || pTex->GetActualHeight() != nScreenH )
-			pszWhy = "a target is not the size of the screen";
+		if ( q > 0.0f )			flQ = 1.0f / q;
+		else if ( l > 0.0f )	flL = 1.0f / l;
+		else					flC = 1.0f / MAX( c, 1e-6f );
 	}
-	m_bReady = !pszWhy;
-	if ( pszWhy )
-		Warning( "INVARIANT: DOD-SP lamps G-buffer: %s (screen %d x %d) - the G-buffer stays off\n", pszWhy, nScreenW, nScreenH );
 	else
-		Msg( "DOD-SP lamps G-buffer: %d targets, %d x %d, %s (stage 5a probe: dodsp_lamps_view 1 shows it, dodsp_lamps_check reads your aim point)\n",
-			 DODSP_GBUF_COUNT, nScreenW, nScreenH, m_bFloat ? "RGBA16F (float HDR)" : "RGBA8888 + R32F (integer HDR)" );
+	{
+		// the strongest term at half the lamp's range carries it
+		const float dm = flRange * 0.5f;
+		const float tc = c, tl = l * dm, tq = q * dm * dm;
+		if ( tq >= tl && tq >= tc )	flQ = 1.0f / q;
+		else if ( tl >= tc )		flL = 1.0f / l;
+		else						flC = 1.0f / c;
+	}
+
+	// colour: undo the shaders' flashlight scale so the lamp lands in the bake's units
+	static ConVarRef s_FlashScale( "dodsp_r_flashlightbrightness" );
+	float flShaderScale = DoDSP_DrawsHDR() ? ( s_FlashScale.IsValid() ? s_FlashScale.GetFloat() : 0.25f ) : 2.0f;
+	flShaderScale = MAX( flShaderScale, 1e-3f );
+	const float flScale = MAX( dodsp_lamps_scale.GetFloat(), 0.0f ) / flShaderScale;
+
+	Vector vecForward = d.m_vecDir, vecRight, vecUp;
+	VectorVectors( vecForward, vecRight, vecUp );
+	state.m_vecLightOrigin = d.m_vecOrigin;
+	BasisToQuaternion( vecForward, vecRight, vecUp, state.m_quatOrientation );
+	state.m_NearZ = dodsp_lamps_nearz.GetFloat();
+	state.m_FarZ = flRange;
+	state.m_fHorizontalFOVDegrees = state.m_fVerticalFOVDegrees = flFov;
+	state.m_fConstantAtten = flC;
+	state.m_fLinearAtten = flL;
+	state.m_fQuadraticAtten = flQ;
+	state.m_FarZAtten = flRange;
+	state.m_fBrightnessScale = 1.0f;
+	state.m_Color[0] = d.m_vecIntensity.x * flScale;
+	state.m_Color[1] = d.m_vecIntensity.y * flScale;
+	state.m_Color[2] = d.m_vecIntensity.z * flScale;
+	state.m_Color[3] = 0.0f;
+	state.m_bEnableShadows = dodsp_lamps_shadows.GetBool();
+	state.m_flShadowAtten = 0.0f;	// full shadow at every distance (the shader would fade it with the light otherwise)
+	state.m_flShadowSlopeScaleDepthBias = g_pMaterialSystemHardwareConfig->GetShadowSlopeScaleDepthBias();
+	state.m_flShadowDepthBias = g_pMaterialSystemHardwareConfig->GetShadowDepthBias();
+	state.m_nShadowQuality = 1;
+
+	if ( !lamp.m_Cookie.IsValid() )
+	{
+		char szName[64];
+		Q_snprintf( szName, sizeof( szName ), "_rt_DODSP_LampCookie%d", nLamp );
+		ITexture *pTex = materials->CreateProceduralTexture( szName, TEXTURE_GROUP_OTHER, DODSP_LAMP_COOKIE_RES, DODSP_LAMP_COOKIE_RES,
+			IMAGE_FORMAT_RGBA8888, TEXTUREFLAGS_CLAMPS | TEXTUREFLAGS_CLAMPT | TEXTUREFLAGS_NOMIP | TEXTUREFLAGS_NOLOD |
+			TEXTUREFLAGS_PROCEDURAL | TEXTUREFLAGS_SINGLECOPY );
+		if ( pTex )
+		{
+			pTex->SetTextureRegenerator( new CDoDSPLampCookie( d.m_flStopDot, d.m_flStopDot2, d.m_flExponent, flTanHalf ) );
+			pTex->Download();
+			lamp.m_Cookie.Init( pTex );
+			pTex->DecrementReferenceCount();	// the CTextureReference holds it now
+		}
+	}
+	state.m_pSpotlightTexture = lamp.m_Cookie;
+	state.m_nSpotlightTextureFrame = 0;
 }
 
-void CDoDSPLamps::FreeTargets()
+// The one answer to "may the live lamps draw now?" - NULL = yes, else why not
+const char *CDoDSPLamps::WhyNotLive() const
 {
-	for ( int i = 0; i < DODSP_GBUF_COUNT; i++ )
-		m_Targets[i].Shutdown();
-	m_bAllocated = m_bReady = false;
-}
-
-// The one answer to "may the G-buffer be bound now?" - NULL = yes, else why not
-const char *CDoDSPLamps::WhyOff() const
-{
-	if ( !dodsp_lamps_gbuffer.GetBool() )
-		return "dodsp_lamps_gbuffer is 0";
-	if ( !m_bReady )
-		return "the G-buffer targets are missing (see the DOD-SP lamps line at map load)";
-	if ( !DoDSP_SunShadersInUse() )
-		return "the DOD-SP shaders are not in use";
-	if ( !DoDSP_DrawsHDR() )
-		return "HDR is off (LDR is not supported) - see the DOD-SP HDR line";
-	if ( m_bFloat != DoDSP_FloatHDR() )
-		return "the kind of HDR changed since the map loaded - reload the map";
-	// every bound target must have the screen's multisampling, and ours have none
-	if ( materials->GetCurrentConfigForVideoCard().m_nAASamples > 1 )
-		return "antialiasing (MSAA) is on - set Antialiasing to None in the video options (stage 5 can't share a multisampled screen)";
+	if ( !m_Lamps.Count() )
+		return "the map has no live lamps";
+	static ConVarRef s_Baked( "dodsp_lamps_baked" );
+	if ( s_Baked.IsValid() && s_Baked.GetBool() )
+		return "dodsp_lamps_baked is 1 (your choice: the baked lamps)";
+	if ( !g_pMaterialSystemHardwareConfig->SupportsShaderModel_3_0() )
+		return "this graphics card has no shader model 3.0";
 	return NULL;
 }
 
-bool CDoDSPLamps::BeginGBuffer()
+void CDoDSPLamps::CreateLamps()
 {
-	Assert( !m_bBound );
-	m_bBound = false;
-	const char *pszWhy = WhyOff();
-	if ( pszWhy )
+	for ( int i = 0; i < m_Lamps.Count(); i++ )
 	{
-		if ( !m_bOffReported && dodsp_lamps_gbuffer.GetBool() )
-			Msg( "DOD-SP lamps G-buffer: off - %s\n", pszWhy );
-		m_bOffReported = true;
-		return false;
-	}
-
-	CMatRenderContextPtr pRenderContext( materials );
-	// Cleared to 0 = "the lamps don't light this pixel" wherever no DOD-SP shader draws
-	for ( int i = 0; i < DODSP_GBUF_COUNT; i++ )
-	{
-		pRenderContext->PushRenderTargetAndViewport( m_Targets[i] );
-		pRenderContext->ClearColor4ub( 0, 0, 0, 0 );
-		pRenderContext->ClearBuffers( true, false, false );
-		pRenderContext->PopRenderTargetAndViewport();
-	}
-	// A copy of the current targets and viewport with ours added as 1..3; End's pop takes them off
-	pRenderContext->PushRenderTargetAndViewport();
-	for ( int i = 0; i < DODSP_GBUF_COUNT; i++ )
-		pRenderContext->SetRenderTargetEx( i + 1, m_Targets[i] );
-	m_bBound = true;
-	m_nBoundFrames++;
-	return true;
-}
-
-void CDoDSPLamps::EndGBuffer()
-{
-	if ( !m_bBound )
-		return;
-	CMatRenderContextPtr pRenderContext( materials );
-	pRenderContext->PopRenderTargetAndViewport();
-	m_bBound = false;
-}
-
-bool CDoDSPLamps::EnsureViewMaterials()
-{
-	if ( m_bViewMaterials )
-		return true;
-	const char *pszWhy = NULL;
-	if ( !m_bReady )
-		pszWhy = "the G-buffer is off (see the DOD-SP lamps line at map load)";
-	else if ( !DoDSP_ShaderExists( DODSP_SHADER_GBUFFER_DEBUG ) )
-		pszWhy = "DOD-SP's shader DLL (" DODSP_SHADER_DLL_NAME ".dll) with " DODSP_SHADER_GBUFFER_DEBUG " is not loaded";
-	if ( pszWhy )
-	{
-		if ( !m_bViewWarned )
-			Warning( "dodsp_lamps_view: can't draw the G-buffer - %s\n", pszWhy );
-		m_bViewWarned = true;
-		return false;
-	}
-
-	for ( int i = 0; i < DODSP_GBUF_COUNT; i++ )
-	{
-		char szMat[64];
-		Q_snprintf( szMat, sizeof( szMat ), "__dodsp_lamps_view%d", i );
-		KeyValues *pKV = new KeyValues( DODSP_SHADER_GBUFFER_DEBUG );
-		pKV->SetString( "$basetexture", s_pszGBufferName[i] );
-		m_ViewMat[i].Init( szMat, pKV );
-		bool bFound;
-		m_pViewParams[i] = m_ViewMat[i]->FindVar( "$params", &bFound, false );
-		if ( !bFound )
-			m_pViewParams[i] = NULL;
-	}
-	m_bViewMaterials = true;
-	return true;
-}
-
-void CDoDSPLamps::FreeViewMaterials()
-{
-	for ( int i = 0; i < DODSP_GBUF_COUNT; i++ )
-	{
-		m_ViewMat[i].Shutdown();
-		m_pViewParams[i] = NULL;
-	}
-	m_bViewMaterials = false;
-}
-
-// The three targets side by side along the bottom of the screen: albedo | normal | distance
-void CDoDSPLamps::DrawView( const CViewSetup &mainView )
-{
-	if ( !dodsp_lamps_view.GetBool() )
-	{
-		m_bViewWarned = false;
-		return;
-	}
-	if ( !EnsureViewMaterials() )
-		return;
-
-	const int nGap = 8;
-	const int nW = ( mainView.width - 4 * nGap ) / DODSP_GBUF_COUNT;
-	const int nH = nW * mainView.height / MAX( mainView.width, 1 );
-	int x = mainView.x + nGap;
-	const int y = mainView.y + mainView.height - nH - nGap;
-	const float flFar = MAX( dodsp_lamps_view_far.GetFloat(), 1.0f );
-
-	CMatRenderContextPtr pRenderContext( materials );
-	for ( int i = 0; i < DODSP_GBUF_COUNT; i++, x += nW + nGap )
-	{
-		ITexture *pTex = m_Targets[i];
-		if ( !pTex || !m_ViewMat[i].IsValid() )
-			continue;
-		if ( m_pViewParams[i] )
-			m_pViewParams[i]->SetVecValue( (float)i, 1.0f / flFar, 0.0f, 0.0f );
-		const int nTexW = pTex->GetActualWidth(), nTexH = pTex->GetActualHeight();
-		pRenderContext->DrawScreenSpaceRectangle( m_ViewMat[i], x, y, nW, nH, 0, 0, nTexW - 1, nTexH - 1, nTexW, nTexH );
-	}
-	engine->Con_NPrintf( 7, "DOD-SP lamps G-buffer (bottom): albedo | normal | distance. Magenta = no data there (the lamps won't light it)" );
-}
-
-// The G-buffer pixel at the middle of the screen (where the crosshair is), as four floats
-bool CDoDSPLamps::ReadCentre( int nTarget, float flOut[4] )
-{
-	ITexture *pTex = m_Targets[nTarget];
-	if ( !pTex )
-		return false;
-	const ImageFormat fmt = DoDSP_GBufferFormat( nTarget, m_bFloat );
-	unsigned char data[16];
-	memset( data, 0, sizeof( data ) );
-	CMatRenderContextPtr pRenderContext( materials );
-	pRenderContext->PushRenderTargetAndViewport( pTex );
-	pRenderContext->ReadPixels( pTex->GetActualWidth() / 2, pTex->GetActualHeight() / 2, 1, 1, data, fmt );
-	pRenderContext->PopRenderTargetAndViewport();
-	for ( int k = 0; k < 4; k++ )
-	{
-		if ( fmt == IMAGE_FORMAT_RGBA16161616F )
-			flOut[k] = DoDSP_HalfToFloat( ( (const unsigned short *)data )[k] );
-		else if ( fmt == IMAGE_FORMAT_R32F )
-			flOut[k] = ( k == 0 ) ? *(const float *)data : 0.0f;
+		Lamp_t &lamp = m_Lamps[i];
+		BuildState( i, lamp );
+		if ( lamp.m_hLight == CLIENTSHADOW_INVALID_HANDLE )
+			lamp.m_hLight = g_pClientShadowMgr->CreateFlashlight( lamp.m_State );
 		else
-			flOut[k] = data[k] / 255.0f;
+			g_pClientShadowMgr->UpdateFlashlightState( lamp.m_hLight, lamp.m_State );
+		if ( lamp.m_hLight != CLIENTSHADOW_INVALID_HANDLE )
+			g_pClientShadowMgr->SetFlashlightLightWorld( lamp.m_hLight, true );
 	}
-	return true;
+	m_bLive = true;
 }
 
-// One line: what the G-buffer holds at the crosshair next to what a trace from the eye finds there
-void CDoDSPLamps::Check()
+void CDoDSPLamps::DestroyLamps()
 {
-	if ( !m_bReady )
+	for ( int i = 0; i < m_Lamps.Count(); i++ )
 	{
-		Msg( "DOD-SP lamps check: the G-buffer is off (see the DOD-SP lamps line at map load)\n" );
-		return;
+		if ( m_Lamps[i].m_hLight != CLIENTSHADOW_INVALID_HANDLE )
+			g_pClientShadowMgr->DestroyFlashlight( m_Lamps[i].m_hLight );
+		m_Lamps[i].m_hLight = CLIENTSHADOW_INVALID_HANDLE;
+		if ( m_Lamps[i].m_Cookie.IsValid() )
+		{
+			m_Lamps[i].m_Cookie->SetTextureRegenerator( NULL );	// deletes the regenerator
+			m_Lamps[i].m_Cookie.Shutdown();
+		}
 	}
-	if ( m_nBoundFrames == 0 )
+	m_bLive = false;
+}
+
+void CDoDSPLamps::LevelInitPostEntity()
+{
+	DestroyLamps();
+	m_bFallbackWarned = false;
+	if ( !Load() )
 	{
-		const char *pszWhy = WhyOff();
-		Msg( "DOD-SP lamps check: the G-buffer was never written on this map (%s)\n", pszWhy ? pszWhy : "no main view drew yet" );
+		Msg( "DOD-SP lamps: no live lamps on this map (mark a light_spot with \"_dodsp_live\" \"1\" and compile with this build's VRAD)\n" );
 		return;
 	}
+	const char *pszWhy = WhyNotLive();
+	if ( pszWhy )
+		Msg( "DOD-SP lamps: %d live lamp%s from %s - shown baked: %s\n", m_Lamps.Count(), m_Lamps.Count() == 1 ? "" : "s", m_szFile, pszWhy );
+	else
+		Msg( "DOD-SP lamps: %d live lamp%s from %s, drawn live with real-time shadows (dodsp_lamps lists them)\n",
+			 m_Lamps.Count(), m_Lamps.Count() == 1 ? "" : "s", m_szFile );
+}
 
-	C_BasePlayer *pPlayer = C_BasePlayer::GetLocalPlayer();
-	if ( !pPlayer )
-		return;
-	Vector vecEye = pPlayer->EyePosition(), vecForward;
-	AngleVectors( pPlayer->EyeAngles(), &vecForward );
-	trace_t tr;
-	UTIL_TraceLine( vecEye, vecEye + vecForward * MAX_TRACE_LENGTH, MASK_OPAQUE, pPlayer, COLLISION_GROUP_NONE, &tr );
-	const bool bHit = tr.fraction < 1.0f && !tr.startsolid && !( tr.surface.flags & SURF_SKY );
-	const char *pszWhat = !bHit ? "sky / nothing" :
-		( tr.m_pEnt && !tr.DidHitWorld() && tr.m_pEnt->GetModel() ) ? modelinfo->GetModelName( tr.m_pEnt->GetModel() ) : tr.surface.name;
-
-	float vAlbedo[4], vNormal[4], vDist[4];
-	if ( !ReadCentre( DODSP_GBUF_ALBEDO, vAlbedo ) || !ReadCentre( DODSP_GBUF_NORMAL, vNormal ) || !ReadCentre( DODSP_GBUF_DIST, vDist ) )
-		return;
-	// "written" = the stored normal sums above 0.3 (dodsp_gbuffer_fxc.h; cleared = 0)
-	if ( vNormal[0] + vNormal[1] + vNormal[2] < 0.3f )
+// The one writer of the server's dodsp_lamps_fallback
+void CDoDSPLamps::SetFallback( bool bFallback )
+{
+	ConVarRef fallback( "dodsp_lamps_fallback" );	// looked up each time: the server DLL may load after us
+	if ( !fallback.IsValid() )
 	{
-		Msg( "DOD-SP lamps check: NOT written at your aim point (%s, trace distance %.0f) - the lamps won't light it; "
-			 "distance there %.0f\n", pszWhat, bHit ? ( tr.endpos - vecEye ).Length() : 0.0f, vDist[0] );
+		if ( !m_bFallbackWarned )
+			Warning( "INVARIANT: DOD-SP lamps: the server has no dodsp_lamps_fallback - client.dll and server.dll must come from one build\n" );
+		m_bFallbackWarned = true;
 		return;
 	}
-
-	// Two readings of the 8-bit targets: as stored, and as if the engine's sRGB write had gamma-encoded
-	// them. The one whose normal is unit length and matches the trace tells 5c how to read them.
-	Vector vecN( 2.0f * vNormal[0] - 1.0f, 2.0f * vNormal[1] - 1.0f, 2.0f * vNormal[2] - 1.0f );
-	Vector vecNG( 2.0f * SrgbGammaToLinear( vNormal[0] ) - 1.0f, 2.0f * SrgbGammaToLinear( vNormal[1] ) - 1.0f,
-				  2.0f * SrgbGammaToLinear( vNormal[2] ) - 1.0f );
-	char szGamma[160] = "";
-	if ( !m_bFloat )
-		Q_snprintf( szGamma, sizeof( szGamma ), " | if gamma-encoded: normal %.2f %.2f %.2f (length %.2f), albedo %.3f %.3f %.3f",
-					vecNG.x, vecNG.y, vecNG.z, vecNG.Length(),
-					SrgbGammaToLinear( vAlbedo[0] ), SrgbGammaToLinear( vAlbedo[1] ), SrgbGammaToLinear( vAlbedo[2] ) );
-	Msg( "DOD-SP lamps check: %s | distance %.0f (trace %.0f) | trace normal %.2f %.2f %.2f | as stored: normal %.2f %.2f %.2f "
-		 "(length %.2f), albedo %.3f %.3f %.3f%s\n",
-		 pszWhat, vDist[0], bHit ? ( tr.endpos - vecEye ).Length() : 0.0f, tr.plane.normal.x, tr.plane.normal.y, tr.plane.normal.z,
-		 vecN.x, vecN.y, vecN.z, vecN.Length(), vAlbedo[0], vAlbedo[1], vAlbedo[2], szGamma );
+	if ( fallback.GetBool() != bFallback )
+		fallback.SetValue( bFallback ? 1 : 0 );
+	if ( fallback.GetBool() != bFallback && !m_bFallbackWarned )
+	{
+		Warning( "INVARIANT: DOD-SP lamps: dodsp_lamps_fallback didn't take %d - the lamps may show twice or not at all\n", bFallback ? 1 : 0 );
+		m_bFallbackWarned = true;
+	}
 }
 
-CON_COMMAND( dodsp_lamps_check, "DOD-SP stage 5a: what the lamps' G-buffer holds at your aim point, next to a trace" )
+void CDoDSPLamps::PreRender()
 {
-	s_DoDSPLamps.Check();
+	const char *pszWhy = WhyNotLive();
+	const bool bLive = ( pszWhy == NULL );
+	if ( bLive && !m_bLive )
+		CreateLamps();
+	else if ( !bLive && m_bLive )
+		DestroyLamps();
+	// fallback = the baked lamps show because they CAN'T draw live; the player's own choice stays dodsp_lamps_baked
+	static ConVarRef s_Baked( "dodsp_lamps_baked" );
+	const bool bPlayerChoseBaked = s_Baked.IsValid() && s_Baked.GetBool();
+	SetFallback( m_Lamps.Count() > 0 && !bLive && !bPlayerChoseBaked );
+
+	if ( !m_bLive )
+		return;
+	// the engine works out which surfaces and models each lamp reaches from these, every frame
+	// (moving things walk in and out of the cone)
+	const bool bShadows = dodsp_lamps_shadows.GetBool();
+	for ( int i = 0; i < m_Lamps.Count(); i++ )
+	{
+		Lamp_t &lamp = m_Lamps[i];
+		if ( lamp.m_hLight == CLIENTSHADOW_INVALID_HANDLE )
+			continue;
+		if ( lamp.m_State.m_bEnableShadows != bShadows )
+		{
+			lamp.m_State.m_bEnableShadows = bShadows;
+			g_pClientShadowMgr->UpdateFlashlightState( lamp.m_hLight, lamp.m_State );
+		}
+		g_pClientShadowMgr->UpdateProjectedTexture( lamp.m_hLight, true );
+	}
 }
 
-bool DoDSP_LampsBeginGBuffer()
+void CDoDSPLamps::Report() const
 {
-	return s_DoDSPLamps.BeginGBuffer();
+	if ( !m_Lamps.Count() )
+	{
+		Msg( "DOD-SP lamps: none on this map\n" );
+		return;
+	}
+	const char *pszWhy = WhyNotLive();
+	Msg( "DOD-SP lamps: %d from %s, %s\n", m_Lamps.Count(), m_szFile, pszWhy ? pszWhy : "drawn live" );
+	for ( int i = 0; i < m_Lamps.Count(); i++ )
+	{
+		const Lamp_t &lamp = m_Lamps[i];
+		const DoDSPLampData_t &d = lamp.m_Data;
+		Msg( "  lamp %d at %.0f %.0f %.0f: cone %.0f/%.0f deg, range %.0f, colour %.3f %.3f %.3f, distance falloff %s%s%s\n", i,
+			 d.m_vecOrigin.x, d.m_vecOrigin.y, d.m_vecOrigin.z,
+			 2.0f * RAD2DEG( acosf( clamp( d.m_flStopDot, -1.0f, 1.0f ) ) ), 2.0f * RAD2DEG( acosf( clamp( d.m_flStopDot2, -1.0f, 1.0f ) ) ),
+			 lamp.m_flRange, d.m_vecIntensity.x, d.m_vecIntensity.y, d.m_vecIntensity.z,
+			 lamp.m_bApprox ? "APPROXIMATE (mixed constant/linear/quadratic terms)" : "exact",
+			 lamp.m_bFovClipped ? ", cone CLIPPED to 170 degrees" : "",
+			 ( lamp.m_hLight == CLIENTSHADOW_INVALID_HANDLE && !pszWhy ) ? ", NOT CREATED" : "" );
+	}
 }
 
-void DoDSP_LampsEndGBuffer()
+CON_COMMAND( dodsp_lamps, "DOD-SP: list this map's live lamps and how each is drawn" )
 {
-	s_DoDSPLamps.EndGBuffer();
-}
-
-void DoDSP_DrawLampsView( const CViewSetup &mainView )
-{
-	s_DoDSPLamps.DrawView( mainView );
+	s_DoDSPLamps.Report();
 }
