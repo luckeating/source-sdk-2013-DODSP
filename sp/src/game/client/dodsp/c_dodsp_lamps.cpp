@@ -33,6 +33,7 @@
 #include "materialsystem/itexture.h"
 #include "materialsystem/imaterialvar.h"
 #include "materialsystem/imaterialsystemhardwareconfig.h"
+#include "materialsystem/materialsystem_config.h"	// MaterialSystem_Config_t (the AA setting)
 #include "materialsystem/MaterialSystemUtil.h"
 #include "KeyValues.h"
 #include "dodsp_shaders.h"

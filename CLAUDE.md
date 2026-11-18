@@ -141,6 +141,7 @@ If you learn something like this, add it here in the same commit as the fix.
   is C2662.
 - `mod_studio` / `mod_brush` need `model_types.h`; cbase.h doesn't bring it in (C2065, build 44250885877).
 - `IMaterialVar` is only forward-declared by imaterial.h: include `materialsystem/imaterialvar.h` (C2027, 44255842127).
+- `MaterialSystem_Config_t` (GetCurrentConfigForVideoCard) needs `materialsystem/materialsystem_config.h` (C2027, 44293835742).
 - GitHub warns "This repository moved" on push. That's harmless. A workflow that fails in 0 s is a
   YAML error: check for duplicate keys left by edits. The workflow file contains a literal tab in
   a sed line that GitHub accepts but PyYAML doesn't.
