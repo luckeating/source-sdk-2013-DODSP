@@ -15,6 +15,13 @@
 //     darkness on screen comes later, in the shader or the material; well below 1 = the baked
 //     ambient light itself is dark)
 //
+// Second version (2026-11-18): the first one sampled at the prop's bounding-box centre and printed "?" for
+// the shader. The owner then showed chair2 drawing near-black in the shade while sunlit fine, next to boxes
+// that look right - so it also prints:
+//     at the engine's own lighting origin (the model's $illumposition / its attachment, through the
+//     prop's transform): the light there, how high above the floor it sits, and whether it is in solid
+//     every material of the model: the shader it draws with and the features that pick a shader path
+//     (bump, phong, halflambert, lightwarp, selfillum, envmap)
 // Values are 0..255 screen brightness (gamma 2.2 of the linear light), the ratio is linear.
 // Static props are not covered: VRAD bakes their light per vertex (-StaticPropLighting), there is no
 // cube to read. The per-pixel sun is not in any of these numbers (it's added in the shader), so
@@ -24,6 +31,8 @@
 
 #include "cbase.h"
 #include "c_baseplayer.h"
+#include "c_baseanimating.h"
+#include "studio.h"
 #include "model_types.h"	// mod_studio
 #include "materialsystem/imaterial.h"
 
@@ -49,6 +58,43 @@ namespace
 		const Vector sq( n.x * n.x, n.y * n.y, n.z * n.z );
 		return pCube[n.x >= 0.0f ? 0 : 1] * sq.x + pCube[n.y >= 0.0f ? 2 : 3] * sq.y + pCube[n.z >= 0.0f ? 4 : 5] * sq.z;
 	}
+
+	bool DoDSP_VarOn( IMaterial *pMat, const char *pszVar, bool bTexture )
+	{
+		bool bFound = false;
+		IMaterialVar *pVar = pMat->FindVar( pszVar, &bFound, false );
+		if ( !bFound || !pVar || !pVar->IsDefined() )
+			return false;
+		return bTexture ? true : pVar->GetIntValue() != 0;
+	}
+
+	// Every material of the model: "name[shader bump phong ...]", appended to buf
+	void DoDSP_DescribeMaterials( const studiohdr_t *pS, char *buf, int nBuf )
+	{
+		buf[0] = 0;
+		for ( int t = 0; t < pS->numtextures; t++ )
+		{
+			IMaterial *pMat = NULL;
+			for ( int c = 0; c < pS->numcdtextures && IsErrorMaterial( pMat ); c++ )
+			{
+				char szPath[MAX_PATH];
+				Q_snprintf( szPath, sizeof( szPath ), "%s%s", pS->pCdtexture( c ), pS->pTexture( t )->pszName() );
+				pMat = materials->FindMaterial( szPath, TEXTURE_GROUP_MODEL, false );
+			}
+			char szOne[256];
+			if ( IsErrorMaterial( pMat ) )
+				Q_snprintf( szOne, sizeof( szOne ), "%s%s[missing]", t ? " " : "", pS->pTexture( t )->pszName() );
+			else
+				Q_snprintf( szOne, sizeof( szOne ), "%s%s[%s%s%s%s%s%s%s]", t ? " " : "", pS->pTexture( t )->pszName(), pMat->GetShaderName(),
+							DoDSP_VarOn( pMat, "$bumpmap", true ) ? " bump" : "",
+							DoDSP_VarOn( pMat, "$phong", false ) ? " phong" : "",
+							DoDSP_VarOn( pMat, "$halflambert", false ) ? " halflambert" : "",
+							DoDSP_VarOn( pMat, "$lightwarptexture", true ) ? " lightwarp" : "",
+							DoDSP_VarOn( pMat, "$selfillum", false ) ? " selfillum" : "",
+							DoDSP_VarOn( pMat, "$envmap", true ) ? " envmap" : "" );
+			Q_strncat( buf, szOne, nBuf, COPY_ALL_CHARACTERS );
+		}
+	}
 }
 
 CON_COMMAND( dodsp_prop_light, "DOD-SP: the light the engine gives the prop under the crosshair, next to the floor's lightmap" )
@@ -71,15 +117,14 @@ CON_COMMAND( dodsp_prop_light, "DOD-SP: the light the engine gives the prop unde
 		return;
 	}
 
-	// what the prop is and which shader draws it
-	const char *pszShader = "?";
-	if ( modelinfo->GetModelMaterialCount( pModel ) > 0 )
-	{
-		IMaterial *pMat = NULL;
-		modelinfo->GetModelMaterials( pModel, 1, &pMat );
-		if ( pMat && pMat->GetShaderName() )
-			pszShader = pMat->GetShaderName();
-	}
+	// what the prop is and which shaders draw it
+	C_BaseAnimating *pAnim = pEnt->GetBaseAnimating();
+	CStudioHdr *pHdr = pAnim ? pAnim->GetModelPtr() : NULL;
+	const studiohdr_t *pStudio = pHdr ? pHdr->GetRenderHdr() : NULL;
+	char szMaterials[1024];
+	Q_strncpy( szMaterials, "?", sizeof( szMaterials ) );
+	if ( pStudio )
+		DoDSP_DescribeMaterials( pStudio, szMaterials, sizeof( szMaterials ) );
 	ClientClass *pClass = pEnt->GetClientClass();
 	const char *pszClass = ( pClass && pClass->m_pNetworkName ) ? pClass->m_pNetworkName : "?";
 
@@ -101,13 +146,45 @@ CON_COMMAND( dodsp_prop_light, "DOD-SP: the light the engine gives the prop unde
 	// the room: the floor's lightmap straight under the prop (light styles as they are now)
 	const float flFloor = DoDSP_Lum( engine->GetLightForPoint( vecCentre, false ) );
 
+	// where the ENGINE samples the prop's light: the model's illumination position through its transform
+	// (or its illumination attachment), not the box centre
+	Vector vecIllum = vecCentre;
+	const char *pszIllum = "box centre";
+	if ( pStudio && pAnim )
+	{
+		matrix3x4_t mat;
+		const int nAttach = pStudio->IllumPositionAttachmentIndex();
+		if ( nAttach > 0 && pAnim->GetAttachment( nAttach, mat ) )
+		{
+			MatrixGetColumn( mat, 3, vecIllum );
+			pszIllum = "attachment";
+		}
+		else
+		{
+			VectorTransform( pStudio->illumposition, pEnt->EntityToWorldTransform(), vecIllum );
+			pszIllum = "$illumposition";
+		}
+	}
+	Vector vecIllumTotal( 0, 0, 0 );
+	Vector cubeIllum[6];
+	for ( int i = 0; i < 6; i++ )
+		cubeIllum[i].Init();
+	engine->ComputeLighting( vecIllum, &vecToEye, false, vecIllumTotal, cubeIllum );
+	const bool bInSolid = ( enginetrace->GetPointContents( vecIllum ) & CONTENTS_SOLID ) != 0;
+	trace_t trDown;
+	UTIL_TraceLine( vecIllum + Vector( 0, 0, 1 ), vecIllum - Vector( 0, 0, 512 ), MASK_SOLID_BRUSHONLY, pEnt, COLLISION_GROUP_NONE, &trDown );
+	const float flAboveFloor = ( vecIllum.z + 1.0f ) - trDown.endpos.z - 1.0f;
+
 	static ConVarRef s_SunBaked( "dodsp_sun_baked" );
-	Msg( "DOD-SP prop light: %s (%s, %s) | facing you: ambient %.0f + lamps %.0f | cube up %.0f down %.0f sides %.0f | "
-		 "floor under it %.0f | prop/floor %.2f | sun %s\n",
-		 modelinfo->GetModelName( pModel ), pszClass, pszShader,
+	Msg( "DOD-SP prop light: %s (%s) | at box centre: ambient %.0f + lamps %.0f, cube up %.0f down %.0f sides %.0f | "
+		 "at the engine's origin (%s, %.0f units above the floor%s): %.0f | floor under it %.0f | prop/floor %.2f | "
+		 "materials: %s | sun %s\n",
+		 modelinfo->GetModelName( pModel ), pszClass,
 		 DoDSP_Screen( flAmbient ), DoDSP_Screen( flLamps ),
 		 DoDSP_Screen( DoDSP_Lum( cube[4] ) ), DoDSP_Screen( DoDSP_Lum( cube[5] ) ), DoDSP_Screen( flSides ),
+		 pszIllum, flAboveFloor, bInSolid ? ", INSIDE SOLID" : "", DoDSP_Screen( DoDSP_Lum( vecIllumTotal ) ),
 		 DoDSP_Screen( flFloor ),
 		 flFloor > 1e-5f ? ( flAmbient + flLamps ) / flFloor : 0.0f,
+		 szMaterials,
 		 ( s_SunBaked.IsValid() && !s_SunBaked.GetBool() ) ? "per-pixel" : "baked" );
 }

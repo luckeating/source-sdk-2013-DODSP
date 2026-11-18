@@ -304,4 +304,12 @@ If you learn something like this, add it here in the same commit as the fix.
   through the openings (light_environment `_ambient`), more bounce, or exposure (HDR + auto exposure, stage 6).
   The command prints "?" for the shader: modelinfo->GetModelMaterials gives nothing for studio models - read
   the materials from the studio header when the file is next touched.
+  VERDICT WITHDRAWN 2026-11-18. The owner doubled the sky ambient: walls/floor brightened, chair2 stayed near
+  black (2.3 vs floor 7.0 on screen), while boxes and an UPTURNED chair in the same room were brighter than the
+  floor, and chair2 in the sun draws a normal brown frame and grey seat. So its texture isn't dark and the light
+  is lost for some props only. The first probe sampled at the box CENTRE, which is not where the engine samples
+  a model's light (the model's $illumposition / illum attachment through its transform). Probe v2 prints the
+  light at the engine's own origin (height above the floor, inside-solid flag) and every material's shader and
+  path features (bump/phong/halflambert/lightwarp/selfillum/envmap). Lesson: measure at the point the engine
+  uses, and check a prop in the SUN before blaming its texture.
 - Confirmed 2026-11-17: `buildcubemaps` no longer crashes with the sun shaders loaded (3b4).
