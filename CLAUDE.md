@@ -333,4 +333,12 @@ If you learn something like this, add it here in the same commit as the fix.
     never calls the base, so the hook can't live there). A mapper's LightingOrigin wins. Console names each
     corrected model once per map; INVARIANT if no open point exists. Lint: every `->pLightingOrigin =` /
     `.pLightingOrigin =` carries `dodsp-lint: lighting origin`. `dodsp_lightorigin_fix 0` = engine's points.
+    CONFIRMED 2026-11-18 (build 44258391671): plate now lit from its middle (ambient 49 vs 166 at its own point,
+    floor 55) - "blends into the scene really well" (owner). Its own point was outside the model, ~377 units away.
+  - chair2 black in the shade is NOT our shader: same with +dodsp_sunshader 0 (Mapbase's shaders). mat_fullbright 1:
+    the seat texture is light grey like the floor. Light received (lit/fullbright, linear): floor 0.003, the RIGHT
+    chair's seat 0.0024 (fine), the LEFT/corner chair's seat 0.0001, table top 0.0005. Same model, same texture -
+    it depends on where the prop stands (both black chairs stood in corners against the wall), yet
+    engine->ComputeLighting at the chair's own point reads normal (23 vs floor 20). So the engine DRAWS it with
+    less light than ComputeLighting reports there. OPEN; next test: push a black chair to the middle of the room.
 - Confirmed 2026-11-17: `buildcubemaps` no longer crashes with the sun shaders loaded (3b4).
