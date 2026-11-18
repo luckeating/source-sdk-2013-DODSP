@@ -140,6 +140,7 @@ If you learn something like this, add it here in the same commit as the fix.
 - MSVC treats C4189 (unused local) as an error. Calling a non-const member through a const object
   is C2662.
 - `mod_studio` / `mod_brush` need `model_types.h`; cbase.h doesn't bring it in (C2065, build 44250885877).
+- `IMaterialVar` is only forward-declared by imaterial.h: include `materialsystem/imaterialvar.h` (C2027, 44255842127).
 - GitHub warns "This repository moved" on push. That's harmless. A workflow that fails in 0 s is a
   YAML error: check for duplicate keys left by edits. The workflow file contains a literal tab in
   a sed line that GitHub accepts but PyYAML doesn't.
@@ -312,4 +313,10 @@ If you learn something like this, add it here in the same commit as the fix.
   light at the engine's own origin (height above the floor, inside-solid flag) and every material's shader and
   path features (bump/phong/halflambert/lightwarp/selfillum/envmap). Lesson: measure at the point the engine
   uses, and check a prop in the SUN before blaming its texture.
+  OWNER'S TEST 2026-11-18: sliding chair2 across the door's sun patch, the WHOLE chair (back, legs, parts in
+  shade) turns warm and lit the moment its lighting origin (centre of the seat) is in the sun, and black the
+  moment it leaves. Screenshots: shaded plates on the floor draw ~15-100x brighter than the shaded floor around
+  them (linear). So the engine lights each model by what its ORIGIN sees, the sun included - a second sun on
+  models that "one sun on models" was meant to prevent, gated per model by one point. Probe v2 prints ambient
+  and lamps at that origin separately so the sun's way in (a light, or folded into the ambient cube) shows.
 - Confirmed 2026-11-17: `buildcubemaps` no longer crashes with the sun shaders loaded (3b4).

@@ -35,6 +35,7 @@
 #include "studio.h"
 #include "model_types.h"	// mod_studio
 #include "materialsystem/imaterial.h"
+#include "materialsystem/imaterialvar.h"	// IMaterialVar is only forward-declared in imaterial.h
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -170,6 +171,8 @@ CON_COMMAND( dodsp_prop_light, "DOD-SP: the light the engine gives the prop unde
 	for ( int i = 0; i < 6; i++ )
 		cubeIllum[i].Init();
 	engine->ComputeLighting( vecIllum, &vecToEye, false, vecIllumTotal, cubeIllum );
+	const float flIllumAmbient = DoDSP_Lum( DoDSP_CubeLight( cubeIllum, vecToEye ) );
+	const float flIllumLamps = MAX( DoDSP_Lum( vecIllumTotal ) - flIllumAmbient, 0.0f );
 	const bool bInSolid = ( enginetrace->GetPointContents( vecIllum ) & CONTENTS_SOLID ) != 0;
 	trace_t trDown;
 	UTIL_TraceLine( vecIllum + Vector( 0, 0, 1 ), vecIllum - Vector( 0, 0, 512 ), MASK_SOLID_BRUSHONLY, pEnt, COLLISION_GROUP_NONE, &trDown );
@@ -177,12 +180,12 @@ CON_COMMAND( dodsp_prop_light, "DOD-SP: the light the engine gives the prop unde
 
 	static ConVarRef s_SunBaked( "dodsp_sun_baked" );
 	Msg( "DOD-SP prop light: %s (%s) | at box centre: ambient %.0f + lamps %.0f, cube up %.0f down %.0f sides %.0f | "
-		 "at the engine's origin (%s, %.0f units above the floor%s): %.0f | floor under it %.0f | prop/floor %.2f | "
+		 "at the engine's origin (%s, %.0f units above the floor%s): ambient %.0f + lamps %.0f | floor under it %.0f | prop/floor %.2f | "
 		 "materials: %s | sun %s\n",
 		 modelinfo->GetModelName( pModel ), pszClass,
 		 DoDSP_Screen( flAmbient ), DoDSP_Screen( flLamps ),
 		 DoDSP_Screen( DoDSP_Lum( cube[4] ) ), DoDSP_Screen( DoDSP_Lum( cube[5] ) ), DoDSP_Screen( flSides ),
-		 pszIllum, flAboveFloor, bInSolid ? ", INSIDE SOLID" : "", DoDSP_Screen( DoDSP_Lum( vecIllumTotal ) ),
+		 pszIllum, flAboveFloor, bInSolid ? ", INSIDE SOLID" : "", DoDSP_Screen( flIllumAmbient ), DoDSP_Screen( flIllumLamps ),
 		 DoDSP_Screen( flFloor ),
 		 flFloor > 1e-5f ? ( flAmbient + flLamps ) / flFloor : 0.0f,
 		 szMaterials,
