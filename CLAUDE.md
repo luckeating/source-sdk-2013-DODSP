@@ -288,7 +288,7 @@ If you learn something like this, add it here in the same commit as the fix.
   dodsp_prop_light "lamps"), 5c lamp light with the stored shadows, 5d moving shadows + falloff.
   **5a (probe) BUILT 2026-11-18.** Layout: RT1 albedo.rgb, RT2 world normal.xyz (0 = not lit by the lamps; the
   client clears to 0), RT3 .x eye distance; .a = the pixel's own alpha in all three (blended decals blend all).
-  All RGBA16F, like HDR's RT0 (MRT wants one bit depth): HDR float only. Additive flashlight passes write 0
+  Formats follow RT0 (see PROBE RESULT 1 below). Additive flashlight passes write 0
   (DoDSP_GBufferNone). Unbound targets drop the extra outputs, so no combo. Risks it checks: MRT works on the
   2014 engine at all; what writes nothing (Mapbase-fallback materials, decal/overlay shaders, UnlitGeneric);
   whether shaders that don't write COLOR1..3 leave garbage there. Test: `dodsp_lamps_view 1` (bottom panels:
@@ -301,6 +301,12 @@ If you learn something like this, add it here in the same commit as the fix.
   client_hl2.vpc, dodsp_lint_client.py. FIRST BUILD FAILED (44284904121, X3000 'DoDSP_PS_OUTPUT' in the three model
   PS): the include sat inside their `#if !FLASHLIGHT` sun block, so flashlight variants didn't see it. A header the
   whole shader needs goes outside every #if; check_gbuffer now fails on a conditional include.
+  PROBE RESULT 1 (build 44287491699): `the G-buffer was never written (HDR is not the float kind)` - the owner's
+  `mat_hdr_level 2` is INTEGER HDR (Source's usual on PC: an 8-bit screen, tone-mapped in the shaders), not float.
+  So the formats now follow render target 0 (D3D9 MRT: one bit depth): integer -> RGBA8888, RGBA8888, R32F; float
+  -> RGBA16F x3 (`DoDSP_GBufferFormat`). Normals are stored *0.5+0.5 (8 bits hold no negatives). Every bound target
+  must share the screen's multisampling: MSAA on = G-buffer off (`WhyOff`, the one answer, said once per map).
+  Open: does the engine's sRGB write also gamma-encode targets 1..2? dodsp_lamps_check prints both readings.
   Undo: `dodsp_lamps_gbuffer 0` (nothing bound, shaders unchanged in
   effect), or the 4b shader DLL/.vcs + previous client.dll (build 44265747599).
 - Stage 6: extras. **SSAO** (screen-space ambient occlusion: contact darkening from what's on screen),

@@ -56,8 +56,21 @@ enum
 };
 
 static const char *s_pszGBufferName[DODSP_GBUF_COUNT] = { "_rt_DODSP_GAlbedo", "_rt_DODSP_GNormal", "_rt_DODSP_GDist" };
-static const char *s_pszGBufferLabel[DODSP_GBUF_COUNT] = { "albedo", "normal", "distance" };
-#define DODSP_GBUF_FORMAT	IMAGE_FORMAT_RGBA16161616F
+
+// The formats follow render target 0, because D3D9 wants every bound target at one bit depth:
+// integer HDR (the PC's usual, 8 bits a channel) -> RGBA8888, RGBA8888, R32F (32 bits each);
+// float HDR (RGBA16F) -> RGBA16F x3 (64 bits each). Found 2026-11-18: the owner's HDR is integer.
+static bool DoDSP_FloatHDR()
+{
+	return g_pMaterialSystemHardwareConfig->GetHDRType() == HDR_TYPE_FLOAT;
+}
+
+static ImageFormat DoDSP_GBufferFormat( int nTarget, bool bFloat )
+{
+	if ( bFloat )
+		return IMAGE_FORMAT_RGBA16161616F;
+	return ( nTarget == DODSP_GBUF_DIST ) ? IMAGE_FORMAT_R32F : IMAGE_FORMAT_RGBA8888;
+}
 
 // A half float (IEEE 754 binary16) to a float
 static float DoDSP_HalfToFloat( unsigned short h )
@@ -77,9 +90,9 @@ class CDoDSPLamps : public CAutoGameSystem
 {
 public:
 	CDoDSPLamps() : CAutoGameSystem( "CDoDSPLamps" ), m_bAllocated( false ), m_bReady( false ), m_bBound( false ),
-		m_bViewMaterials( false ), m_bViewWarned( false ), m_nBoundFrames( 0 ) {}
+		m_bViewMaterials( false ), m_bViewWarned( false ), m_nBoundFrames( 0 ), m_bFloat( false ), m_bOffReported( false ) {}
 
-	virtual void LevelInitPostEntity()	{ EnsureTargets(); m_nBoundFrames = 0; }
+	virtual void LevelInitPostEntity()	{ EnsureTargets(); m_nBoundFrames = 0; m_bOffReported = false; }
 	virtual void Shutdown()				{ FreeViewMaterials(); FreeTargets(); }
 
 	bool BeginGBuffer();
@@ -93,6 +106,7 @@ private:
 	bool EnsureViewMaterials();
 	void FreeViewMaterials();
 	bool ReadCentre( int nTarget, float flOut[4] );
+	const char *WhyOff() const;
 
 	bool				m_bAllocated;
 	bool				m_bReady;			// all three targets exist in the format and size asked for
@@ -104,14 +118,18 @@ private:
 	bool				m_bViewMaterials;
 	bool				m_bViewWarned;
 	int					m_nBoundFrames;		// frames the G-buffer was written this map (dodsp_lamps_check)
+	bool				m_bFloat;			// the targets were made for float HDR (else integer HDR)
+	bool				m_bOffReported;		// "G-buffer off" said once this map
 };
 
 static CDoDSPLamps s_DoDSPLamps;
 
 void CDoDSPLamps::EnsureTargets()
 {
-	if ( m_bAllocated )
+	if ( m_bAllocated && m_bFloat == DoDSP_FloatHDR() )
 		return;
+	FreeTargets();
+	m_bFloat = DoDSP_FloatHDR();
 	if ( !g_pMaterialSystemHardwareConfig->SupportsShaderModel_3_0() )
 	{
 		Warning( "DOD-SP lamps: this graphics card has no shader model 3.0 - no live lamps\n" );
@@ -123,7 +141,7 @@ void CDoDSPLamps::EnsureTargets()
 	for ( int i = 0; i < DODSP_GBUF_COUNT; i++ )
 	{
 		ITexture *pTex = materials->CreateNamedRenderTargetTextureEx( s_pszGBufferName[i], 1, 1, RT_SIZE_FULL_FRAME_BUFFER,
-			DODSP_GBUF_FORMAT, MATERIAL_RT_DEPTH_NONE, TEXTUREFLAGS_CLAMPS | TEXTUREFLAGS_CLAMPT | TEXTUREFLAGS_POINTSAMPLE );
+			DoDSP_GBufferFormat( i, m_bFloat ), MATERIAL_RT_DEPTH_NONE, TEXTUREFLAGS_CLAMPS | TEXTUREFLAGS_CLAMPT | TEXTUREFLAGS_POINTSAMPLE );
 		m_Targets[i].Init( pTex );
 		if ( pTex )
 			pTex->DecrementReferenceCount();	// created with one reference; the CTextureReference holds it now
@@ -139,8 +157,8 @@ void CDoDSPLamps::EnsureTargets()
 		ITexture *pTex = m_Targets[i];
 		if ( !pTex || pTex->IsError() )
 			pszWhy = "a target could not be created";
-		else if ( pTex->GetImageFormat() != DODSP_GBUF_FORMAT )
-			pszWhy = "the card gave another format than RGBA16F";
+		else if ( pTex->GetImageFormat() != DoDSP_GBufferFormat( i, m_bFloat ) )
+			pszWhy = "the card gave another format than asked for";
 		else if ( pTex->GetActualWidth() != nScreenW || pTex->GetActualHeight() != nScreenH )
 			pszWhy = "a target is not the size of the screen";
 	}
@@ -148,8 +166,8 @@ void CDoDSPLamps::EnsureTargets()
 	if ( pszWhy )
 		Warning( "INVARIANT: DOD-SP lamps G-buffer: %s (screen %d x %d) - the G-buffer stays off\n", pszWhy, nScreenW, nScreenH );
 	else
-		Msg( "DOD-SP lamps G-buffer: %d targets, %d x %d RGBA16F (stage 5a probe: dodsp_lamps_view 1 shows it, dodsp_lamps_check reads your aim point)\n",
-			 DODSP_GBUF_COUNT, nScreenW, nScreenH );
+		Msg( "DOD-SP lamps G-buffer: %d targets, %d x %d, %s (stage 5a probe: dodsp_lamps_view 1 shows it, dodsp_lamps_check reads your aim point)\n",
+			 DODSP_GBUF_COUNT, nScreenW, nScreenH, m_bFloat ? "RGBA16F (float HDR)" : "RGBA8888 + R32F (integer HDR)" );
 }
 
 void CDoDSPLamps::FreeTargets()
@@ -159,14 +177,37 @@ void CDoDSPLamps::FreeTargets()
 	m_bAllocated = m_bReady = false;
 }
 
+// The one answer to "may the G-buffer be bound now?" - NULL = yes, else why not
+const char *CDoDSPLamps::WhyOff() const
+{
+	if ( !dodsp_lamps_gbuffer.GetBool() )
+		return "dodsp_lamps_gbuffer is 0";
+	if ( !m_bReady )
+		return "the G-buffer targets are missing (see the DOD-SP lamps line at map load)";
+	if ( !DoDSP_SunShadersInUse() )
+		return "the DOD-SP shaders are not in use";
+	if ( !DoDSP_DrawsHDR() )
+		return "HDR is off (LDR is not supported) - see the DOD-SP HDR line";
+	if ( m_bFloat != DoDSP_FloatHDR() )
+		return "the kind of HDR changed since the map loaded - reload the map";
+	// every bound target must have the screen's multisampling, and ours have none
+	if ( materials->GetCurrentConfigForVideoCard().m_nAASamples > 1 )
+		return "antialiasing (MSAA) is on - set Antialiasing to None in the video options (stage 5 can't share a multisampled screen)";
+	return NULL;
+}
+
 bool CDoDSPLamps::BeginGBuffer()
 {
 	Assert( !m_bBound );
 	m_bBound = false;
-	// HDR only: render target 0 is then RGBA16F like ours (MRT wants one bit depth); LDR is not supported
-	if ( !dodsp_lamps_gbuffer.GetBool() || !m_bReady || !DoDSP_SunShadersInUse() || !DoDSP_DrawsHDR() ||
-		 g_pMaterialSystemHardwareConfig->GetHDRType() != HDR_TYPE_FLOAT )
+	const char *pszWhy = WhyOff();
+	if ( pszWhy )
+	{
+		if ( !m_bOffReported && dodsp_lamps_gbuffer.GetBool() )
+			Msg( "DOD-SP lamps G-buffer: off - %s\n", pszWhy );
+		m_bOffReported = true;
 		return false;
+	}
 
 	CMatRenderContextPtr pRenderContext( materials );
 	// Cleared to 0 = "the lamps don't light this pixel" wherever no DOD-SP shader draws
@@ -276,13 +317,22 @@ bool CDoDSPLamps::ReadCentre( int nTarget, float flOut[4] )
 	ITexture *pTex = m_Targets[nTarget];
 	if ( !pTex )
 		return false;
-	unsigned short data[4] = { 0, 0, 0, 0 };
+	const ImageFormat fmt = DoDSP_GBufferFormat( nTarget, m_bFloat );
+	unsigned char data[16];
+	memset( data, 0, sizeof( data ) );
 	CMatRenderContextPtr pRenderContext( materials );
 	pRenderContext->PushRenderTargetAndViewport( pTex );
-	pRenderContext->ReadPixels( pTex->GetActualWidth() / 2, pTex->GetActualHeight() / 2, 1, 1, (unsigned char *)data, DODSP_GBUF_FORMAT );
+	pRenderContext->ReadPixels( pTex->GetActualWidth() / 2, pTex->GetActualHeight() / 2, 1, 1, data, fmt );
 	pRenderContext->PopRenderTargetAndViewport();
 	for ( int k = 0; k < 4; k++ )
-		flOut[k] = DoDSP_HalfToFloat( data[k] );
+	{
+		if ( fmt == IMAGE_FORMAT_RGBA16161616F )
+			flOut[k] = DoDSP_HalfToFloat( ( (const unsigned short *)data )[k] );
+		else if ( fmt == IMAGE_FORMAT_R32F )
+			flOut[k] = ( k == 0 ) ? *(const float *)data : 0.0f;
+		else
+			flOut[k] = data[k] / 255.0f;
+	}
 	return true;
 }
 
@@ -296,10 +346,8 @@ void CDoDSPLamps::Check()
 	}
 	if ( m_nBoundFrames == 0 )
 	{
-		Msg( "DOD-SP lamps check: the G-buffer was never written on this map (%s)\n",
-			 !dodsp_lamps_gbuffer.GetBool() ? "dodsp_lamps_gbuffer is 0" :
-			 !DoDSP_SunShadersInUse() ? "the DOD-SP shaders are not in use" :
-			 !DoDSP_DrawsHDR() ? "HDR is off - see the DOD-SP HDR line" : "HDR is not the float kind" );
+		const char *pszWhy = WhyOff();
+		Msg( "DOD-SP lamps check: the G-buffer was never written on this map (%s)\n", pszWhy ? pszWhy : "no main view drew yet" );
 		return;
 	}
 
@@ -317,18 +365,28 @@ void CDoDSPLamps::Check()
 	float vAlbedo[4], vNormal[4], vDist[4];
 	if ( !ReadCentre( DODSP_GBUF_ALBEDO, vAlbedo ) || !ReadCentre( DODSP_GBUF_NORMAL, vNormal ) || !ReadCentre( DODSP_GBUF_DIST, vDist ) )
 		return;
-	const float flNormalLen = sqrtf( vNormal[0] * vNormal[0] + vNormal[1] * vNormal[1] + vNormal[2] * vNormal[2] );
-	if ( flNormalLen < 0.5f )
+	// "written" = the stored normal sums above 0.3 (dodsp_gbuffer_fxc.h; cleared = 0)
+	if ( vNormal[0] + vNormal[1] + vNormal[2] < 0.3f )
 	{
 		Msg( "DOD-SP lamps check: NOT written at your aim point (%s, trace distance %.0f) - the lamps won't light it; "
-			 "distance there %.0f, albedo %.2f %.2f %.2f\n",
-			 pszWhat, bHit ? ( tr.endpos - vecEye ).Length() : 0.0f, vDist[0], vAlbedo[0], vAlbedo[1], vAlbedo[2] );
+			 "distance there %.0f\n", pszWhat, bHit ? ( tr.endpos - vecEye ).Length() : 0.0f, vDist[0] );
 		return;
 	}
-	Msg( "DOD-SP lamps check: %s | distance %.0f (trace %.0f) | normal %.2f %.2f %.2f (trace %.2f %.2f %.2f) | albedo %.2f %.2f %.2f\n",
-		 pszWhat, vDist[0], bHit ? ( tr.endpos - vecEye ).Length() : 0.0f,
-		 vNormal[0], vNormal[1], vNormal[2], tr.plane.normal.x, tr.plane.normal.y, tr.plane.normal.z,
-		 vAlbedo[0], vAlbedo[1], vAlbedo[2] );
+
+	// Two readings of the 8-bit targets: as stored, and as if the engine's sRGB write had gamma-encoded
+	// them. The one whose normal is unit length and matches the trace tells 5c how to read them.
+	Vector vecN( 2.0f * vNormal[0] - 1.0f, 2.0f * vNormal[1] - 1.0f, 2.0f * vNormal[2] - 1.0f );
+	Vector vecNG( 2.0f * SrgbGammaToLinear( vNormal[0] ) - 1.0f, 2.0f * SrgbGammaToLinear( vNormal[1] ) - 1.0f,
+				  2.0f * SrgbGammaToLinear( vNormal[2] ) - 1.0f );
+	char szGamma[160] = "";
+	if ( !m_bFloat )
+		Q_snprintf( szGamma, sizeof( szGamma ), " | if gamma-encoded: normal %.2f %.2f %.2f (length %.2f), albedo %.3f %.3f %.3f",
+					vecNG.x, vecNG.y, vecNG.z, vecNG.Length(),
+					SrgbGammaToLinear( vAlbedo[0] ), SrgbGammaToLinear( vAlbedo[1] ), SrgbGammaToLinear( vAlbedo[2] ) );
+	Msg( "DOD-SP lamps check: %s | distance %.0f (trace %.0f) | trace normal %.2f %.2f %.2f | as stored: normal %.2f %.2f %.2f "
+		 "(length %.2f), albedo %.3f %.3f %.3f%s\n",
+		 pszWhat, vDist[0], bHit ? ( tr.endpos - vecEye ).Length() : 0.0f, tr.plane.normal.x, tr.plane.normal.y, tr.plane.normal.z,
+		 vecN.x, vecN.y, vecN.z, vecN.Length(), vAlbedo[0], vAlbedo[1], vAlbedo[2], szGamma );
 }
 
 CON_COMMAND( dodsp_lamps_check, "DOD-SP stage 5a: what the lamps' G-buffer holds at your aim point, next to a trace" )

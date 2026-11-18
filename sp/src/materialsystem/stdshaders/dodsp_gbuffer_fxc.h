@@ -8,11 +8,16 @@
 // targets 1..3 only for the main view's opaque pass (c_dodsp_lamps.cpp); in every other pass
 // nothing is bound there and D3D9 drops the extra outputs - no combo needed.
 //
-// Layout (all RGBA16F; .a = the pixel's own alpha everywhere, so a blended decal blends all three):
-//   COLOR1  albedo.rgb (linear, before any lighting)
-//   COLOR2  world normal.xyz (unit length); 0 = "the lamps don't light this pixel" (unlit
-//           materials, additive passes, and whatever no DOD-SP shader drew - the client clears to 0)
+// Layout (.a = the pixel's own alpha everywhere, so a blended decal blends all three). The formats
+// follow render target 0 (MRT wants one bit depth): integer HDR (the PC's usual) RGBA8888, RGBA8888,
+// R32F; float HDR RGBA16F x3. So every value is stored in 0..1 where it must fit 8 bits:
+//   COLOR1  albedo.rgb (linear, before any lighting; the engine's sRGB write may encode it - the
+//           reader decides, dodsp_lamps_check shows both readings)
+//   COLOR2  world normal.xyz * 0.5 + 0.5; all 0 = "the lamps don't light this pixel" (unlit
+//           materials, additive passes, and whatever no DOD-SP shader drew - the client clears to
+//           0). A unit normal never encodes to less than 0.63 summed, so "written" = sum > 0.3
 //   COLOR3  .x = distance from the eye (world units)
+// FIRST PROBE 2026-11-18: the 16F-only version never ran - the owner's HDR is the integer kind.
 //
 // INVARIANT: each of our opaque pixel shaders returns DoDSP_PS_OUTPUT through DoDSP_GBuffer or
 // DoDSP_GBufferNone (checked by devtools/dodsp_build_shaders.py check_gbuffer).
@@ -35,7 +40,7 @@ DoDSP_PS_OUTPUT DoDSP_GBuffer( float4 vColor, float3 vAlbedo, float3 vWorldNorma
 	DoDSP_PS_OUTPUT o;
 	o.vColor = vColor;
 	o.vAlbedo = float4( bLit ? vAlbedo : float3( 0.0f, 0.0f, 0.0f ), vColor.a );
-	o.vNormal = float4( bLit ? vWorldNormal : float3( 0.0f, 0.0f, 0.0f ), vColor.a );
+	o.vNormal = float4( bLit ? vWorldNormal * 0.5f + 0.5f : float3( 0.0f, 0.0f, 0.0f ), vColor.a );
 	o.vDist = float4( flEyeDist, 0.0f, 0.0f, vColor.a );
 	return o;
 }
