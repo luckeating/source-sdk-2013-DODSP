@@ -55,7 +55,14 @@ static ConVar dodsp_lamps_cutoff( "dodsp_lamps_cutoff", "0.0005", 0,
 	"DOD-SP: a live lamp without its own falloff distance reaches as far as its light stays above this (lightmap units)" );
 static ConVar dodsp_lamps_maxrange( "dodsp_lamps_maxrange", "2048", 0, "DOD-SP: no live lamp reaches further than this" );
 
-#define DODSP_LAMP_COOKIE_RES	128
+#define DODSP_LAMP_COOKIE_RES	512		// 128 drew the cone's hard edge as visible stair steps (2026-11-18)
+#define DODSP_LAMP_COOKIE_SS	4		// samples per texel side: an edge texel holds how much of it is inside the cone
+
+// The live lamp's light per unit of VRAD's world-light intensity, measured against the bake: build 44344800913,
+// cafe hall lamp (quadratic falloff), live / baked = 3.05 and 3.09 on two unclipped floor spots (unlit areas
+// 1.00). The factor is constant (it doesn't change across the cone), so it is a units difference between
+// VRAD's lightmaps and the engine's flashlight, not a shape difference. dodsp_lamps_scale stays 1 = as baked.
+#define DODSP_LAMP_BAKE_MATCH	( 1.0f / 3.07f )
 #define DODSP_LAMP_MAX_FOV		170.0f	// a projected texture's frustum must stay well under 180 degrees
 
 //-----------------------------------------------------------------------------
@@ -94,13 +101,22 @@ public:
 			for ( int x = 0; x < w; x++ )
 			{
 				// the border stays black, so nothing outside the cone is ever lit (the sampler clamps)
+				// the texel's value is the average over DODSP_LAMP_COOKIE_SS^2 points in it, so a hard cone
+				// edge comes out as a smooth one texel wide ramp instead of whole texels on or off
 				float flValue = 0.0f;
 				if ( x > 0 && y > 0 && x < w - 1 && y < h - 1 )
 				{
-					const float u = ( ( x + 0.5f ) / w * 2.0f - 1.0f ) * m_flTan;
-					const float v = ( ( y + 0.5f ) / h * 2.0f - 1.0f ) * m_flTan;
-					const float flCos = 1.0f / sqrtf( 1.0f + u * u + v * v );	// cos of the angle to the axis
-					flValue = Cone( flCos );
+					for ( int sy = 0; sy < DODSP_LAMP_COOKIE_SS; sy++ )
+					{
+						for ( int sx = 0; sx < DODSP_LAMP_COOKIE_SS; sx++ )
+						{
+							const float u = ( ( x + ( sx + 0.5f ) / DODSP_LAMP_COOKIE_SS ) / w * 2.0f - 1.0f ) * m_flTan;
+							const float v = ( ( y + ( sy + 0.5f ) / DODSP_LAMP_COOKIE_SS ) / h * 2.0f - 1.0f ) * m_flTan;
+							const float flCos = 1.0f / sqrtf( 1.0f + u * u + v * v );	// cos of the angle to the axis
+							flValue += Cone( flCos );
+						}
+					}
+					flValue /= (float)( DODSP_LAMP_COOKIE_SS * DODSP_LAMP_COOKIE_SS );
 				}
 				// the flashlight samplers read the cookie as sRGB: store gamma so the shader gets this value back
 				const int c = clamp( (int)( SrgbLinearToGamma( flValue ) * 255.0f + 0.5f ), 0, 255 );
@@ -277,7 +293,7 @@ void CDoDSPLamps::BuildState( int nLamp, Lamp_t &lamp )
 	static ConVarRef s_FlashScale( "dodsp_r_flashlightbrightness" );
 	float flShaderScale = DoDSP_DrawsHDR() ? ( s_FlashScale.IsValid() ? s_FlashScale.GetFloat() : 0.25f ) : 2.0f;
 	flShaderScale = MAX( flShaderScale, 1e-3f );
-	const float flScale = MAX( dodsp_lamps_scale.GetFloat(), 0.0f ) / flShaderScale;
+	const float flScale = DODSP_LAMP_BAKE_MATCH * MAX( dodsp_lamps_scale.GetFloat(), 0.0f ) / flShaderScale;
 
 	Vector vecForward = d.m_vecDir, vecRight, vecUp;
 	VectorVectors( vecForward, vecRight, vecUp );

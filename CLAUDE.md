@@ -318,6 +318,11 @@ If you learn something like this, add it here in the same commit as the fix.
   leaf_ambient_lighting.cpp, vraddetailprops.cpp, world.cpp, c_dodsp_lamps.cpp (c_dodsp_lamps.h removed),
   viewrender.cpp (5a hooks removed), dodsp_lint_client.py. Undo: `dodsp_lamps_baked 1` (the baked lamps; no rebuild),
   or the previous VRAD + recompile (the lamp is an ordinary baked light again).
+  FIRST TEST 2026-11-18 (build 44344800913, one live hall lamp, cone 90/90): WORKS - drawn live, the chair casts a
+  real shadow. `dodsp_lamps`: `colour 7843 ... distance falloff exact`. Two faults, fixed after: (1) live was 3.07x
+  the baked lamp (floor 3.05 / 3.09 unclipped, unlit areas 1.00 = a constant units factor) -> DODSP_LAMP_BAKE_MATCH
+  = 1/3.07 (measured, not derived; re-measure on a second lamp); (2) the cone edge drew as stair steps (128-texel
+  cookie, hard edge) -> 512 texels, each the average of 4x4 points.
 - Stage 6: extras. **SSAO** (screen-space ambient occlusion: contact darkening from what's on screen),
   and then blob shadows OFF entirely while the per-pixel sun draws (agreed 2026-11-17). Also cubemap
   normalization / specular occlusion (the owner's idea). HDR moved up: it is the standard since 2026-11-18.
