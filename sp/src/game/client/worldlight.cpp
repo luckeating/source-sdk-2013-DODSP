@@ -105,6 +105,7 @@ CWorldLights::CWorldLights() : CAutoGameSystem("World lights")
 	m_nWorldLights = 0;
 	m_pWorldLights = NULL;
 	m_bHaveSunIntensity[0] = m_bHaveSunIntensity[1] = false;
+	m_bDoDSPSunSeparate = false;
 }
 
 //-----------------------------------------------------------------------------
@@ -114,6 +115,7 @@ void CWorldLights::Clear()
 {
 	m_nWorldLights = 0;
 	m_bHaveSunIntensity[0] = m_bHaveSunIntensity[1] = false;
+	m_bDoDSPSunSeparate = false;
 
 	if(m_pWorldLights)
 	{
@@ -150,7 +152,7 @@ bool CWorldLights::Init()
 // so dodsp_sun_baked never silently does nothing.
 // INVARIANT: only the sun may use DODSP_LIGHTSTYLE_SUN (VRAD refuses to compile otherwise).
 //-----------------------------------------------------------------------------
-static void DoDSP_ReportSunStyle( const dworldlight_t *pLights, int nLights )
+static bool DoDSP_ReportSunStyle( const dworldlight_t *pLights, int nLights )
 {
 	int iSun = -1;
 	for ( int i = 0; i < nLights; i++ )
@@ -168,11 +170,15 @@ static void DoDSP_ReportSunStyle( const dworldlight_t *pLights, int nLights )
 	if ( iSun < 0 )
 		Msg( "DOD-SP sun: this map has no light_environment\n" );
 	else if ( pLights[iSun].style == DODSP_LIGHTSTYLE_SUN )
-		Msg( "DOD-SP sun: separate (compiled with -dodsp_sunstyle) - baked direct sun is %s (dodsp_sun_baked %d)\n",
-			 bBaked ? "SHOWN" : "OFF", bBaked ? 1 : 0 );
+	{
+		Msg( "DOD-SP sun: separate (compiled with -dodsp_sunstyle) - you asked for the %s sun (dodsp_sun_baked %d)\n",
+			 bBaked ? "baked" : "per-pixel", bBaked ? 1 : 0 );
+		return true;
+	}
 	else
 		Msg( "DOD-SP sun: not separate (compiled without -dodsp_sunstyle) - the direct sun is baked in with "
-			 "everything else, so dodsp_sun_baked does nothing on this map\n" );
+			 "everything else, so this map keeps the baked sun whatever dodsp_sun_baked says\n" );
+	return false;
 }
 
 //-----------------------------------------------------------------------------
@@ -254,7 +260,7 @@ void CWorldLights::LevelInitPreEntity()
 
 	DevMsg("CWorldLights: load successful (%d lights at 0x%p)\n", m_nWorldLights, m_pWorldLights);
 
-	DoDSP_ReportSunStyle( m_pWorldLights, m_nWorldLights );
+	m_bDoDSPSunSeparate = DoDSP_ReportSunStyle( m_pWorldLights, m_nWorldLights );
 
 #ifdef MAPBASE
 	// Now that the lights have been gathered, begin separating them into lists for each PVS cluster.

@@ -34,6 +34,10 @@ public:
 	// DOD-SP: the sun's colour x brightness in lightmap units, for the LDR or HDR lightmaps
 	// (whichever set the map lacks falls back to the other). False when the map has no sun.
 	bool GetSunIntensity( bool bHDR, Vector &vecIntensity ) const;
+	// DOD-SP: true when VRAD kept the sun's direct light in its own light style (-dodsp_sunstyle), so it
+	// can be switched off and drawn per pixel instead. False: the sun is baked in with everything else,
+	// and a per-pixel sun on top would be a second sun.
+	bool IsSunSeparate() const { return m_bDoDSPSunSeparate; }
 	void FindBrightestLightSourceOld( const Vector &vecPosition, Vector &vecLightPos, Vector &vecLightBrightness, int nCluster );
 #ifdef MAPBASE
 	void FindBrightestLightSourceNew(const Vector &vecPosition, Vector &vecLightPos, Vector &vecLightBrightness, int nCluster);
@@ -55,6 +59,7 @@ private:
 	// DOD-SP: the sun's intensity in the LDR [0] and HDR [1] world light lumps
 	Vector m_vecSunIntensity[2];
 	bool m_bHaveSunIntensity[2];
+	bool m_bDoDSPSunSeparate;
 
 #ifdef MAPBASE
 	int m_iSunIndex = -1; // The sun's personal index

@@ -37,7 +37,28 @@ OWNERS = {
                                     "game/client/dodsp/c_dodsp_sun_cascades.cpp"},
     # stage 4c: the contact shadows are set in one place
     "dodsp_contactshadow": {"game/client/clientshadowmgr.cpp"},
+    # "the per-pixel sun can't draw here, show the baked one": the client writes it, the server reads it
+    "dodsp_sun_fallback": {"game/server/world.cpp", "game/client/dodsp/c_dodsp_sun_cascades.cpp"},
 }
+
+# dodsp_sun_baked is the player's choice (default 0). Code never sets it: the old watchdog's
+# "dodsp_sun_baked 1" outlived the sunless map that caused it and switched every later map back to the
+# baked sun. Where the per-pixel sun can't draw, the client sets dodsp_sun_fallback instead.
+SUN_BAKED_WRITE = re.compile(r'"dodsp_sun_baked\s+\d|\bdodsp_sun_baked\.SetValue\b|s_SunBaked\.SetValue\b')
+
+
+def check_sun_baked_writes():
+    bad = []
+    for dirpath, _, files in os.walk(os.path.join(ROOT, "game")):
+        for name in files:
+            if not name.endswith((".cpp", ".h")):
+                continue
+            path = os.path.join(dirpath, name)
+            with open(path, encoding="latin-1") as f:
+                for n, line in enumerate(f, 1):
+                    if SUN_BAKED_WRITE.search(line.split("//")[0]):
+                        bad.append("%s:%d: %s" % (os.path.relpath(path, ROOT), n, line.strip()))
+    return bad
 
 SHADOWMGR = os.path.join(CLIENT, "clientshadowmgr.cpp")
 SHADOW_RULES = [
@@ -80,6 +101,12 @@ def main():
     if owner_bad:
         print("dodsp_lint_client: a DOD-SP sun fact has a second owner:")
         for b in owner_bad:
+            print("  " + b)
+        return 1
+    baked_bad = check_sun_baked_writes()
+    if baked_bad:
+        print("dodsp_lint_client: code sets dodsp_sun_baked (the player's choice) - set dodsp_sun_fallback instead:")
+        for b in baked_bad:
             print("  " + b)
         return 1
     shadow_bad = check_shadow_values()

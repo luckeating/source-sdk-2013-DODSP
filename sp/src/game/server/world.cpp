@@ -604,16 +604,22 @@ static void DoDSP_SunBakedChanged( IConVar *pVar, const char *pOldValue, float f
 {
 	DoDSP_ApplySunStyle();
 }
-ConVar dodsp_sun_baked( "dodsp_sun_baked", "1", FCVAR_NONE,
-	"DOD-SP: 1 = show the map's baked direct sunlight (stock look). 0 = switch it off, leaving its bounce and "
-	"the sky ambient. Only maps compiled with VRAD -dodsp_sunstyle have a separate sun; the console says which "
-	"at map load.", DoDSP_SunBakedChanged );
+ConVar dodsp_sun_baked( "dodsp_sun_baked", "0", FCVAR_NONE,
+	"DOD-SP: 0 = the per-pixel sun with real-time shadows (default). 1 = the map's baked direct sunlight "
+	"(stock look). Maps without a separate sun (VRAD -dodsp_sunstyle) always show the baked one; the console "
+	"says which at map load.", DoDSP_SunBakedChanged );
+// Set by the client, every frame (c_dodsp_sun_cascades.cpp, its only writer): 1 = the per-pixel sun can't
+// draw on this map, so the baked sun shows whatever dodsp_sun_baked says - never neither sun.
+ConVar dodsp_sun_fallback( "dodsp_sun_fallback", "1", FCVAR_NONE,
+	"DOD-SP internal, set by the game every frame - don't set it by hand. 1 = the per-pixel sun can't draw here, "
+	"so the baked sun shows.", DoDSP_SunBakedChanged );
 
 static void DoDSP_ApplySunStyle()
 {
 	if ( !GetWorldEntity() )
 		return;	// no map loaded; Precache applies it when one is
-	engine->LightStyle( DODSP_LIGHTSTYLE_SUN, dodsp_sun_baked.GetBool() ? "m" : "a" );
+	const bool bBaked = dodsp_sun_baked.GetBool() || dodsp_sun_fallback.GetBool();
+	engine->LightStyle( DODSP_LIGHTSTYLE_SUN, bBaked ? "m" : "a" );
 }
 
 void CWorld::Precache( void )

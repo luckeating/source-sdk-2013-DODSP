@@ -121,7 +121,7 @@ static ConVar r_flashlight_version2( "r_flashlight_version2", "0", FCVAR_CHEAT |
 // INVARIANT (watchdog in PreRender): while contact shadows are on, the shadow materials carry the
 // contact colour and the shadow direction is straight down - otherwise an INVARIANT line, and re-apply.
 //-----------------------------------------------------------------------------
-static ConVar dodsp_contactshadows( "dodsp_contactshadows", "1", 0, "DOD-SP: while the per-pixel sun draws, prop shadows become short, straight-down, lighter contact shadows (0 = the map's shadow_control)" );
+static ConVar dodsp_contactshadows( "dodsp_contactshadows", "0", 0, "DOD-SP: while the per-pixel sun draws, prop shadows become short, straight-down, lighter contact shadows (0 = the map's shadow_control)" );
 static ConVar dodsp_contactshadow_dist( "dodsp_contactshadow_dist", "30", 0, "DOD-SP: how far (units) a contact shadow reaches below its object", true, 1.0f, true, 512.0f );
 static ConVar dodsp_contactshadow_strength( "dodsp_contactshadow_strength", "0.5", 0, "DOD-SP: contact shadow darkness, as a fraction of the map's shadow_control colour (1 = as dark, 0 = none)", true, 0.0f, true, 1.0f );
 

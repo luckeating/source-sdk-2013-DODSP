@@ -179,8 +179,15 @@ If you learn something like this, add it here in the same commit as the fix.
   `.mdmp`. Memory corruption crashes far from the cause, so don't trust the crash location alone.
 
 ## Settings that reset every launch (put them in every test step)
-- `dodsp_sun_baked` starts at **1** (baked sun, per-pixel sun off). Testing the per-pixel sun
-  needs `dodsp_sun_baked 0` after loading. Cost us a false alarm on 3b4.
+- Since the defaults build (2026-11-17, after 4c) the owner's look is the DEFAULT: `dodsp_sun_baked 0`
+  (per-pixel sun), `dodsp_sun_softness 0.3`, `dodsp_contactshadows 0`. Anything else typed in the console
+  resets to these on launch. Builds before that started at `dodsp_sun_baked 1` - a false alarm on 3b4.
+- `dodsp_sun_baked` is the player's CHOICE only; code never sets it (lint). Where the per-pixel sun can't
+  draw (no light_environment, map compiled without `-dodsp_sunstyle`, sun shaders off), the client sets
+  the server's `dodsp_sun_fallback 1` and the baked sun shows on that map only. The old watchdog set
+  `dodsp_sun_baked 1` itself, which would have stuck for every later map once 0 became the default. Maps
+  without a separate sun also never get the per-pixel sun on top (it used to add a second sun there).
+  The fallback lives in server.dll: client.dll and server.dll must come from one build.
 - `dodsp_sunshader` is read once per game start. Changing it mid-game does nothing until a restart.
 
 ## Owner-side pitfalls seen
@@ -252,6 +259,9 @@ If you learn something like this, add it here in the same commit as the fix.
   the sun) was lost in the 3f606c6 revert; 4c is a different design (straight down, follows the sun mode).
   Files: clientshadowmgr.cpp, dodsp/c_dodsp_sun_cascades.cpp/.h, devtools/dodsp_lint_client.py.
   Undo: `dodsp_contactshadows 0`, or the 4b client.dll (build 44176044660).
+  OWNER'S CALL 2026-11-17 (build 44187011599 tested): prop shadows OFF looks best with the per-pixel sun, so
+  `dodsp_contactshadows` defaults to 0 until SSAO (stage 6). SSAO does NOT use them (it works from the depth
+  buffer); when it lands, "SSAO on" is one more condition in the same getters.
 - Stage 5: deferred lamps (can reuse the 4b filter).
 - Stage 6: extras. **SSAO** (screen-space ambient occlusion: contact darkening from what's on screen),
   and then blob shadows OFF entirely while the per-pixel sun draws (agreed 2026-11-17). Also cubemap
@@ -269,4 +279,9 @@ If you learn something like this, add it here in the same commit as the fix.
   materials on DOD-SP's sun shaders` (materials were already swapped on the first load). The sun still
   draws (no INVARIANT, per-pixel sun on). The report should count materials already on DODSP_ shaders.
 - Pending checks: FPS with `dodsp_sun_baked` 1 vs 0 (and again after 4b's extra taps).
+- Props in the shade look darker than the room around them ("black holes", owner 2026-11-17; owner: if props
+  take the ambient light around them they won't look pasted on without prop shadows, and SSAO perfects it).
+  Already in place: the leaf ambient cubes keep the sun's bounce (stage 1, leaf_ambient_lighting.cpp) and so
+  does the static-prop bake (4d). Next step is to measure, not guess: what ambient cube the engine hands a dark
+  prop vs the lightmap of the wall/floor next to it.
 - Confirmed 2026-11-17: `buildcubemaps` no longer crashes with the sun shaders loaded (3b4).

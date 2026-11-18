@@ -7,10 +7,14 @@
 // Stage 3b-2: every frame this file also publishes the sun to DOD-SP's shaders (DoDSP_PublishSun):
 // the cascades, their placement and the sun's colour, as rendering parameters (public/dodsp_shaders.h).
 // The sun's colour is only non-zero when the baked direct sun is off (dodsp_sun_baked 0) - one sun
-// at a time, never both and never neither:
-// INVARIANT (watchdog): dodsp_sun_baked 0 while the dynamic sun can't draw (no DOD-SP sun shaders,
-// no shader model 3.0, cascades off) would leave the map with no direct sun at all, so the
-// watchdog puts the baked sun back and says why.
+// at a time, never both and never neither.
+// INVARIANT: dodsp_sun_baked is only the player's CHOICE (default 0 = per-pixel sun). Where the per-pixel
+// sun can't draw (no light_environment, a map compiled without -dodsp_sunstyle, no DOD-SP sun shaders,
+// cascades off or unreadable), the baked sun is shown instead through the server's dodsp_sun_fallback,
+// which only this file writes (every frame, from CanDrawDynamicSun) and only world.cpp reads. The choice
+// itself is never overwritten, so one map without a separate sun doesn't switch the next map back to the
+// baked sun (the old watchdog did that by setting dodsp_sun_baked 1). A map whose sun is baked in with
+// everything else never gets the per-pixel sun on top (that would be a second sun).
 // Stage 4d: static props. When VRAD baked a map's static props without the sun (the BSP's level flags,
 // dodsp_lightstyles.h), those props get the per-pixel sun in BOTH sun modes (DODSP_SUNMODE_STATICPROPS):
 // their vertex lighting can't switch the sun on and off like the lightmaps can.
@@ -94,7 +98,7 @@ static ConVar dodsp_csm_view( "dodsp_csm_view", "0", 0,
 static ConVar dodsp_csm_view_size( "dodsp_csm_view_size", "256", 0, "DOD-SP debug: on-screen size of each cascade in dodsp_csm_view, pixels" );
 static ConVar dodsp_sun_scale( "dodsp_sun_scale", "1", 0, "DOD-SP: brightness of the dynamic sun against the baked one (1 = exactly the light_environment)" );
 static ConVar dodsp_sun_filter( "dodsp_sun_filter", "1.5", 0, "DOD-SP: the dynamic sun's sharpest shadow edge (where things touch), filter radius in cascade texels" );
-static ConVar dodsp_sun_softness( "dodsp_sun_softness", "1", 0, "DOD-SP: scales the sun's size for soft shadows (1 = the light_environment's SunSpreadAngle, 0 = sharp)" );
+static ConVar dodsp_sun_softness( "dodsp_sun_softness", "0.3", 0, "DOD-SP: scales the sun's size for soft shadows (1 = the light_environment's SunSpreadAngle, 0 = sharp)" );
 static ConVar dodsp_sun_spread_default( "dodsp_sun_spread_default", "2", 0, "DOD-SP: sun radius in degrees for soft shadows when the map's light_environment has no SunSpreadAngle" );
 static ConVar dodsp_sun_normaloffset( "dodsp_sun_normaloffset", "1.5", 0, "DOD-SP: how far (in cascade texels) a surface is pushed out along its normal before the shadow test - fights shadow acne" );
 static ConVar dodsp_sun_bias( "dodsp_sun_bias", "0.0005", 0, "DOD-SP: depth bias of the dynamic sun's shadow test (0..1 of the cascade depth range)" );
@@ -126,10 +130,15 @@ public:
 	CDoDSPSunCascades() : CAutoGameSystem( "CDoDSPSunCascades" ), m_bAllocated( false ), m_nRes( 0 ), m_bHaveSun( false ), m_nLastFrame( -1 ),
 		m_bViewMaterials( false ), m_bViewWarned( false ), m_bSunInvariantWarned( false ),
 		m_bPropsNoSun( false ), m_bPropsInvariantWarned( false ),
-		m_flSunSpreadDeg( 0.0f ), m_bReadable( false ), m_bPerPixelSun( false ) {}
+		m_flSunSpreadDeg( 0.0f ), m_bReadable( false ), m_bPerPixelSun( false ), m_bFallbackInvariantWarned( false ) {}
 
 	virtual void LevelInitPostEntity()	{ Reset(); EnsureTargets(); FindSun(); ReadPropsNoSun(); }
-	virtual void LevelShutdownPreEntity() { Reset(); m_bHaveSun = false; m_bPropsNoSun = false; m_flSunSpreadDeg = 0.0f; m_bPerPixelSun = false; }
+	virtual void LevelShutdownPreEntity()
+	{
+		Reset(); m_bHaveSun = false; m_bPropsNoSun = false; m_flSunSpreadDeg = 0.0f; m_bPerPixelSun = false;
+		m_bSunInvariantWarned = false;
+		DoDSP_SetSunFallback( true );	// the next map starts on its baked sun until this map's first frame says otherwise
+	}
 	virtual void Shutdown()				{ FreeTargets(); FreeViewMaterials(); }
 
 	void Render( const CViewSetup &mainView );
@@ -158,6 +167,7 @@ private:
 	bool EnsureViewMaterials();
 	bool CanDrawDynamicSun( const char **ppszWhy ) const;
 	void WatchSunInvariant();
+	void DoDSP_SetSunFallback( bool bFallback );
 	void ReadPropsNoSun();
 	void ReadSunSpread();
 	void FreeViewMaterials();
@@ -190,6 +200,7 @@ private:
 	float				m_flSunSpreadDeg;		// the light_environment's SunSpreadAngle (0 = none)
 	bool				m_bReadable;			// all cascades came out readable as raw depth
 	bool				m_bPerPixelSun;			// DODSP_SUNMODE_DYNAMIC as last published (DoDSP_PerPixelSunDraws)
+	bool				m_bFallbackInvariantWarned;
 };
 
 static CDoDSPSunCascades s_DoDSPSunCascades;
@@ -446,6 +457,8 @@ bool CDoDSPSunCascades::CanDrawDynamicSun( const char **ppszWhy ) const
 	const char *pszWhy = NULL;
 	if ( !m_bHaveSun )
 		pszWhy = "this map has no light_environment";
+	else if ( !g_pWorldLights || !g_pWorldLights->IsSunSeparate() )
+		pszWhy = "this map's sun is baked in with everything else (compiled without -dodsp_sunstyle)";
 	else if ( !dodsp_csm.GetBool() )
 		pszWhy = "the sun cascades are off (dodsp_csm 0)";
 	else if ( m_bAllocated && !m_bReadable )
@@ -504,19 +517,41 @@ void CDoDSPSunCascades::WatchSunInvariant()
 			m_bPropsInvariantWarned = false;
 	}
 
+	// Never neither sun: where the per-pixel sun can't draw, the server shows the baked one
+	// (dodsp_sun_fallback; the player's dodsp_sun_baked stays as they set it)
+	const char *pszWhy = NULL;
+	const bool bFallback = !CanDrawDynamicSun( &pszWhy );
+	DoDSP_SetSunFallback( bFallback );
 	static ConVarRef s_SunBaked( "dodsp_sun_baked" );
-	if ( !s_SunBaked.IsValid() || s_SunBaked.GetBool() )
+	if ( bFallback && s_SunBaked.IsValid() && !s_SunBaked.GetBool() )
 	{
+		if ( !m_bSunInvariantWarned )
+			Msg( "DOD-SP sun: the per-pixel sun can't draw here (%s) - this map shows its baked sun\n", pszWhy );
+		m_bSunInvariantWarned = true;
+	}
+	else
 		m_bSunInvariantWarned = false;
+}
+
+// The one writer of the server's dodsp_sun_fallback (see the top of this file)
+void CDoDSPSunCascades::DoDSP_SetSunFallback( bool bFallback )
+{
+	ConVarRef s_Fallback( "dodsp_sun_fallback" );	// looked up each time: the server DLL may load after us
+	if ( !s_Fallback.IsValid() )
+	{
+		if ( !m_bFallbackInvariantWarned )
+			Warning( "INVARIANT: DOD-SP sun: the server has no dodsp_sun_fallback - the baked sun can't be shown where the "
+					 "per-pixel sun can't draw. The client and server DLLs are from different builds\n" );
+		m_bFallbackInvariantWarned = true;
 		return;
 	}
-	const char *pszWhy = NULL;
-	if ( CanDrawDynamicSun( &pszWhy ) )
-		return;
-	if ( !m_bSunInvariantWarned )
-		Warning( "INVARIANT: DOD-SP sun: dodsp_sun_baked 0 but the dynamic sun can't draw (%s) - putting the baked sun back\n", pszWhy );
-	m_bSunInvariantWarned = true;
-	engine->ClientCmd_Unrestricted( "dodsp_sun_baked 1\n" );
+	if ( s_Fallback.GetBool() != bFallback )
+		s_Fallback.SetValue( bFallback ? 1 : 0 );
+	if ( s_Fallback.GetBool() != bFallback && !m_bFallbackInvariantWarned )
+	{
+		Warning( "INVARIANT: DOD-SP sun: dodsp_sun_fallback didn't take %d - the map may show no sun or two\n", bFallback ? 1 : 0 );
+		m_bFallbackInvariantWarned = true;
+	}
 }
 
 // Publishes everything DOD-SP's shaders need for the sun, every frame (see public/dodsp_shaders.h).
