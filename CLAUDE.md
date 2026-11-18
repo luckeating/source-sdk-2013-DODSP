@@ -172,7 +172,7 @@ If you learn something like this, add it here in the same commit as the fix.
 - `mat_luxels 1` draws garbage (solid blue patches) in this setup. Don't diagnose with it.
 - **The owner plays with `mat_hdr_level 0` (LDR), and every lighting test so far was in LDR.** A
   `-hdr`-only VRAD writes no LDR lighting (log: `LDR lightdata 0`) and the map draws fullbright
-  (2026-11-17). Give compile lines with `-ldr` (or both passes). HDR with the DOD-SP shaders is untested.
+  (2026-11-17). Give compile lines with `-ldr` (or both passes). HDR with the DOD-SP shaders: first tested 2026-11-18 (props light correctly there, see the prop-darkness log; sun, fog, cubemaps not yet checked).
   Owner's VRAD line: `-game $gamedir -ldr -final -dodsp_sunstyle [-StaticPropLighting] -StaticPropPolys
   -textureshadows $path\$file` (Hammer's $light_exe is our Mapbase vrad in the SDK 2013 SP bin).
 - Hammer expert compile: every `-option` goes BEFORE `$path\$file` in a tool's parameters. An
@@ -358,4 +358,11 @@ If you learn something like this, add it here in the same commit as the fix.
     of an extra gamma/linear conversion on model lighting. Every test so far was LDR (mat_hdr_level 0, -ldr
     compiles). Next test: compile -both, run mat_hdr_level 2 - if props light right in HDR, the LDR model lighting
     path is at fault (engine/shared shader headers), not our sun work.
+  - HDR TEST RESULT 2026-11-18 (build 44262556220, VRAD `-both`, `mat_hdr_level 2`, map restarted): props in the
+    shade now draw level with the world next to them (linear, from screenshots: counter top 0.0013-0.0020 vs wall
+    panels/floor 0.0021-0.0023, corner chair seat 0.0009 vs floor 0.0011, chair seats 0.003-0.004 vs floor 0.001-0.002;
+    in LDR the same surfaces were ~10x darker than the floor), cabinet shelves readable. CONFIRMED: the dark props are
+    the LDR model-lighting path, not our sun work, not the lighting points, not VRAD's ambient. The room as a whole
+    is still dark in HDR (shade floor ~70x darker than the lit corridor): that is the map's sky/bounce light plus
+    exposure, the same for brushes and props.
 - Confirmed 2026-11-17: `buildcubemaps` no longer crashes with the sun shaders loaded (3b4).
