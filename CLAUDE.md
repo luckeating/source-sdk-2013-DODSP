@@ -349,4 +349,13 @@ If you learn something like this, add it here in the same commit as the fix.
     dimmer ceiling side). Probe v3: static props (the engine's own light at the aimed spot + the floor where
     you stand, with material colours), and `dodsp_prop_materials` writes every shader param of the prop's
     materials to DOD-SP\dodsp_prop_materials.txt (compare a black prop with a good one, e.g. the boxes).
+  - PROBE v3 RESULT 2026-11-18 (build 44262556220): cafe_bar1 (static) counter TOP: the engine's own light there 29
+    vs the floor where the owner stood 9 (12x in linear), material colour 128 vs floor 95 - so the top should draw
+    ~16x BRIGHTER than that floor; on screen it draws 0.065 vs floor 0.24-0.74 (linear). cafe_cabinet1 (prop_dynamic,
+    no envmap): engine ambient 49 vs floor 33, draws near black. ~100x of light lost between the engine's lighting
+    data and the pixels, on static AND moving props, on our shaders AND Mapbase's, worst on the darkest (up-facing)
+    surfaces, fine in the sun and outdoors (bright light) and in fullbright. Darks crushed, brights fine = the shape
+    of an extra gamma/linear conversion on model lighting. Every test so far was LDR (mat_hdr_level 0, -ldr
+    compiles). Next test: compile -both, run mat_hdr_level 2 - if props light right in HDR, the LDR model lighting
+    path is at fault (engine/shared shader headers), not our sun work.
 - Confirmed 2026-11-17: `buildcubemaps` no longer crashes with the sun shaders loaded (3b4).
