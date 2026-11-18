@@ -37,6 +37,7 @@ OWNERS = {
                                     "game/client/dodsp/c_dodsp_sun_cascades.cpp"},
     # stage 4c: the contact shadows are set in one place
     "dodsp_contactshadow": {"game/client/clientshadowmgr.cpp"},
+    "dodsp_sun_propshadows": {"game/client/clientshadowmgr.cpp"},
     # "the per-pixel sun can't draw here, show the baked one": the client writes it, the server reads it
     "dodsp_sun_fallback": {"game/server/world.cpp", "game/client/dodsp/c_dodsp_sun_cascades.cpp"},
 }

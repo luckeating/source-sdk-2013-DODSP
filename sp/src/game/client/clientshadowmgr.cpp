@@ -109,19 +109,24 @@ static ConVar r_shadow_mincastintensity( "r_shadow_mincastintensity", "0.3", FCV
 static ConVar r_flashlight_version2( "r_flashlight_version2", "0", FCVAR_CHEAT | FCVAR_DEVELOPMENTONLY );
 
 //-----------------------------------------------------------------------------
-// DOD-SP lighting stage 4c: contact shadows.
+// DOD-SP lighting stage 4c: prop shadows follow the sun mode.
 // While the per-pixel sun draws (dodsp_sun_baked 0), the sun's own shadows come from the cascades, so the
-// engine's render-to-texture "blob" shadows stop pretending to be sun shadows: they fall straight down,
-// reach only dodsp_contactshadow_dist units below the object, and are lighter (dodsp_contactshadow_strength
-// of the map's shadow_control darkness). With the baked sun (dodsp_sun_baked 1) they are the map's again.
+// engine's render-to-texture "blob" shadows stop pretending to be sun shadows (dodsp_sun_propshadows):
+//   0 = none (default, the owner's call 2026-11-17: they're switched off per shadow and not rendered)
+//   1 = contact shadows: straight down, dodsp_contactshadow_dist units below the object, lighter
+//       (dodsp_contactshadow_strength of the map's shadow_control darkness)
+//   2 = the map's shadow_control
+// With the baked sun (dodsp_sun_baked 1, or a map where the per-pixel sun can't draw) they are the map's.
 // One owner: the map's shadow_control values are only STORED here (SetShadowDirection/Distance/Color);
 // every shadow reads them through the getters below, which apply the sun mode (CI lint: every read of the
 // stored values carries 'dodsp-lint: map shadow value', every ColorModulate 'dodsp-lint: shadow colour').
 // The sun mode itself has one owner too: c_dodsp_sun_cascades.cpp's DoDSP_PerPixelSunDraws.
 // INVARIANT (watchdog in PreRender): while contact shadows are on, the shadow materials carry the
-// contact colour and the shadow direction is straight down - otherwise an INVARIANT line, and re-apply.
+// contact colour and the shadow direction is straight down; while prop shadows are off, no prop shadow
+// gets switched on - otherwise an INVARIANT line, and re-apply.
 //-----------------------------------------------------------------------------
-static ConVar dodsp_contactshadows( "dodsp_contactshadows", "0", 0, "DOD-SP: while the per-pixel sun draws, prop shadows become short, straight-down, lighter contact shadows (0 = the map's shadow_control)" );
+static ConVar dodsp_sun_propshadows( "dodsp_sun_propshadows", "0", 0, "DOD-SP: prop shadows while the per-pixel sun draws: 0 = none (default; the sun's own shadows only), "
+	"1 = short, straight-down, lighter contact shadows, 2 = the map's shadow_control. With the baked sun they are always the map's", true, 0.0f, true, 2.0f );
 static ConVar dodsp_contactshadow_dist( "dodsp_contactshadow_dist", "30", 0, "DOD-SP: how far (units) a contact shadow reaches below its object", true, 1.0f, true, 512.0f );
 static ConVar dodsp_contactshadow_strength( "dodsp_contactshadow_strength", "0.5", 0, "DOD-SP: contact shadow darkness, as a fraction of the map's shadow_control colour (1 = as dark, 0 = none)", true, 0.0f, true, 1.0f );
 
@@ -1045,6 +1050,8 @@ private:
 	float	m_flDoDSPContactDist;		// ... with this reach
 	float	m_flDoDSPContactStrength;	// ... and this darkness
 	bool	m_bDoDSPContactWarned;
+	bool	m_bDoDSPOff;				// prop shadows switched off (dodsp_sun_propshadows 0 under the per-pixel sun)
+	bool	m_bDoDSPEnabledWhileOff;	// watchdog: a prop shadow got switched on while they're off
 
 	Vector	m_SimpleShadowDir;		// dodsp-lint: map shadow value
 	color32	m_AmbientLightColor;	// dodsp-lint: map shadow value
@@ -1303,6 +1310,8 @@ CClientShadowMgr::CClientShadowMgr() :
 	m_flDoDSPContactDist = 0.0f;
 	m_flDoDSPContactStrength = 1.0f;
 	m_bDoDSPContactWarned = false;
+	m_bDoDSPOff = false;
+	m_bDoDSPEnabledWhileOff = false;
 }
 
 
@@ -1700,24 +1709,40 @@ void CClientShadowMgr::DoDSP_ApplyShadowColor()
 }
 
 //-----------------------------------------------------------------------------
-// DOD-SP stage 4c: follows the sun mode, once per frame (PreRender). Contact shadows go on while the
-// per-pixel sun draws, and off (the map's shadow_control values) when it doesn't.
+// DOD-SP stage 4c: follows the sun mode, once per frame (PreRender): the prop shadows are the map's
+// unless the per-pixel sun draws, and then whatever dodsp_sun_propshadows says.
 //-----------------------------------------------------------------------------
 void CClientShadowMgr::DoDSP_UpdateContactShadows()
 {
-	const bool bWant = dodsp_contactshadows.GetBool() && DoDSP_PerPixelSunDraws();
+	const int nMode = DoDSP_PerPixelSunDraws() ? clamp( dodsp_sun_propshadows.GetInt(), 0, 2 ) : 2;
+	const bool bOff = ( nMode == 0 );
+	const bool bContact = ( nMode == 1 );
 	const float flDist = dodsp_contactshadow_dist.GetFloat();
 	const float flStrength = dodsp_contactshadow_strength.GetFloat();
-	if ( bWant != m_bDoDSPContact || ( bWant && ( flDist != m_flDoDSPContactDist || flStrength != m_flDoDSPContactStrength ) ) )
+	if ( bOff != m_bDoDSPOff || bContact != m_bDoDSPContact ||
+		 ( bContact && ( flDist != m_flDoDSPContactDist || flStrength != m_flDoDSPContactStrength ) ) )
 	{
-		if ( bWant != m_bDoDSPContact )
-			DevMsg( "DOD-SP contact shadows: %s\n", bWant ? "ON (per-pixel sun draws)" : "off (the map's shadow_control)" );
-		m_bDoDSPContact = bWant;
+		if ( bOff != m_bDoDSPOff || bContact != m_bDoDSPContact )
+			DevMsg( "DOD-SP prop shadows: %s\n", bOff ? "none (per-pixel sun draws)" : bContact ? "contact shadows (per-pixel sun draws)" : "the map's shadow_control" );
+		m_bDoDSPOff = bOff;
+		m_bDoDSPContact = bContact;
 		m_flDoDSPContactDist = flDist;
 		m_flDoDSPContactStrength = flStrength;
 		m_bDoDSPContactWarned = false;
+		m_bDoDSPEnabledWhileOff = false;
 		DoDSP_ApplyShadowColor();
-		UpdateAllShadows();	// re-project every shadow with the new direction and reach
+		UpdateAllShadows();	// every shadow: switched off, or re-projected with the new direction and reach
+		return;
+	}
+
+	// Watchdog: a prop shadow switched on while they're off (a path around UpdateShadow's check)
+	if ( m_bDoDSPEnabledWhileOff )
+	{
+		if ( !m_bDoDSPContactWarned )
+			Warning( "INVARIANT: DOD-SP prop shadows: one was switched on while dodsp_sun_propshadows 0 wants none - switching them off again\n" );
+		m_bDoDSPContactWarned = true;
+		m_bDoDSPEnabledWhileOff = false;
+		UpdateAllShadows();
 		return;
 	}
 
@@ -3654,7 +3679,18 @@ void CClientShadowMgr::UpdateShadow( ClientShadowHandle_t handle, bool force )
 		return;
 	}
 
+	// DOD-SP stage 4c: no prop shadows while the per-pixel sun draws (dodsp_sun_propshadows 0). Switching
+	// the mode back marks every shadow dirty (UpdateAllShadows), which lands here again and switches it on.
+	if ( m_bDoDSPOff )
+	{
+		shadowmgr->EnableShadow( shadow.m_ShadowHandle, false );
+		pRenderable->MarkShadowDirty( false );
+		return;
+	}
+
 	shadowmgr->EnableShadow( shadow.m_ShadowHandle, true );
+	if ( m_bDoDSPOff )
+		m_bDoDSPEnabledWhileOff = true;	// watchdog (DoDSP_UpdateContactShadows)
 
 	// Figure out if the shadow moved...
 	// Even though we have dirty bits, some entities
@@ -4707,6 +4743,8 @@ void CClientShadowMgr::ComputeShadowTextures( const CViewSetup &view, int leafCo
 
 	if ( !m_RenderToTextureActive || (r_shadows.GetInt() == 0) || r_shadows_gamecontrol.GetInt() == 0 )
 		return;
+	if ( m_bDoDSPOff )
+		return;	// DOD-SP stage 4c: no prop shadows to render while the per-pixel sun draws
 
 #ifdef ASW_PROJECTED_TEXTURES
 	m_bThreaded = ( r_threaded_client_shadow_manager.GetBool() && g_pThreadPool->NumIdleThreads() );

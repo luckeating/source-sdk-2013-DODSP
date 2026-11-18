@@ -180,7 +180,7 @@ If you learn something like this, add it here in the same commit as the fix.
 
 ## Settings that reset every launch (put them in every test step)
 - Since the defaults build (2026-11-17, after 4c) the owner's look is the DEFAULT: `dodsp_sun_baked 0`
-  (per-pixel sun), `dodsp_sun_softness 0.3`, `dodsp_contactshadows 0`. Anything else typed in the console
+  (per-pixel sun), `dodsp_sun_softness 0.3`, `dodsp_sun_propshadows 0` (no prop shadows). Anything else typed in the console
   resets to these on launch. Builds before that started at `dodsp_sun_baked 1` - a false alarm on 3b4.
 - `dodsp_sun_baked` is the player's CHOICE only; code never sets it (lint). Where the per-pixel sun can't
   draw (no light_environment, map compiled without `-dodsp_sunstyle`, sun shaders off), the client sets
@@ -246,9 +246,10 @@ If you learn something like this, add it here in the same commit as the fix.
   readable depth format. Long shader build (~40 min): warn first. Pixel constants: stay inside c0..c31.
 - **Stage 4c - blob shadows become contact shadows** (client only, ~12 min build). The engine's
   render-to-texture prop shadows point along `shadow_control` and look like holes in shade, and darken
-  twice under props in sunlit patches. While the per-pixel sun draws: straight down, `dodsp_contactshadow_dist`
-  (30) units below the object, `dodsp_contactshadow_strength` (0.5) of the map's darkness; `dodsp_contactshadows 0`
-  = stock. BUILT 2026-11-17. How: clientshadowmgr.cpp only STORES the map's shadow_control direction/distance/
+  twice under props in sunlit patches. While the per-pixel sun draws, `dodsp_sun_propshadows`: 0 = none (default:
+  each shadow switched off in UpdateShadow, none rendered), 1 = contact shadows (straight down,
+  `dodsp_contactshadow_dist` (30) units below the object, `dodsp_contactshadow_strength` (0.5) of the map's
+  darkness), 2 = the map's shadow_control. Without the per-pixel sun they are always the map's. BUILT 2026-11-17. How: clientshadowmgr.cpp only STORES the map's shadow_control direction/distance/
   colour; the getters (GetShadowDirection x3, GetShadowDistance x2, DoDSP_ShadowColor) apply the sun mode, so
   `dodsp_sun_baked 1` gives the map's values back with nothing to restore. The sun mode's one owner is
   `DoDSP_PerPixelSunDraws()` (c_dodsp_sun_cascades.cpp, = DODSP_SUNMODE_DYNAMIC as PublishSun last published).
@@ -258,10 +259,13 @@ If you learn something like this, add it here in the same commit as the fix.
   whole getter chain). History: the 2026-11-14 blob-shadow work (1f345a6 sun-only shadows, e04d691 shadows along
   the sun) was lost in the 3f606c6 revert; 4c is a different design (straight down, follows the sun mode).
   Files: clientshadowmgr.cpp, dodsp/c_dodsp_sun_cascades.cpp/.h, devtools/dodsp_lint_client.py.
-  Undo: `dodsp_contactshadows 0`, or the 4b client.dll (build 44176044660).
+  Undo: `dodsp_sun_propshadows 2`, or the 4b client.dll (build 44176044660).
   OWNER'S CALL 2026-11-17 (build 44187011599 tested): prop shadows OFF looks best with the per-pixel sun, so
-  `dodsp_contactshadows` defaults to 0 until SSAO (stage 6). SSAO does NOT use them (it works from the depth
-  buffer); when it lands, "SSAO on" is one more condition in the same getters.
+  they default to off until SSAO (stage 6). SSAO does NOT use them (it works from the depth buffer); when it
+  lands, "SSAO on" is one more condition in DoDSP_UpdateContactShadows.
+  MISTAKE 2026-11-17 (build 44239160931): the first "off" default was `dodsp_contactshadows 0`, which meant
+  "the map's shadow_control" - the stock blob shadows came back. A switch named for one feature can't also
+  mean "none": the setting now names every choice (0 none / 1 contact / 2 the map's) and 0 is none.
 - Stage 5: deferred lamps (can reuse the 4b filter).
 - Stage 6: extras. **SSAO** (screen-space ambient occlusion: contact darkening from what's on screen),
   and then blob shadows OFF entirely while the per-pixel sun draws (agreed 2026-11-17). Also cubemap
