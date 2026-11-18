@@ -39,6 +39,7 @@ $Project "Client (HL2)"
 		}
 		$File	"dodsp\c_dodsp_sun_cascades.cpp"
 		$File	"dodsp\c_dodsp_lightmapcheck.cpp"
+		$File	"dodsp\c_dodsp_proplight.cpp"
 		$File	"dodsp\c_npc_german_soldier.cpp"
 	}
 

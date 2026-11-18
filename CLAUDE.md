@@ -289,5 +289,8 @@ If you learn something like this, add it here in the same commit as the fix.
   take the ambient light around them they won't look pasted on without prop shadows, and SSAO perfects it).
   Already in place: the leaf ambient cubes keep the sun's bounce (stage 1, leaf_ambient_lighting.cpp) and so
   does the static-prop bake (4d). Next step is to measure, not guess: what ambient cube the engine hands a dark
-  prop vs the lightmap of the wall/floor next to it.
+  prop vs the lightmap of the wall/floor next to it. MEASURE: `dodsp_prop_light` (c_dodsp_proplight.cpp, aim at a
+  moving/physics prop in the SHADE): one line with the cube facing the viewer + lamps, cube up/down/sides, the
+  floor's lightmap under the prop, and prop/floor. ~1 = the engine hands the prop the room's light (look at the
+  shader/material next); well below 1 = the baked ambient itself is dark (look at VRAD's ambient samples).
 - Confirmed 2026-11-17: `buildcubemaps` no longer crashes with the sun shaders loaded (3b4).
