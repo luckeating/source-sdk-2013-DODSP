@@ -24,6 +24,7 @@
 
 #include "cbase.h"
 #include "c_baseplayer.h"
+#include "model_types.h"	// mod_studio
 #include "materialsystem/imaterial.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
