@@ -23,9 +23,15 @@
 //     every material of the model: the shader it draws with and the features that pick a shader path
 //     (bump, phong, halflambert, lightwarp, selfillum, envmap)
 // Values are 0..255 screen brightness (gamma 2.2 of the linear light), the ratio is linear.
-// Static props are not covered: VRAD bakes their light per vertex (-StaticPropLighting), there is no
-// cube to read. The per-pixel sun is not in any of these numbers (it's added in the shader), so
-// measure props in the SHADE.
+// The per-pixel sun is not in any of these numbers (it's added in the shader), so measure props in the SHADE.
+//
+// Third version (2026-11-18): the owner found the black surfaces are the ones FACING UP (chair seats,
+// table and counter tops) on moving props AND static props (cafe_bar1, VRAD's per-vertex bake), on our
+// shaders and on Mapbase's. So:
+//   static props: the engine's light at the point you aim at (GetStaticPropMaterialColorAndLighting:
+//     what the engine itself thinks that spot of the prop is lit with) next to the floor where you stand
+//   dodsp_prop_materials: every shader parameter of every material on the prop under the crosshair,
+//     written to DOD-SP\dodsp_prop_materials.txt - to compare a black prop's materials with a good one's
 //
 //=============================================================================//
 
@@ -36,6 +42,8 @@
 #include "model_types.h"	// mod_studio
 #include "materialsystem/imaterial.h"
 #include "materialsystem/imaterialvar.h"	// IMaterialVar is only forward-declared in imaterial.h
+#include "engine/IStaticPropMgr.h"
+#include "filesystem.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -96,6 +104,93 @@ namespace
 			Q_strncat( buf, szOne, nBuf, COPY_ALL_CHARACTERS );
 		}
 	}
+
+	// What the crosshair is on: a moving prop (pEnt set) or a static prop (*pbStatic), and its model
+	const model_t *DoDSP_PropUnderCrosshair( trace_t &tr, C_BaseEntity **ppEnt, bool *pbStatic )
+	{
+		*ppEnt = NULL;
+		*pbStatic = false;
+		C_BasePlayer *pPlayer = C_BasePlayer::GetLocalPlayer();
+		if ( !pPlayer )
+			return NULL;
+		Vector vecEye = pPlayer->EyePosition();
+		Vector vecForward;
+		AngleVectors( pPlayer->EyeAngles(), &vecForward );
+		UTIL_TraceLine( vecEye, vecEye + vecForward * 4096.0f, MASK_SHOT, pPlayer, COLLISION_GROUP_NONE, &tr );
+		if ( tr.fraction >= 1.0f )
+			return NULL;
+		if ( tr.DidHitWorld() && tr.hitbox > 0 )
+		{
+			// a static prop: find its collideable at the hit point for the model
+			*pbStatic = true;
+			CUtlVector< ICollideable * > props;
+			staticpropmgr->GetAllStaticPropsInAABB( tr.endpos - Vector( 1, 1, 1 ), tr.endpos + Vector( 1, 1, 1 ), &props );
+			for ( int i = 0; i < props.Count(); i++ )
+			{
+				const model_t *pModel = props[i] ? props[i]->GetCollisionModel() : NULL;
+				if ( pModel && modelinfo->GetModelType( pModel ) == mod_studio )
+					return pModel;
+			}
+			return NULL;
+		}
+		C_BaseEntity *pEnt = tr.m_pEnt;
+		const model_t *pModel = pEnt ? pEnt->GetModel() : NULL;
+		if ( !pEnt || pEnt->IsWorld() || !pModel || modelinfo->GetModelType( pModel ) != mod_studio )
+			return NULL;
+		*ppEnt = pEnt;
+		return pModel;
+	}
+}
+
+//-----------------------------------------------------------------------------
+// Every shader parameter of every material of the prop under the crosshair, to a file
+//-----------------------------------------------------------------------------
+CON_COMMAND( dodsp_prop_materials, "DOD-SP: write every material setting of the prop under the crosshair to DOD-SP\\dodsp_prop_materials.txt" )
+{
+	trace_t tr;
+	C_BaseEntity *pEnt = NULL;
+	bool bStatic = false;
+	const model_t *pModel = DoDSP_PropUnderCrosshair( tr, &pEnt, &bStatic );
+	const studiohdr_t *pStudio = pModel ? modelinfo->GetStudiomodel( pModel ) : NULL;
+	if ( !pStudio )
+	{
+		Msg( "DOD-SP prop materials: no prop under the crosshair\n" );
+		return;
+	}
+	FileHandle_t h = g_pFullFileSystem->Open( "dodsp_prop_materials.txt", "a", "MOD" );
+	if ( !h )
+	{
+		Warning( "DOD-SP prop materials: can't write dodsp_prop_materials.txt\n" );
+		return;
+	}
+	g_pFullFileSystem->FPrintf( h, "==== %s (%s) ====\n", modelinfo->GetModelName( pModel ), bStatic ? "static prop" : "moving prop" );
+	for ( int t = 0; t < pStudio->numtextures; t++ )
+	{
+		IMaterial *pMat = NULL;
+		for ( int c = 0; c < pStudio->numcdtextures && IsErrorMaterial( pMat ); c++ )
+		{
+			char szPath[MAX_PATH];
+			Q_snprintf( szPath, sizeof( szPath ), "%s%s", pStudio->pCdtexture( c ), pStudio->pTexture( t )->pszName() );
+			pMat = materials->FindMaterial( szPath, TEXTURE_GROUP_MODEL, false );
+		}
+		if ( IsErrorMaterial( pMat ) )
+		{
+			g_pFullFileSystem->FPrintf( h, "material %s: missing\n", pStudio->pTexture( t )->pszName() );
+			continue;
+		}
+		g_pFullFileSystem->FPrintf( h, "material %s  shader %s\n", pMat->GetName(), pMat->GetShaderName() );
+		const int nParams = pMat->ShaderParamCount();
+		IMaterialVar **ppParams = pMat->GetShaderParams();
+		for ( int i = 0; i < nParams; i++ )
+		{
+			if ( !ppParams[i] || !ppParams[i]->IsDefined() )
+				continue;
+			const char *pszValue = ppParams[i]->GetStringValue();
+			g_pFullFileSystem->FPrintf( h, "    %s = %s\n", ppParams[i]->GetName(), pszValue ? pszValue : "" );
+		}
+	}
+	g_pFullFileSystem->Close( h );
+	Msg( "DOD-SP prop materials: %s written to DOD-SP\\dodsp_prop_materials.txt (%d materials)\n", modelinfo->GetModelName( pModel ), pStudio->numtextures );
 }
 
 CON_COMMAND( dodsp_prop_light, "DOD-SP: the light the engine gives the prop under the crosshair, next to the floor's lightmap" )
@@ -103,18 +198,34 @@ CON_COMMAND( dodsp_prop_light, "DOD-SP: the light the engine gives the prop unde
 	C_BasePlayer *pPlayer = C_BasePlayer::GetLocalPlayer();
 	if ( !pPlayer )
 		return;
+	const Vector vecEye = pPlayer->EyePosition();
 
-	Vector vecEye = pPlayer->EyePosition();
-	Vector vecForward;
-	AngleVectors( pPlayer->EyeAngles(), &vecForward );
 	trace_t tr;
-	UTIL_TraceLine( vecEye, vecEye + vecForward * 4096.0f, MASK_SHOT, pPlayer, COLLISION_GROUP_NONE, &tr );
+	C_BaseEntity *pEnt = NULL;
+	bool bStatic = false;
+	const model_t *pModel = DoDSP_PropUnderCrosshair( tr, &pEnt, &bStatic );
 
-	C_BaseEntity *pEnt = tr.m_pEnt;
-	const model_t *pModel = pEnt ? pEnt->GetModel() : NULL;
-	if ( tr.fraction >= 1.0f || !pEnt || pEnt->IsWorld() || !pModel || modelinfo->GetModelType( pModel ) != mod_studio )
+	// the floor where you stand: its light and its material colour, to compare against
+	Vector vecFloorLight( 0, 0, 0 ), vecFloorColour( 0, 0, 0 );
+	engine->TraceLineMaterialAndLighting( vecEye, vecEye - Vector( 0, 0, 512 ), vecFloorLight, vecFloorColour );
+
+	if ( bStatic )
 	{
-		Msg( "DOD-SP prop light: no moving or physics prop under the crosshair (static props are baked per vertex by VRAD - this can't read them)\n" );
+		// the engine's own light at the aimed spot of the static prop (VRAD's per-vertex bake)
+		Vector vecLight( 0, 0, 0 ), vecColour( 0, 0, 0 );
+		staticpropmgr->GetStaticPropMaterialColorAndLighting( &tr, tr.hitbox - 1, vecLight, vecColour );
+		const char *pszFacing = tr.plane.normal.z > 0.7f ? "facing up" : ( tr.plane.normal.z < -0.7f ? "facing down" : "facing sideways" );
+		Msg( "DOD-SP prop light: static prop %s | the spot you aim at (%s): light %.0f, material colour %.0f | "
+			 "floor where you stand: light %.0f, material colour %.0f | prop/floor light %.2f\n",
+			 pModel ? modelinfo->GetModelName( pModel ) : "?", pszFacing,
+			 DoDSP_Screen( DoDSP_Lum( vecLight ) ), 255.0f * DoDSP_Lum( vecColour ),
+			 DoDSP_Screen( DoDSP_Lum( vecFloorLight ) ), 255.0f * DoDSP_Lum( vecFloorColour ),
+			 DoDSP_Lum( vecFloorLight ) > 1e-6f ? DoDSP_Lum( vecLight ) / DoDSP_Lum( vecFloorLight ) : 0.0f );
+		return;
+	}
+	if ( !pEnt )
+	{
+		Msg( "DOD-SP prop light: no prop under the crosshair\n" );
 		return;
 	}
 

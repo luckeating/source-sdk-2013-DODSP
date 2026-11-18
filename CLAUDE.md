@@ -341,4 +341,12 @@ If you learn something like this, add it here in the same commit as the fix.
     it depends on where the prop stands (both black chairs stood in corners against the wall), yet
     engine->ComputeLighting at the chair's own point reads normal (23 vs floor 20). So the engine DRAWS it with
     less light than ComputeLighting reports there. OPEN; next test: push a black chair to the middle of the room.
+  - 2026-11-18, owner: "nearly every model is like this". What's black are the surfaces FACING UP (chair seats,
+    table tops, the cafe_bar1 counter top), on moving props AND static props (cafe_bar1 is a prop_static with VRAD
+    vertex lighting - its LightingOrigin key is ignored for that, so moving the info_lighting changed nothing).
+    Sides of the same models show colour; up-facing surfaces are fine in the sun. mat_ambient_light_r/g/b don't
+    exist in this engine. table1 alone is explained (dark texture: fullbright 35 vs floor 95, top faces the
+    dimmer ceiling side). Probe v3: static props (the engine's own light at the aimed spot + the floor where
+    you stand, with material colours), and `dodsp_prop_materials` writes every shader param of the prop's
+    materials to DOD-SP\dodsp_prop_materials.txt (compare a black prop with a good one, e.g. the boxes).
 - Confirmed 2026-11-17: `buildcubemaps` no longer crashes with the sun shaders loaded (3b4).
