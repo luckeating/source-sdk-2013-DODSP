@@ -297,8 +297,10 @@ void CDoDSPLamps::BuildState( int nLamp, Lamp_t &lamp )
 	state.m_Color[3] = 0.0f;
 	state.m_bEnableShadows = dodsp_lamps_shadows.GetBool();
 	state.m_flShadowAtten = 0.0f;	// full shadow at every distance (the shader would fade it with the light otherwise)
-	state.m_flShadowSlopeScaleDepthBias = g_pMaterialSystemHardwareConfig->GetShadowSlopeScaleDepthBias();
-	state.m_flShadowDepthBias = g_pMaterialSystemHardwareConfig->GetShadowDepthBias();
+	// the same shadow-map biases env_projectedtexture uses (Mapbase's cvars, owned by clientshadowmgr.cpp)
+	static ConVarRef s_SlopeBias( "mat_slopescaledepthbias_shadowmap" ), s_DepthBias( "mat_depthbias_shadowmap" );
+	state.m_flShadowSlopeScaleDepthBias = s_SlopeBias.IsValid() ? s_SlopeBias.GetFloat() : 4.0f;
+	state.m_flShadowDepthBias = s_DepthBias.IsValid() ? s_DepthBias.GetFloat() : 0.00001f;
 	state.m_nShadowQuality = 1;
 
 	if ( !lamp.m_Cookie.IsValid() )
