@@ -294,4 +294,14 @@ If you learn something like this, add it here in the same commit as the fix.
   moving/physics prop in the SHADE): one line with the cube facing the viewer + lamps, cube up/down/sides, the
   floor's lightmap under the prop, and prop/floor. ~1 = the engine hands the prop the room's light (look at the
   shader/material next); well below 1 = the baked ambient itself is dark (look at VRAD's ambient samples).
+  RESULT 2026-11-17 (build 44253429405, cafe room, shade): chair2 facing 23 vs floor 26 (prop/floor 0.72), table1
+  up 31 / down 64 / sides 48 vs floor 49 (0.45 facing the viewer from above - its top faces the dimmer ceiling side,
+  its underside sees the sunlit floor). Screenshot pixels agree with those numbers once the materials' own
+  darkness is counted (chair seat vs floor: 0.16 of the floor's brightness in the SUN, 0.075 in the shade = 0.16 x
+  the cube's 0.56). VERDICT: nothing is lost in the engine or in our model shaders; the sun's bounce is in style 0
+  (lightmap.cpp, AddSampleToPatch) as designed. The props look black because the room's shade is ~1/160 of the
+  sun patch (floor, linear) and DoD's furniture textures are darker than the floor. Levers: brighter sky light
+  through the openings (light_environment `_ambient`), more bounce, or exposure (HDR + auto exposure, stage 6).
+  The command prints "?" for the shader: modelinfo->GetModelMaterials gives nothing for studio models - read
+  the materials from the studio header when the file is next touched.
 - Confirmed 2026-11-17: `buildcubemaps` no longer crashes with the sun shaders loaded (3b4).
