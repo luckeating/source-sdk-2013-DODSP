@@ -460,3 +460,21 @@ If you learn something like this, add it here in the same commit as the fix.
   full four-part sentence is ~5.5 s, long in a firefight: full form for first contact / when the enemy moves to a
   new spot, 2-part forms otherwise. Re-check each part before it plays (enemy still there, named man alive, speaker
   not hit - pain already cuts him off).
+- **US battle chatter: the voice set** (review 2026-11-18, the owner's US_Voices.zip; nothing plays it yet - DOD-SP has
+  no US NPC). US Voices/US/<0..3>/US_<v>_<category>_NN[b|c|d].wav: 2677 clips, 244 categories, all 22050 Hz 16-bit
+  mono (no conversion). The letter suffix = another take of the same line (same length/level) - the generator must
+  accept `_NNb` (457 files) and treat it as one more variant. Same family layout as the German set, Normandy-flavoured:
+  threat_vehicle tiger/panther/panzer/halftrack, threat_emplace mg34/mg42, flak88, hedgerow. 60 names (vs 70 German).
+  Spelling differs per nation, so the EVENT is one owner and each nation maps it to its file names: US killfirm = GE
+  killconfirm, US secondflr only, US pzerschreck = GE panzerschreck, US smkgrenade = GE smoke. VOICE 1 IS PARTIAL: it
+  has no threat_*, taunt, reaction_*, most order_action/order_move, the upper floors - so a sentence may only be built
+  from parts its speaker has (pick the speaker per sentence, check every part). Timing like the German set (median
+  0.008 s before speech, 0.026 s after; name 0.60 s, threat 1.43, landmark 1.33, location 1.27, order 1.53).
+  US/allied/: 115 generic pain/death/exert/charge/melee clips from SEVERAL nations (AS_RU_, JP_RU_, JS_UK_, Ru_fem1 =
+  a Russian woman) - the owner picks the US ones by ear before they're used.
+- **US Airborne models** (owner's us_Airborne.zip, a GMod pack ripped from Brothers in Arms: RotH30; hobby build only,
+  replace before any release - owner knows). MDL v48 (loads in 2013 SP), ValveBiped, plain VertexLitGeneric. Use the
+  5 `bia_roth30_us_airborne<N>npc.mdl` (includes HL2's male_shared/male_ss/gestures/postures - HL2 is mounted); the
+  `...pm.mdl` ones include GMod's m_anm.mdl (absent -> T-pose). Faces = HL2 citizen facemaps. Bodygroups: helmet 4,
+  backpack 3, pouches 6, grenades 4, pistol_holster 3, gear/side_bag/leg_side_bag/knife1/knife2/bandolier 2 each
+  -> random looks per spawn (soldier types above). 22 single-bone gear props. The GMod lua is spawn-menu only.
