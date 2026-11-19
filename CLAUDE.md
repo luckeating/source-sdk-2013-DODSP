@@ -528,6 +528,16 @@ If you learn something like this, add it here in the same commit as the fix.
   Every GermanChatter entry of the enemy nation is precached once per map (sentences can use any kind). Test command:
   `npc_german_callout` = where the nearest soldier would say you are. Lint: EVERY literal line kind in
   german_chatter.cpp (names, floors, compass, orders) must exist in every voice x nation (tested: a fake name fails).
+  FIRST C2 LOG 2026-11-19 (build 44479230913, dod_argentan, ~7.5 min with a save load): names work (owner heard them);
+  full calls said and answered ("Schneider! enemy infantry spotted! behind the car! attack!" -> "yes, sir!"); locations
+  used: behind the car/trees, near the rubble/wall, ground floor doorway, compass northwest/west. Three faults, fixed in
+  C2b: (1) "basement!" x3 - the floor was counted from the SPEAKER's height, so soldiers upstairs looking down on the
+  player called him in the basement. Now StreetLevel: the lowest ground under open air on the line between them (48..600
+  units out); no open air between = same building = no floor words. (2) `SAID ... [cut after 0 of 2 parts]` - a line
+  whose first part couldn't play (named man dead) counted as said and started the waits; now it is NOT SAID - cut, and
+  said/waits start only when part 1 plays. (3) a cover call that NAMED its landmark still printed "no name rule
+  matches": LandmarkAt wrote the note before checking the prop (donner_wall_160 = wall); the note is now written only
+  for an unrecognised prop, and the log shows it only on a generic cover call.
 - **US battle chatter: the voice set** (review 2026-11-18, the owner's US_Voices.zip; nothing plays it yet - DOD-SP has
   no US NPC). US Voices/US/<0..3>/US_<v>_<category>_NN[b|c|d].wav: 2677 clips, 244 categories, all 22050 Hz 16-bit
   mono (no conversion). The letter suffix = another take of the same line (same length/level) - the generator must

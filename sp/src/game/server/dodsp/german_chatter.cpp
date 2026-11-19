@@ -560,6 +560,14 @@ void CGermanChatter::Update( void )
 	m_Sentence.hEnemy = pNPC ? pNPC->GetEnemy() : NULL;
 	Q_strncpy( m_Sentence.szNote, p.szNote, sizeof( m_Sentence.szNote ) );
 
+	// INVARIANT: a line counts as said (and starts the waits) only once its first part has played. C2's
+	// first log had "SAID ... [cut after 0 of 2 parts]" - the named man died between request and turn.
+	if ( !PlaySentencePart() )
+	{
+		m_Sentence.bActive = false;
+		Drop( p.eEvent, CHATDROP_CUT );
+		return;
+	}
 	s_nSaid[p.eEvent]++;
 	const ChatDef_t &def = s_ChatDefs[p.eEvent];
 	m_flNextGroup[def.eGroup] = now + s_flSelfWait[def.eGroup] / s_flFrequency;
@@ -569,9 +577,7 @@ void CGermanChatter::Update( void )
 	if ( p.eEvent == CHAT_RELOADING || p.eEvent == CHAT_RELOADING_COVERME )
 		sq.flNextReload = now + 20.0f / s_flFrequency;
 
-	if ( !PlaySentencePart() )
-		EndSentence( "the man it was for, or the enemy, is gone" );
-	else if ( m_Sentence.iNext >= m_Sentence.nParts )
+	if ( m_Sentence.iNext >= m_Sentence.nParts )
 		EndSentence( NULL );
 }
 
@@ -628,7 +634,8 @@ void CGermanChatter::EndSentence( const char *pszCut )
 		Q_strncat( szKinds, m_Sentence.parts[i].szCategory, sizeof( szKinds ) );
 		Q_strncat( szMeaning, m_Sentence.parts[i].szMeaning, sizeof( szMeaning ) );
 	}
-	if ( eEvent == CHAT_ORDER_COVER && m_Sentence.szNote[0] )
+	if ( eEvent == CHAT_ORDER_COVER && m_Sentence.szNote[0] && m_Sentence.iNext > 0 &&
+		 !Q_strcmp( m_Sentence.parts[m_Sentence.iNext - 1].szCategory, "order_cover_generic" ) )
 	{
 		Q_strncat( szMeaning, " (no landmark recognised: ", sizeof( szMeaning ) );
 		Q_strncat( szMeaning, m_Sentence.szNote, sizeof( szMeaning ) );
@@ -1164,13 +1171,18 @@ const char *GermanChatter_LandmarkAt( const Vector &vecSpot, const Vector &vecTh
 			const char *pszModel = pModel ? modelinfo->GetModelName( pModel ) : NULL;
 			if ( !pszModel || Q_stristr( pszModel, "skybox" ) )
 				continue;
-			if ( !bAnyProp )
-				Q_snprintf( pszWhat, nWhat, "static prop %s - no name rule matches", pszModel );
-			bAnyProp = true;
 			bool bFound;
 			const char *psz = LandmarkFromModel( pszModel, &bFound );
 			if ( psz )
+			{
+				Q_snprintf( pszWhat, nWhat, "static prop %s", pszModel );
 				return psz;
+			}
+			// the note names the first unrecognised prop (C2 log: it was written BEFORE the check, so a
+			// recognised wall prop read "no name rule matches")
+			if ( !bAnyProp )
+				Q_snprintf( pszWhat, nWhat, "static prop %s - no name rule matches", pszModel );
+			bAnyProp = true;
 		}
 		if ( bAnyProp )
 			bBrush = false;
@@ -1293,8 +1305,34 @@ static const char *LandmarkNear( const Vector &vecPos, CBaseEntity *pIgnore )
 	return pszBest;
 }
 
+// The street: the lowest ground under the open air (not under a roof) on the line from him to the speaker,
+// from 48 units out to 600. None = they're inside the same building (or roofed over all the way): no floor.
+static bool StreetLevel( const Vector &vecFrom, const Vector &vecTo, CBaseEntity *pIgnore, float *pflZ )
+{
+	Vector vecDir = vecTo - vecFrom;
+	float flLen = VectorNormalize( vecDir );
+	bool bFound = false;
+	for ( float d = 48.0f; d <= MIN( flLen, 600.0f ); d += 32.0f )
+	{
+		Vector vecPt = vecFrom + vecDir * d;
+		if ( UTIL_PointContents( vecPt ) & MASK_SOLID_BRUSHONLY )
+			continue;
+		if ( UnderRoof( vecPt, pIgnore ) )
+			continue;
+		trace_t tr;
+		UTIL_TraceLine( vecPt, vecPt - Vector( 0, 0, 2048 ), MASK_SOLID_BRUSHONLY, pIgnore, COLLISION_GROUP_NONE, &tr );
+		if ( tr.fraction < 1.0f && ( !bFound || tr.endpos.z < *pflZ ) )
+		{
+			*pflZ = tr.endpos.z;
+			bFound = true;
+		}
+	}
+	return bFound;
+}
+
 // Where the enemy is, as the speaker sees him - one part, the first of these that fits:
-//  1. a building: in it (under a roof) seen from outside or from another level -> its floor and the opening
+//  1. a building: in it (under a roof), with open air between him and the speaker -> its floor (counted
+//     from the street, StreetLevel) and the opening
 //     (a window if there's wall below him toward us, a doorway if not); high up in the open -> a balcony
 //     (a wall right behind him) or the roof
 //  2. behind something we have a word for ("behind the barrels") - the cover between him and us
@@ -1313,13 +1351,17 @@ static bool EnemyLocation( int iVoice, CBaseEntity *pSpeaker, CBaseEntity *pEnem
 	if ( VectorNormalize( vecToSpk ) < 1.0f )
 		vecToSpk = Vector( 1, 0, 0 );
 
-	// 1. a building
+	// 1. a building. INVARIANT: a floor is counted from the STREET outside the building (the ground under
+	// the open air between him and the speaker), never from the speaker's own height - C2's first log
+	// called "basement!" three times when soldiers upstairs looked down on the player on the ground floor.
 	bool bEnemyRoof = UnderRoof( vecEye, pEnemy );
-	bool bSpeakerRoof = UnderRoof( vecSpk, pSpeaker );
 	trace_t trGround;
 	UTIL_TraceLine( vecFeet + Vector( 0, 0, 8 ), vecFeet - Vector( 0, 0, 32 ), MASK_SOLID_BRUSHONLY, pEnemy, COLLISION_GROUP_NONE, &trGround );
 	bool bOnTerrain = trGround.fraction < 1.0f && trGround.IsDispSurface();
-	if ( ( bEnemyRoof && ( !bSpeakerRoof || fabs( flDZ ) > 96.0f ) ) || ( !bEnemyRoof && !bOnTerrain && flDZ > 96.0f ) )
+	float flStreet = 0.0f;
+	bool bStreet = StreetLevel( vecEye, vecSpk, pEnemy, &flStreet );
+	flDZ = vecFeet.z - flStreet;
+	if ( bStreet && ( bEnemyRoof || ( !bOnTerrain && flDZ > 96.0f ) ) )
 	{
 		int iFloor = flDZ < -64.0f ? FLOOR_BASEMENT : flDZ < 80.0f ? FLOOR_GROUND : flDZ < 210.0f ? FLOOR_SECOND : flDZ < 340.0f ? FLOOR_THIRD : FLOOR_TOP;
 		int iKind = LOCKIND_GENERIC;
