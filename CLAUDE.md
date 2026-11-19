@@ -452,3 +452,11 @@ If you learn something like this, add it here in the same commit as the fix.
   become "Angriff!", threat expires after 1 s if a squadmate talks, orders only for 250+ unit moves with a mate in
   800, a soldier with no squad name never gets/answers orders), and npc_german_debug prints only what was SAID -
   dropped/expired lines leave no trace. Source's info_landmark is the changelevel marker - never reuse it.
+  SENTENCES (owner's plan 2026-11-18, HL1 HECU style): NAME + THREAT + LOCATION + ORDER, one speaker, parts back to
+  back ("Mueller! Infanterie! Zweiter Stock, Fenster! Niederhalten!"); the named man answers. Measured on the set: every
+  clip is trimmed tight (median 0.01-0.02 s silence before speech, 0.03-0.05 s after; speech = 5% of the clip's peak),
+  so parts join with no trimming - the code adds the gap (~0.1-0.15 s). Median lengths: name 0.57 s, threat_infantry
+  1.87, landmark 1.52, location 1.47, direction 1.30, area 1.09, orders 1.6-1.9, response_ack 0.94, rank 0.67 -> a
+  full four-part sentence is ~5.5 s, long in a firefight: full form for first contact / when the enemy moves to a
+  new spot, 2-part forms otherwise. Re-check each part before it plays (enemy still there, named man alive, speaker
+  not hit - pain already cuts him off).
