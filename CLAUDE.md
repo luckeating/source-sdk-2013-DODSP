@@ -502,6 +502,13 @@ If you learn something like this, add it here in the same commit as the fix.
   anyway so the log shows the reason; "Angriff!" uses it too. GermanChatter_LandmarkAt says what it found (prop +
   model, static prop, brushwork + material, tall brushwork = building, nothing within 160 units) and a generic cover
   order logs it: `take cover! (no landmark recognised: ...)`.
+  CONFIRMED 2026-11-19 (build 44472599057, dod_argentan, squad A1, ~3.3 min): 67 lines said (was 31 in 2 min), orders
+  from 9 different soldiers (most active 7, was one man with nearly all), "Angriff!" said 3 times (was 0), all 4 voices
+  (0:25 3:20 1:11 2:11). What stops lines now is squad-wait (one line of a kind per squad per 6-8 s) - by design.
+  Owner: "extremely immersive". KNOWN-GOOD for C1. Cover callouts: rubble 5 named; generic 7 = nothing within 160
+  units at hip height 4 (open ground / corner spots - generic is right), static props with no rule: railing01 (not
+  cover; no fence line in order_cover), piano (no line), props_exteriors/storefront3 (-> "house" in C2: storefront /
+  facade / shop words = a building front).
 - **US battle chatter: the voice set** (review 2026-11-18, the owner's US_Voices.zip; nothing plays it yet - DOD-SP has
   no US NPC). US Voices/US/<0..3>/US_<v>_<category>_NN[b|c|d].wav: 2677 clips, 244 categories, all 22050 Hz 16-bit
   mono (no conversion). The letter suffix = another take of the same line (same length/level) - the generator must
