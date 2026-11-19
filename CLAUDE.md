@@ -493,6 +493,15 @@ If you learn something like this, add it here in the same commit as the fix.
   C1b: counters run since game start; DOD-SP\dodsp_chatter_log.txt (new each game start, flushed per line) logs every
   line SAID (soldier, voice, squad, sound entry, English meaning, cover landmark or why generic, to whom) and NOT SAID
   (reason + seconds), plus `=== map ===` and `--- game time went back ---` markers. The owner pastes the log.
+  FIRST LOG 2026-11-18 (build 44470219910, dod_argentan, one squad A1, ~2 min): 31 lines said, 66 not; all 4 voices
+  heard (voice 1: 7 lines); orders answered by the man ordered (9 acks). Threat calls mostly squad-wait = one per squad
+  per 8 s, as designed; "cut" = the man was shot first. Two faults: (1) the squad LEADER was asked for nearly every
+  order (in earshot = always) and dropped 22 on his own 8 s order wait; "Angriff!" asked 8 times, said 0. (2) 6 of 9
+  cover orders "no landmark recognised" with no way to see why. C1c: OrderSpeaker - the leader if in earshot AND free
+  (CGermanChatter::CanSay), else the nearest squadmate who is free (NearestSquadmate's eCanSay), else the leader/nearest
+  anyway so the log shows the reason; "Angriff!" uses it too. GermanChatter_LandmarkAt says what it found (prop +
+  model, static prop, brushwork + material, tall brushwork = building, nothing within 160 units) and a generic cover
+  order logs it: `take cover! (no landmark recognised: ...)`.
 - **US battle chatter: the voice set** (review 2026-11-18, the owner's US_Voices.zip; nothing plays it yet - DOD-SP has
   no US NPC). US Voices/US/<0..3>/US_<v>_<category>_NN[b|c|d].wav: 2677 clips, 244 categories, all 22050 Hz 16-bit
   mono (no conversion). The letter suffix = another take of the same line (same length/level) - the generator must

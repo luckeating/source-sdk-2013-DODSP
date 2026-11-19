@@ -373,7 +373,9 @@ private:
 public:
 	CGermanChatter		m_Chatter;
 private:
-	CNPC_GermanSoldier *NearestSquadmate( float flMaxDist, bool bMustSeeMe = false );
+	// eCanSay: only squadmates who could say that line now (CGermanChatter::CanSay)
+	CNPC_GermanSoldier *NearestSquadmate( float flMaxDist, bool bMustSeeMe = false, ChatEvent_t eCanSay = NUM_CHAT_EVENTS );
+	CNPC_GermanSoldier *OrderSpeaker( ChatEvent_t eEvent, float flLeaderRange, float flMateRange );
 
 	//-------------------------------------------------------------------------
 	// Squad coordinator (A3b). One owner per squad for who does what: the suppressor, the
@@ -610,6 +612,7 @@ private:
 	int					m_nSquadShooters;		// script: squad members firing at once
 	float				m_flBoundMax;			// script: longest bound forward (route length)
 	char				m_szCoverLandmark[32];	// what his chosen cover spot is behind (for the callout)
+	char				m_szCoverWhat[96];		// what the landmark trace found there, in words (chatter log)
 	float				m_flChatterSawEnemy;	// last think he saw the enemy (threat callouts)
 	// Watchdog
 	float				m_flInvariantNext[NUM_INVARIANTS];
@@ -797,6 +800,7 @@ CNPC_GermanSoldier::CNPC_GermanSoldier() : m_AnimMap( DefLessFunc( int ) )
 	m_nSquadShooters = 2;
 	m_flBoundMax = 700.0f;
 	m_szCoverLandmark[0] = 0;
+	m_szCoverWhat[0] = 0;
 	m_eMoveKind = MOVE_COVER;
 	m_eSquadOrder = ORDER_NONE;
 	m_flSquadOrderAt = m_flSquadOrderIssued = 0.0f;
@@ -2923,7 +2927,21 @@ void CNPC_GermanSoldier::SquadTick( void )
 //=============================================================================
 // A3a - battle chatter moments
 //=============================================================================
-CNPC_GermanSoldier *CNPC_GermanSoldier::NearestSquadmate( float flMaxDist, bool bMustSeeMe )
+// Who calls an order: the squad leader if he's in earshot and free to say it, else the nearest
+// squadmate who is. Nobody free: the leader/nearest man anyway, so the log says why it wasn't said.
+CNPC_GermanSoldier *CNPC_GermanSoldier::OrderSpeaker( ChatEvent_t eEvent, float flLeaderRange, float flMateRange )
+{
+	CNPC_GermanSoldier *pLeader = SquadLeader();
+	bool bLeaderNear = pLeader && pLeader != this && pLeader->IsAlive() && ( pLeader->GetAbsOrigin() - GetAbsOrigin() ).Length() <= flLeaderRange;
+	if ( bLeaderNear && pLeader->m_Chatter.CanSay( eEvent ) )
+		return pLeader;
+	CNPC_GermanSoldier *pMate = NearestSquadmate( flMateRange, false, eEvent );
+	if ( pMate )
+		return pMate;
+	return bLeaderNear ? pLeader : NearestSquadmate( flMateRange );
+}
+
+CNPC_GermanSoldier *CNPC_GermanSoldier::NearestSquadmate( float flMaxDist, bool bMustSeeMe, ChatEvent_t eCanSay )
 {
 	if ( !m_pSquad )
 		return NULL;
@@ -2933,6 +2951,8 @@ CNPC_GermanSoldier *CNPC_GermanSoldier::NearestSquadmate( float flMaxDist, bool 
 	for ( CAI_BaseNPC *pMember = m_pSquad->GetFirstMember( &iter ); pMember; pMember = m_pSquad->GetNextMember( &iter ) )
 	{
 		if ( pMember == this || !pMember->IsAlive() || !FClassnameIs( pMember, "npc_german_soldier" ) )
+			continue;
+		if ( eCanSay != NUM_CHAT_EVENTS && !static_cast<CNPC_GermanSoldier *>( pMember )->m_Chatter.CanSay( eCanSay ) )
 			continue;
 		float flDist = ( pMember->GetAbsOrigin() - GetAbsOrigin() ).Length();
 		if ( flDist < flBest && ( !bMustSeeMe || pMember->FVisible( this ) ) )
@@ -2951,21 +2971,25 @@ void CNPC_GermanSoldier::ChatterOrderCoverMove( void )
 {
 	if ( m_eMoveKind == MOVE_COVER && ( m_vecCoverSpot - GetAbsOrigin() ).Length2D() < 150.0f )
 		return;
-	// A3d: the squad leader calls it if he's in earshot, else the nearest man
-	CNPC_GermanSoldier *pMate = SquadLeader();
-	if ( !pMate || pMate == this || ( pMate->GetAbsOrigin() - GetAbsOrigin() ).Length() > 1200.0f )
-		pMate = NearestSquadmate( 800.0f );
-	if ( !pMate )
-		return;
+	ChatEvent_t eOrder;
 	switch ( m_eMoveKind )
 	{
 	case MOVE_BOUND:
-	case MOVE_ASSAULT:		pMate->m_Chatter.Request( CHAT_ORDER_FORWARD, NULL, this ); break;
-	case MOVE_FLANK_LEFT:	pMate->m_Chatter.Request( CHAT_ORDER_FLANK_LEFT, NULL, this ); break;
-	case MOVE_FLANK_RIGHT:	pMate->m_Chatter.Request( CHAT_ORDER_FLANK_RIGHT, NULL, this ); break;
-	case MOVE_FALLBACK:		pMate->m_Chatter.Request( CHAT_ORDER_BACK, NULL, this ); break;
-	default:				pMate->m_Chatter.Request( CHAT_ORDER_COVER, m_szCoverLandmark, this ); break;
+	case MOVE_ASSAULT:		eOrder = CHAT_ORDER_FORWARD; break;
+	case MOVE_FLANK_LEFT:	eOrder = CHAT_ORDER_FLANK_LEFT; break;
+	case MOVE_FLANK_RIGHT:	eOrder = CHAT_ORDER_FLANK_RIGHT; break;
+	case MOVE_FALLBACK:		eOrder = CHAT_ORDER_BACK; break;
+	default:				eOrder = CHAT_ORDER_COVER; break;
 	}
+	// A3d: the squad leader calls it if he's in earshot (1200), else the nearest man (800) - C1c: whoever
+	// of them is free to say it (the first log: the leader dropped 22 orders on his own 8 s wait)
+	CNPC_GermanSoldier *pMate = OrderSpeaker( eOrder, 1200.0f, 800.0f );
+	if ( !pMate )
+		return;
+	if ( eOrder == CHAT_ORDER_COVER )
+		pMate->m_Chatter.Request( eOrder, m_szCoverLandmark, this, 0.0f, m_szCoverWhat );
+	else
+		pMate->m_Chatter.Request( eOrder, NULL, this );
 }
 
 // Reloading: "cover me" to the nearest squadmate (who answers), or just "reloading".
@@ -2995,11 +3019,15 @@ void CNPC_GermanSoldier::ChatterThreat( void )
 	trace_t tr;
 	UTIL_TraceLine( EyePosition(), pEnemy->GetAbsOrigin() + Vector( 0, 0, 8 ), COVER_MASK, &filter, &tr );
 	m_Chatter.Request( tr.fraction >= 1.0f ? CHAT_THREAT_EXPOSED : CHAT_THREAT );
-	// the leader follows a sighting with the order (another man: one man has one line waiting)
-	CNPC_GermanSoldier *pLeader = SquadLeader();
-	if ( pLeader && pLeader != this && pLeader->IsAlive() && random->RandomFloat( 0.0f, 1.0f ) < 0.4f &&
-		 ( pLeader->GetAbsOrigin() - GetAbsOrigin() ).Length() < 1200.0f )
-		pLeader->m_Chatter.Request( CHAT_ATTACK, NULL, NULL, 1.5f );
+	// the leader (or a free squadmate) follows a sighting with the order - another man than the one who
+	// spotted him: one man has one line waiting. C1c: "Angriff!" was asked of the leader 8 times in the
+	// first log and never said (his own order wait, or replaced by a cover order).
+	if ( random->RandomFloat( 0.0f, 1.0f ) < 0.4f )
+	{
+		CNPC_GermanSoldier *pCaller = OrderSpeaker( CHAT_ATTACK, 1200.0f, 800.0f );
+		if ( pCaller && pCaller->m_Chatter.CanSay( CHAT_ATTACK ) )
+			pCaller->m_Chatter.Request( CHAT_ATTACK, NULL, NULL, 1.5f );
+	}
 }
 
 //=============================================================================
@@ -4267,7 +4295,7 @@ bool CNPC_GermanSoldier::FindCoverSpot( CBaseEntity *pEnemy, int nMode, const Ve
 	m_vecCoverSearchEye = vecThreatEye;
 	m_bHasCoverSpot = true;
 	m_flLastSearchRun = flBestLen;
-	const char *pszLandmark = GermanChatter_LandmarkAt( vecBest, vecThreatEye, this, pEnemy );
+	const char *pszLandmark = GermanChatter_LandmarkAt( vecBest, vecThreatEye, this, pEnemy, m_szCoverWhat, sizeof( m_szCoverWhat ) );
 	Q_strncpy( m_szCoverLandmark, pszLandmark ? pszLandmark : "", sizeof( m_szCoverLandmark ) );
 	return true;
 }

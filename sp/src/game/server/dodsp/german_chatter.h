@@ -74,7 +74,12 @@ public:
 	// Ask to say something. Dropped at once if this kind of line was said too recently (by him
 	// or his squad); otherwise kept until it can be said (one speaker per squad) or goes stale.
 	// pTarget: who it's said to (orders: he answers). flDelay: not before this many seconds.
-	void		Request( ChatEvent_t eEvent, const char *pszModifier = NULL, CBaseEntity *pTarget = NULL, float flDelay = 0.0f );
+	// pszNote: for the chatter log only (e.g. what a cover spot is behind when no landmark matched).
+	void		Request( ChatEvent_t eEvent, const char *pszModifier = NULL, CBaseEntity *pTarget = NULL, float flDelay = 0.0f, const char *pszNote = NULL );
+	// Could he take this line now - not on his own wait for this kind of line, nothing more important
+	// waiting? Orders go to a squadmate who can (C1c: the leader was asked for nearly every order and
+	// dropped most of them on his own wait).
+	bool		CanSay( ChatEvent_t eEvent ) const;
 	void		Update( void );			// every think: say the pending line when it's his turn
 	void		OnDeath( void );
 	// His own voice when hit / killed (same man as his callouts): cuts off whatever he was saying.
@@ -94,6 +99,7 @@ private:
 		bool		bActive;
 		ChatEvent_t	eEvent;
 		char		szModifier[32];
+		char		szNote[96];
 		EHANDLE		hTarget;
 		float		flNotBefore;
 		float		flExpire;
@@ -115,6 +121,8 @@ private:
 // Which landmark (barrels, wall, kubelwagon...) a soldier at vecSpot hides behind, facing
 // vecThreat: a trigger_german_landmark volume if one covers the spot, otherwise the name of
 // the prop model in the way. NULL = nothing recognised (the generic line is used).
-const char *GermanChatter_LandmarkAt( const Vector &vecSpot, const Vector &vecThreat, CBaseEntity *pIgnore1, CBaseEntity *pIgnore2 );
+// pszWhat (optional): what the trace found, in words - for the chatter log when nothing is recognised.
+const char *GermanChatter_LandmarkAt( const Vector &vecSpot, const Vector &vecThreat, CBaseEntity *pIgnore1, CBaseEntity *pIgnore2,
+									  char *pszWhat = NULL, int nWhat = 0 );
 
 #endif // GERMAN_CHATTER_H

@@ -345,7 +345,19 @@ void CGermanChatter::Drop( ChatEvent_t eEvent, ChatDrop_t eWhy, float flDetail )
 	}
 }
 
-void CGermanChatter::Request( ChatEvent_t eEvent, const char *pszModifier, CBaseEntity *pTarget, float flDelay )
+bool CGermanChatter::CanSay( ChatEvent_t eEvent ) const
+{
+	CBaseEntity *pOwner = m_hOwner.Get();
+	if ( !s_bEnabled || !pOwner || !pOwner->IsAlive() || eEvent < 0 || eEvent >= NUM_CHAT_EVENTS )
+		return false;
+	const ChatDef_t &def = s_ChatDefs[eEvent];
+	float now = gpGlobals->curtime;
+	if ( now < m_flNextGroup[def.eGroup] )
+		return false;
+	return !( m_Pending.bActive && now < m_Pending.flExpire && m_Pending.flPriority > def.flPriority );
+}
+
+void CGermanChatter::Request( ChatEvent_t eEvent, const char *pszModifier, CBaseEntity *pTarget, float flDelay, const char *pszNote )
 {
 	CBaseEntity *pOwner = m_hOwner.Get();
 	if ( !pOwner || !pOwner->IsAlive() || eEvent < 0 || eEvent >= NUM_CHAT_EVENTS )
@@ -393,6 +405,7 @@ void CGermanChatter::Request( ChatEvent_t eEvent, const char *pszModifier, CBase
 	m_Pending.bActive = true;
 	m_Pending.eEvent = eEvent;
 	Q_strncpy( m_Pending.szModifier, pszModifier ? pszModifier : "", sizeof( m_Pending.szModifier ) );
+	Q_strncpy( m_Pending.szNote, pszNote ? pszNote : "", sizeof( m_Pending.szNote ) );
 	m_Pending.hTarget = pTarget;
 	m_Pending.flNotBefore = now + flDelay;
 	m_Pending.flExpire = now + flDelay + s_flValid[def.eGroup];
@@ -468,12 +481,12 @@ void CGermanChatter::Update( void )
 	CBaseEntity *pTarget = p.hTarget.Get();
 	{
 		// what was said, in English; for cover orders which landmark (and whether this voice had a line for it)
-		char szMeaning[96];
+		char szMeaning[160];
 		if ( p.eEvent == CHAT_ORDER_COVER )
 		{
 			bool bGeneric = Q_stristr( szSound, "order_cover_generic" ) != NULL;
 			if ( !p.szModifier[0] )
-				Q_strncpy( szMeaning, "take cover! (no landmark recognised)", sizeof( szMeaning ) );
+				Q_snprintf( szMeaning, sizeof( szMeaning ), "take cover! (no landmark recognised: %s)", p.szNote[0] ? p.szNote : "?" );
 			else if ( bGeneric )
 				Q_snprintf( szMeaning, sizeof( szMeaning ), "take cover! (landmark '%s' has no line - generic)", p.szModifier );
 			else
@@ -917,15 +930,26 @@ static const char *LandmarkFromMaterial( const char *pszMaterial )
 	return NULL;
 }
 
-const char *GermanChatter_LandmarkAt( const Vector &vecSpot, const Vector &vecThreat, CBaseEntity *pIgnore1, CBaseEntity *pIgnore2 )
+const char *GermanChatter_LandmarkAt( const Vector &vecSpot, const Vector &vecThreat, CBaseEntity *pIgnore1, CBaseEntity *pIgnore2,
+									  char *pszWhat, int nWhat )
 {
+	char szScratch[4];
+	if ( !pszWhat || nWhat <= 0 )
+	{
+		pszWhat = szScratch;
+		nWhat = sizeof( szScratch );
+	}
+	pszWhat[0] = 0;
 	// 1. A mapper's volume.
 	for ( CBaseEntity *pEnt = gEntList.FindEntityByClassname( NULL, "trigger_german_landmark" ); pEnt;
 		  pEnt = gEntList.FindEntityByClassname( pEnt, "trigger_german_landmark" ) )
 	{
 		CGermanLandmark *pLandmark = static_cast<CGermanLandmark *>( pEnt );
 		if ( pLandmark->m_iszLandmark != NULL_STRING && pEnt->CollisionProp()->IsPointInBounds( vecSpot + Vector( 0, 0, 8 ) ) )
+		{
+			Q_snprintf( pszWhat, nWhat, "trigger_german_landmark" );
 			return STRING( pLandmark->m_iszLandmark );
+		}
 	}
 
 	// 2. What's in the way toward the threat, at hiding height.
@@ -933,19 +957,30 @@ const char *GermanChatter_LandmarkAt( const Vector &vecSpot, const Vector &vecTh
 	Vector vecDir = vecThreat - vecFrom;
 	vecDir.z = 0.0f;
 	if ( VectorNormalize( vecDir ) < 1.0f )
+	{
+		Q_snprintf( pszWhat, nWhat, "the enemy is right above or below him" );
 		return NULL;
+	}
 	CTraceFilterSkipTwoEntities filter( pIgnore1, pIgnore2, COLLISION_GROUP_NONE );
 	trace_t tr;
 	UTIL_TraceLine( vecFrom, vecFrom + vecDir * 160.0f, MASK_SOLID, &filter, &tr );
 	if ( tr.fraction >= 1.0f )
+	{
+		Q_snprintf( pszWhat, nWhat, "nothing solid within 160 units toward the enemy at hip height" );
 		return NULL;
+	}
 
 	bool bBrush = true;
 	if ( tr.m_pEnt && !tr.m_pEnt->IsWorld() )
 	{
 		const char *pszModel = STRING( tr.m_pEnt->GetModelName() );
 		if ( pszModel && pszModel[0] && pszModel[0] != '*' )
-			return LandmarkFromModel( pszModel );		// a prop entity: its model decides
+		{
+			// a prop entity: its model decides
+			const char *psz = LandmarkFromModel( pszModel );
+			Q_snprintf( pszWhat, nWhat, "%s %s%s", tr.m_pEnt->GetClassname(), pszModel, psz ? "" : " - no name rule matches" );
+			return psz;
+		}
 		// a brush entity (func_brush, func_breakable...): treat as brushwork below
 	}
 	else
@@ -962,6 +997,8 @@ const char *GermanChatter_LandmarkAt( const Vector &vecSpot, const Vector &vecTh
 			const char *pszModel = pModel ? modelinfo->GetModelName( pModel ) : NULL;
 			if ( !pszModel || Q_stristr( pszModel, "skybox" ) )
 				continue;
+			if ( !bAnyProp )
+				Q_snprintf( pszWhat, nWhat, "static prop %s - no name rule matches", pszModel );
 			bAnyProp = true;
 			bool bFound;
 			const char *psz = LandmarkFromModel( pszModel, &bFound );
@@ -976,6 +1013,7 @@ const char *GermanChatter_LandmarkAt( const Vector &vecSpot, const Vector &vecTh
 
 	// 3. Brushwork / displacement.
 	const char *pszMaterial = LandmarkFromMaterial( tr.surface.name );
+	Q_snprintf( pszWhat, nWhat, "brushwork %s", tr.surface.name ? tr.surface.name : "?" );
 	if ( tr.IsDispSurface() && tr.plane.normal.z > 0.2f )
 		return pszMaterial ? pszMaterial : "embankment";	// ground rising toward the enemy
 
@@ -987,6 +1025,8 @@ const char *GermanChatter_LandmarkAt( const Vector &vecSpot, const Vector &vecTh
 	UTIL_TraceLine( vecHigh, vecHigh + vecDir * ( flDist + 48.0f ), MASK_SOLID, &filter, &trHigh );
 	if ( trHigh.fraction >= 1.0f )
 		return pszMaterial ? pszMaterial : "wall";
+	if ( !pszMaterial )
+		Q_snprintf( pszWhat, nWhat, "tall brushwork %s - a building or a wall too high to shoot over", tr.surface.name ? tr.surface.name : "?" );
 	return pszMaterial;
 }
 
