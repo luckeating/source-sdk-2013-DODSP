@@ -38,27 +38,28 @@ struct ChatDef_t
 	const char	*pszCategory;		// sound category (ORDER_COVER appends _<landmark>)
 	ChatGroup_t	eGroup;
 	float		flPriority;
+	const char	*pszMeaning;		// what the line means, in English (the chatter log)
 };
 
 // One row per ChatEvent_t, in its order (the assert below catches a missing row)
 static const ChatDef_t s_ChatDefs[] =
 {
-	{ "threat_infantry_generic",	GROUP_THREAT,	0.5f },	// CHAT_THREAT
-	{ "threat_infantry_exposed",	GROUP_THREAT,	0.5f },	// CHAT_THREAT_EXPOSED
-	{ "order_attack_infantry",		GROUP_ORDER,	0.6f },	// CHAT_ATTACK
-	{ "order_cover",				GROUP_ORDER,	0.9f },	// CHAT_ORDER_COVER
-	{ "order_move_forward",			GROUP_ORDER,	0.9f },	// CHAT_ORDER_FORWARD
-	{ "order_move_flank",			GROUP_ORDER,	0.9f },	// CHAT_ORDER_FLANK
-	{ "order_move_flankleft",		GROUP_ORDER,	0.9f },	// CHAT_ORDER_FLANK_LEFT
-	{ "order_move_flankright",		GROUP_ORDER,	0.9f },	// CHAT_ORDER_FLANK_RIGHT
-	{ "order_action_suppress",		GROUP_ORDER,	0.5f },	// CHAT_ORDER_SUPPRESS
-	{ "order_move_backward",		GROUP_ORDER,	0.9f },	// CHAT_ORDER_BACK
-	{ "inform_reloading_generic",	GROUP_INFORM,	0.2f },	// CHAT_RELOADING
-	{ "inform_reloading_coverme",	GROUP_INFORM,	0.3f },	// CHAT_RELOADING_COVERME
-	{ "inform_incoming_grenade",	GROUP_INFORM,	0.95f },// CHAT_INCOMING_GRENADE
-	{ "reaction_casualty_generic",	GROUP_REACTION,	0.5f },	// CHAT_CASUALTY
-	{ "response_ack_yes",			GROUP_RESPONSE,	0.9f },	// CHAT_ACK_YES
-	{ "response_ack_covering",		GROUP_RESPONSE,	0.9f },	// CHAT_ACK_COVERING
+	{ "threat_infantry_generic",	GROUP_THREAT,	0.5f, "enemy infantry spotted!" },	// CHAT_THREAT
+	{ "threat_infantry_exposed",	GROUP_THREAT,	0.5f, "enemy out in the open!" },	// CHAT_THREAT_EXPOSED
+	{ "order_attack_infantry",		GROUP_ORDER,	0.6f, "attack!" },	// CHAT_ATTACK
+	{ "order_cover",				GROUP_ORDER,	0.9f, "take cover" },	// CHAT_ORDER_COVER
+	{ "order_move_forward",			GROUP_ORDER,	0.9f, "forward!" },	// CHAT_ORDER_FORWARD
+	{ "order_move_flank",			GROUP_ORDER,	0.9f, "flank them!" },	// CHAT_ORDER_FLANK
+	{ "order_move_flankleft",		GROUP_ORDER,	0.9f, "flank left!" },	// CHAT_ORDER_FLANK_LEFT
+	{ "order_move_flankright",		GROUP_ORDER,	0.9f, "flank right!" },	// CHAT_ORDER_FLANK_RIGHT
+	{ "order_action_suppress",		GROUP_ORDER,	0.5f, "keep his head down!" },	// CHAT_ORDER_SUPPRESS
+	{ "order_move_backward",		GROUP_ORDER,	0.9f, "fall back!" },	// CHAT_ORDER_BACK
+	{ "inform_reloading_generic",	GROUP_INFORM,	0.2f, "reloading!" },	// CHAT_RELOADING
+	{ "inform_reloading_coverme",	GROUP_INFORM,	0.3f, "reloading - cover me!" },	// CHAT_RELOADING_COVERME
+	{ "inform_incoming_grenade",	GROUP_INFORM,	0.95f, "grenade!" },// CHAT_INCOMING_GRENADE
+	{ "reaction_casualty_generic",	GROUP_REACTION,	0.5f, "man down!" },	// CHAT_CASUALTY
+	{ "response_ack_yes",			GROUP_RESPONSE,	0.9f, "yes, sir!" },	// CHAT_ACK_YES
+	{ "response_ack_covering",		GROUP_RESPONSE,	0.9f, "covering you!" },	// CHAT_ACK_COVERING
 };
 COMPILE_TIME_ASSERT( ARRAYSIZE( s_ChatDefs ) == NUM_CHAT_EVENTS );
 
@@ -138,21 +139,64 @@ struct SquadChat_t
 static CUtlDict<SquadChat_t, int>	s_Squads;
 static float						s_flSquadsTime = 0.0f;
 
-// What happened to every request this map (npc_german_chatter)
+// What happened to every request since the game started (npc_german_chatter). Never reset: a reset
+// on "game time went backwards" also fired on loading a save, so a fight before the load vanished
+// from the counts (C1 test 2026-11-18: soldiers heard talking, report said 0). The log has the detail.
 static int		s_nSaid[NUM_CHAT_EVENTS];
 static int		s_nDropped[NUM_CHAT_EVENTS][NUM_CHAT_DROPS];
 // What the map load found (LevelPrecache)
 static int		s_nEntries = 0, s_nWaves = 0, s_nWavesMissing = 0, s_nKindsMissing = 0;
 static char		s_szFirstMissing[MAX_PATH] = "";
 
-// A new map: game time went backwards. Squads and counters start over.
+//-----------------------------------------------------------------------------
+// The chatter log: DOD-SP\dodsp_chatter_log.txt, a new file every game start. One line per line
+// said (who, to whom, what it means) and per line not said (why). The owner pastes it back.
+//-----------------------------------------------------------------------------
+static FileHandle_t	s_hLog = FILESYSTEM_INVALID_HANDLE;
+static bool			s_bLogTried = false;
+static char			s_szLogMap[64] = "";
+
+static void ChatLog( const char *pszFormat, ... )
+{
+	if ( s_hLog == FILESYSTEM_INVALID_HANDLE )
+	{
+		if ( s_bLogTried )
+			return;
+		s_bLogTried = true;
+		s_hLog = filesystem->Open( "dodsp_chatter_log.txt", "w", "MOD" );
+		if ( s_hLog == FILESYSTEM_INVALID_HANDLE )
+		{
+			Warning( "German chatter: can't write DOD-SP\\dodsp_chatter_log.txt\n" );
+			return;
+		}
+		filesystem->FPrintf( s_hLog, "DOD-SP German chatter log (a new file every game start). [game time] soldier (voice, squad)\n" );
+	}
+	const char *pszMap = STRING( gpGlobals->mapname );
+	if ( !pszMap )
+		pszMap = "";
+	if ( Q_strcmp( pszMap, s_szLogMap ) )
+	{
+		Q_strncpy( s_szLogMap, pszMap, sizeof( s_szLogMap ) );
+		filesystem->FPrintf( s_hLog, "\n=== map %s ===\n", pszMap );
+	}
+	char sz[512];
+	va_list ap;
+	va_start( ap, pszFormat );
+	Q_vsnprintf( sz, sizeof( sz ), pszFormat, ap );
+	va_end( ap );
+	filesystem->FPrintf( s_hLog, "[%7.2f] %s\n", gpGlobals->curtime, sz );
+	filesystem->Flush( s_hLog );
+}
+
+// A new map or a loaded save: game time went backwards. The squads' waits start over (their times
+// belong to the old clock); the counters don't (see above).
 static void CheckNewMap( void )
 {
 	if ( gpGlobals->curtime < s_flSquadsTime - 1.0f )
 	{
 		s_Squads.RemoveAll();
-		memset( s_nSaid, 0, sizeof( s_nSaid ) );
-		memset( s_nDropped, 0, sizeof( s_nDropped ) );
+		if ( s_hLog != FILESYSTEM_INVALID_HANDLE )
+			ChatLog( "--- game time went back from %.2f (map restarted or a save loaded) ---", s_flSquadsTime );
 	}
 	s_flSquadsTime = gpGlobals->curtime;
 }
@@ -282,6 +326,14 @@ void CGermanChatter::Drop( ChatEvent_t eEvent, ChatDrop_t eWhy, float flDetail )
 	if ( eEvent < 0 || eEvent >= NUM_CHAT_EVENTS || eWhy < 0 || eWhy >= NUM_CHAT_DROPS )
 		return;
 	s_nDropped[eEvent][eWhy]++;
+	{
+		CBaseEntity *pOwner = m_hOwner.Get();
+		char szDetail[32] = "";
+		if ( flDetail > 0.0f )
+			Q_snprintf( szDetail, sizeof( szDetail ), " (%.1f s)", flDetail );
+		ChatLog( "soldier %d (voice %d, %s) NOT SAID %s \"%s\" - %s%s", pOwner ? pOwner->entindex() : 0, m_iVoice, m_szSquad,
+				 s_ChatDefs[eEvent].pszCategory, s_ChatDefs[eEvent].pszMeaning, s_pszDropNames[eWhy], szDetail );
+	}
 	if ( npc_german_debug.GetBool() )
 	{
 		CBaseEntity *pOwner = m_hOwner.Get();
@@ -414,6 +466,26 @@ void CGermanChatter::Update( void )
 		sq.flNextReload = now + 20.0f / s_flFrequency;
 
 	CBaseEntity *pTarget = p.hTarget.Get();
+	{
+		// what was said, in English; for cover orders which landmark (and whether this voice had a line for it)
+		char szMeaning[96];
+		if ( p.eEvent == CHAT_ORDER_COVER )
+		{
+			bool bGeneric = Q_stristr( szSound, "order_cover_generic" ) != NULL;
+			if ( !p.szModifier[0] )
+				Q_strncpy( szMeaning, "take cover! (no landmark recognised)", sizeof( szMeaning ) );
+			else if ( bGeneric )
+				Q_snprintf( szMeaning, sizeof( szMeaning ), "take cover! (landmark '%s' has no line - generic)", p.szModifier );
+			else
+				Q_snprintf( szMeaning, sizeof( szMeaning ), "take cover - behind the %s!", p.szModifier );
+		}
+		else
+			Q_strncpy( szMeaning, s_ChatDefs[p.eEvent].pszMeaning, sizeof( szMeaning ) );
+		char szTo[48] = "";
+		if ( pTarget )
+			Q_snprintf( szTo, sizeof( szTo ), " -> to %s %d", pTarget->IsPlayer() ? "the player" : "soldier", pTarget->entindex() );
+		ChatLog( "soldier %d (voice %d, %s) SAID %s \"%s\"%s", pOwner->entindex(), m_iVoice, m_szSquad, szSound, szMeaning, szTo );
+	}
 	if ( npc_german_debug.GetBool() )
 		Msg( "[%.2f] npc_german_soldier %d (voice %d) says: %s%s%s\n", now, pOwner->entindex(), m_iVoice, szSound,
 			 pTarget ? " -> to " : "", pTarget ? pTarget->GetDebugName() : "" );
@@ -625,7 +697,7 @@ void CGermanChatter::Report( void )
 		Q_snprintf( sz, sizeof( sz ), "%s%s %d", szDrops[0] ? ", " : "", s_pszDropNames[d], nDrop[d] );
 		Q_strncat( szDrops, sz, sizeof( szDrops ) );
 	}
-	Msg( "German chatter: %s, enemy '%s', %s | soldiers %d (voices %d/%d/%d/%d, %d without a squad) | said %d | not said: %s\n",
+	Msg( "German chatter: %s, enemy '%s', %s | soldiers %d (voices %d/%d/%d/%d, %d without a squad) | since game start: said %d | not said: %s | every line: DOD-SP\\dodsp_chatter_log.txt\n",
 		 s_bEnabled ? "on" : "OFF", s_szNation, szLoad, nSoldiers, nVoice[0], nVoice[1], nVoice[2], nVoice[3], nSolo, nSaid,
 		 szDrops[0] ? szDrops : "none" );
 	for ( int e = 0; e < NUM_CHAT_EVENTS; e++ )

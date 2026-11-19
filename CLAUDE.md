@@ -486,6 +486,13 @@ If you learn something like this, add it here in the same commit as the fix.
   Files: german_chatter.cpp/.h, npc_german_soldier.cpp (ChatterThreat, ChatterOrderCoverMove, cry default, the
   INVARIANT name table), dodsp_tools/gen_chatter.py + generated/, devtools/dodsp_lint_client.py, dodsp_build.yml.
   Undo: the previous server.dll + the old scripts\game_sounds_german_chatter.txt (de/ paths).
+  FIRST TEST 2026-11-18 (build 44465997298): load line clean (3656/3656 waves for 'us', voices 3/3/2/3, no squadless
+  soldiers), owner heard talking and orders answered - but `npc_german_chatter` said `said 0 | not said: none`. Cause:
+  the counters reset whenever game time went backwards, which a LOADED SAVE also does. Lesson: "time went back" means
+  map restart OR save load - reset only what belongs to the old clock (squad waits), never a session's evidence.
+  C1b: counters run since game start; DOD-SP\dodsp_chatter_log.txt (new each game start, flushed per line) logs every
+  line SAID (soldier, voice, squad, sound entry, English meaning, cover landmark or why generic, to whom) and NOT SAID
+  (reason + seconds), plus `=== map ===` and `--- game time went back ---` markers. The owner pastes the log.
 - **US battle chatter: the voice set** (review 2026-11-18, the owner's US_Voices.zip; nothing plays it yet - DOD-SP has
   no US NPC). US Voices/US/<0..3>/US_<v>_<category>_NN[b|c|d].wav: 2677 clips, 244 categories, all 22050 Hz 16-bit
   mono (no conversion). The letter suffix = another take of the same line (same length/level) - the generator must
