@@ -420,3 +420,11 @@ If you learn something like this, add it here in the same commit as the fix.
     is still dark in HDR (shade floor ~70x darker than the lit corridor): that is the map's sky/bounce light plus
     exposure, the same for brushes and props.
 - Confirmed 2026-11-17: `buildcubemaps` no longer crashes with the sun shaders loaded (3b4).
+
+## Later (agreed, not scheduled)
+- **Graphics options in the menu** (owner asked 2026-11-18, "later"). Valve's Video > Advanced page is GameUI.dll (engine
+  binary, not in the SDK), so: a "DOD-SP Graphics" main-menu entry (GameMenu.res, `engine <command>`) opening our own
+  client.dll VGUI window with cvar-bound checkboxes/sliders. Proposed rows: sun shadows (dodsp_sun_baked), sun
+  softness, live lamps (dodsp_lamps_baked), lamp shadows, prop shadows (dodsp_sun_propshadows), shadow resolution
+  (r_flashlightdepthres, restart). Those become FCVAR_ARCHIVE (saved) - update "Settings that reset" when it lands;
+  debug/calibration cvars stay console-only. Needs the owner's DOD-SP\resource\GameMenu.res to add the entry.
