@@ -87,6 +87,60 @@ static const char *s_pszLandmarks[] =
 };
 
 //-----------------------------------------------------------------------------
+// C2 sentence parts. Every literal line kind here is checked against the generated sound script by
+// devtools/dodsp_lint_client.py (every voice, every enemy nation).
+//-----------------------------------------------------------------------------
+#define CHAT_PART_GAP	0.12f		// silence between two parts (the clips are trimmed tight, measured)
+
+// Surnames the voice set says (name_<x>): one per soldier, unique in his squad
+static const char *s_pszNames[] =
+{
+	"name_adler", "name_albrecht", "name_bader", "name_bauer", "name_baumann", "name_becker", "name_bergmann",
+	"name_beyer", "name_brandt", "name_brauer", "name_braun", "name_broemel", "name_bruekner", "name_faerber",
+	"name_fiedler", "name_fischer", "name_fleischer", "name_gaertner", "name_groenemeier", "name_gross", "name_hahn",
+	"name_hoffmann", "name_hohmann", "name_huber", "name_jaeger", "name_kahn", "name_kaltenbach", "name_kaufmann",
+	"name_kessler", "name_koch", "name_koehler", "name_koenig", "name_kraemer", "name_krieger", "name_krueger",
+	"name_kuemmel", "name_kunze", "name_lange", "name_lehmann", "name_meier", "name_meyer", "name_mueller",
+	"name_neuberger", "name_neumann", "name_pfeffer", "name_pfeiffer", "name_reichmann", "name_reimann",
+	"name_reiniger", "name_reiter", "name_richter", "name_sauer", "name_schaefer", "name_schlueter", "name_schmidt",
+	"name_schneider", "name_schrader", "name_schreiber", "name_schroeder", "name_schuhmann", "name_schultz",
+	"name_schumann", "name_schwarz", "name_steinhauer", "name_vogel", "name_wagner", "name_weber", "name_wolf",
+	"name_zimmermann",
+};
+#define CHAT_MAX_NAMES	96
+COMPILE_TIME_ASSERT( ARRAYSIZE( s_pszNames ) <= CHAT_MAX_NAMES );
+
+// Where in a building: [floor][opening]. NULL = the set has no such line (the floor's generic one is used).
+// The set's floors are American: firstfloor = ground floor.
+enum { LOCKIND_GENERIC, LOCKIND_WINDOW, LOCKIND_DOORWAY, LOCKIND_BALCONY, NUM_LOCKINDS };
+enum { FLOOR_BASEMENT, FLOOR_GROUND, FLOOR_SECOND, FLOOR_THIRD, FLOOR_TOP, NUM_FLOORS };
+static const char *s_pszLocations[NUM_FLOORS][NUM_LOCKINDS] =
+{
+	{ "location_basement_generic",		"location_basement_window",		NULL,							NULL },
+	{ "location_firstfloor_generic",	"location_firstfloor_window",	"location_firstfloor_doorway",	NULL },
+	{ "location_secondfloor_generic",	"location_secondfloor_window",	"location_secondfloor_doorway",	"location_secondfloor_balcony" },
+	{ "location_thirdfloor_generic",	"location_thirdfloor_window",	NULL,							"location_thirdfloor_balcony" },
+	{ "location_topfloor_generic",		"location_topfloor_window",		NULL,							"location_topfloor_balcony" },
+};
+static const char *s_pszFloorWords[NUM_FLOORS] = { "basement", "ground floor", "second floor", "third floor", "top floor" };
+static const char *s_pszKindWords[NUM_LOCKINDS] = { "", ", window", ", doorway", ", balcony" };
+static const char *s_pszRoof = "location_roof_generic";
+
+// Compass (Hammer: +Y north, +X east), from east counter-clockwise in 45 degree steps
+static const char *s_pszCompass[8] =
+{
+	"direction_relative_east", "direction_relative_northeast", "direction_relative_north", "direction_relative_northwest",
+	"direction_relative_west", "direction_relative_southwest", "direction_relative_south", "direction_relative_southeast",
+};
+static const char *s_pszCompassWords[8] = { "east", "northeast", "north", "northwest", "west", "southwest", "south", "southeast" };
+
+// The orders at the end of a full threat call
+static const char *s_pszAttackWindow = "order_attack_window";
+
+static bool SoundExists( const char *pszName );
+static bool EnemyLocation( int iVoice, CBaseEntity *pSpeaker, CBaseEntity *pEnemy, ChatPart_t &part, bool *pbWindow );
+
+//-----------------------------------------------------------------------------
 // Tuning (from scripts/npc_german_soldier.txt, set by the soldier)
 //-----------------------------------------------------------------------------
 static bool		s_bEnabled = true;
@@ -135,6 +189,9 @@ struct SquadChat_t
 	float	flNextCasualty;
 	float	flNextReload;
 	int		nVoices;
+	bool	abNameUsed[CHAT_MAX_NAMES];
+	Vector	vecLastFull;		// where the enemy was at the last full threat call (C2)
+	float	flLastFull;
 };
 static CUtlDict<SquadChat_t, int>	s_Squads;
 static float						s_flSquadsTime = 0.0f;
@@ -239,6 +296,9 @@ CGermanChatter::CGermanChatter()
 	m_flSpeakingUntil = 0.0f;
 	m_flNextPain = 0.0f;
 	memset( &m_Pending, 0, sizeof( m_Pending ) );
+	m_Sentence.bActive = false;
+	m_Sentence.nParts = m_Sentence.iNext = 0;
+	m_iName = -1;
 	s_AllChatter.AddToTail( this );
 }
 
@@ -256,11 +316,40 @@ void CGermanChatter::Init( CAI_BaseNPC *pOwner, const char *pszSquad )
 		Q_snprintf( m_szSquad, sizeof( m_szSquad ), "#solo%d", pOwner ? pOwner->entindex() : 0 );
 	SquadChat_t &sq = GetSquadChat( m_szSquad );
 	m_iVoice = s_iVoices[ ( sq.nVoices++ ) % GERMAN_CHATTER_VOICES ];
+	// a surname nobody else in his squad has (a new squad starts at a random one)
+	if ( m_iName < 0 || sq.abNameUsed[m_iName] )
+	{
+		int nNames = ARRAYSIZE( s_pszNames );
+		int iStart = random->RandomInt( 0, nNames - 1 );
+		m_iName = iStart;
+		for ( int k = 0; k < nNames; k++ )
+		{
+			int i = ( iStart + k ) % nNames;
+			if ( !sq.abNameUsed[i] )
+			{
+				m_iName = i;
+				break;
+			}
+		}
+	}
+	sq.abNameUsed[m_iName] = true;
+}
+
+const char *CGermanChatter::GetName( void ) const
+{
+	static char s_sz[4][32];
+	static int s_i = 0;
+	if ( m_iName < 0 || m_iName >= (int)ARRAYSIZE( s_pszNames ) )
+		return "";
+	char *psz = s_sz[ ( s_i++ ) & 3 ];
+	Q_strncpy( psz, s_pszNames[m_iName] + 5, 32 );		// past "name_"
+	psz[0] = (char)toupper( (unsigned char)psz[0] );
+	return psz;
 }
 
 bool CGermanChatter::IsSpeaking( void ) const
 {
-	return gpGlobals->curtime < m_flSpeakingUntil;
+	return m_Sentence.bActive || gpGlobals->curtime < m_flSpeakingUntil;
 }
 
 void CGermanChatter::OnDeath( void )
@@ -271,6 +360,8 @@ void CGermanChatter::OnDeath( void )
 	if ( m_Pending.bActive )
 		Drop( m_Pending.eEvent, CHATDROP_CUT );
 	m_Pending.bActive = false;
+	if ( m_Sentence.bActive )
+		EndSentence( "killed" );
 	// let the squad talk again straight away
 	SquadChat_t &sq = GetSquadChat( m_szSquad );
 	if ( sq.flSpeakingUntil > gpGlobals->curtime && m_flSpeakingUntil >= sq.flSpeakingUntil )
@@ -300,6 +391,8 @@ void CGermanChatter::PlayPain( void )
 	if ( m_Pending.bActive )
 		Drop( m_Pending.eEvent, CHATDROP_CUT );
 	m_Pending.bActive = false;		// a man who's just been hit doesn't finish his sentence
+	if ( m_Sentence.bActive )
+		EndSentence( "hit" );
 	char szSound[64];
 	Q_snprintf( szSound, sizeof( szSound ), "GermanVoice.%c.pain", s_cCrySpeaker[ VoiceSlot( m_iVoice ) ] );
 	float flDuration = 0.0f;
@@ -331,7 +424,7 @@ void CGermanChatter::Drop( ChatEvent_t eEvent, ChatDrop_t eWhy, float flDetail )
 		char szDetail[32] = "";
 		if ( flDetail > 0.0f )
 			Q_snprintf( szDetail, sizeof( szDetail ), " (%.1f s)", flDetail );
-		ChatLog( "soldier %d (voice %d, %s) NOT SAID %s \"%s\" - %s%s", pOwner ? pOwner->entindex() : 0, m_iVoice, m_szSquad,
+		ChatLog( "soldier %d %s (voice %d, %s) NOT SAID %s \"%s\" - %s%s", pOwner ? pOwner->entindex() : 0, GetName(), m_iVoice, m_szSquad,
 				 s_ChatDefs[eEvent].pszCategory, s_ChatDefs[eEvent].pszMeaning, s_pszDropNames[eWhy], szDetail );
 	}
 	if ( npc_german_debug.GetBool() )
@@ -352,7 +445,7 @@ bool CGermanChatter::CanSay( ChatEvent_t eEvent ) const
 		return false;
 	const ChatDef_t &def = s_ChatDefs[eEvent];
 	float now = gpGlobals->curtime;
-	if ( now < m_flNextGroup[def.eGroup] )
+	if ( now < m_flNextGroup[def.eGroup] || m_Sentence.bActive )
 		return false;
 	return !( m_Pending.bActive && now < m_Pending.flExpire && m_Pending.flPriority > def.flPriority );
 }
@@ -412,35 +505,28 @@ void CGermanChatter::Request( ChatEvent_t eEvent, const char *pszModifier, CBase
 	m_Pending.flPriority = def.flPriority;
 }
 
-bool CGermanChatter::BuildSoundName( const Pending_t &p, char *pszOut, int nOut )
-{
-	const ChatDef_t &def = s_ChatDefs[p.eEvent];
-	char szCategory[64];
-	if ( p.eEvent == CHAT_ORDER_COVER )
-		Q_snprintf( szCategory, sizeof( szCategory ), "order_cover_%s", p.szModifier[0] ? p.szModifier : "generic" );
-	else if ( p.eEvent == CHAT_ACK_YES && random->RandomInt( 0, 1 ) )
-		Q_strncpy( szCategory, "response_ack_norank_yes", sizeof( szCategory ) );
-	else
-		Q_strncpy( szCategory, def.pszCategory, sizeof( szCategory ) );
-
-	Q_snprintf( pszOut, nOut, "GermanChatter.v%d.%s.%s", m_iVoice, szCategory, s_szNation );
-	if ( soundemitterbase->IsValidIndex( soundemitterbase->GetSoundIndex( pszOut ) ) )
-		return true;
-	if ( p.eEvent == CHAT_ORDER_COVER )
-	{
-		// no line for that landmark in this voice: the generic "take cover"
-		Q_snprintf( pszOut, nOut, "GermanChatter.v%d.order_cover_generic.%s", m_iVoice, s_szNation );
-		return soundemitterbase->IsValidIndex( soundemitterbase->GetSoundIndex( pszOut ) );
-	}
-	return false;
-}
-
 void CGermanChatter::Update( void )
 {
-	if ( !m_Pending.bActive )
-		return;
 	CBaseAnimating *pOwner = dynamic_cast<CBaseAnimating *>( m_hOwner.Get() );
 	float now = gpGlobals->curtime;
+
+	// A sentence under way: the next part when the last one has finished
+	if ( m_Sentence.bActive )
+	{
+		if ( !pOwner || !pOwner->IsAlive() )
+			EndSentence( "killed" );
+		else if ( now >= m_Sentence.flNextAt )
+		{
+			if ( !PlaySentencePart() )
+				EndSentence( "the man it was for, or the enemy, is gone" );
+			else if ( m_Sentence.iNext >= m_Sentence.nParts )
+				EndSentence( NULL );
+		}
+		return;
+	}
+
+	if ( !m_Pending.bActive )
+		return;
 	if ( !pOwner || !pOwner->IsAlive() || now > m_Pending.flExpire )
 	{
 		m_Pending.bActive = false;	// stale: the moment passed
@@ -455,22 +541,27 @@ void CGermanChatter::Update( void )
 
 	Pending_t p = m_Pending;
 	m_Pending.bActive = false;
-	char szSound[128];
-	if ( !BuildSoundName( p, szSound, sizeof( szSound ) ) )
+	bool bNamed = false;
+	int nParts = BuildSentence( p, m_Sentence.parts, bNamed );
+	if ( nParts <= 0 )
 	{
 		Drop( p.eEvent, CHATDROP_NO_LINE );
-		if ( npc_german_debug.GetBool() )
-			Msg( "[%.2f] npc_german_soldier %d: chatter - no sound %s (is %s loaded?)\n", now, pOwner->entindex(), szSound, CHATTER_SCRIPT );
 		return;
 	}
-	s_nSaid[p.eEvent]++;
+	m_Sentence.bActive = true;
+	m_Sentence.eEvent = p.eEvent;
+	m_Sentence.nParts = nParts;
+	m_Sentence.iNext = 0;
+	m_Sentence.flNextAt = now;
+	m_Sentence.flLastDuration = 0.0f;
+	m_Sentence.bNamed = bNamed;
+	m_Sentence.hTarget = p.hTarget;
+	CAI_BaseNPC *pNPC = pOwner->MyNPCPointer();
+	m_Sentence.hEnemy = pNPC ? pNPC->GetEnemy() : NULL;
+	Q_strncpy( m_Sentence.szNote, p.szNote, sizeof( m_Sentence.szNote ) );
 
-	float flDuration = 0.0f;
-	pOwner->EmitSound( szSound, 0.0f, &flDuration );
-	if ( flDuration <= 0.0f )
-		flDuration = 1.5f;
+	s_nSaid[p.eEvent]++;
 	const ChatDef_t &def = s_ChatDefs[p.eEvent];
-	m_flSpeakingUntil = sq.flSpeakingUntil = now + flDuration + 0.2f;
 	m_flNextGroup[def.eGroup] = now + s_flSelfWait[def.eGroup] / s_flFrequency;
 	sq.flNextGroup[def.eGroup] = now + s_flSquadWait[def.eGroup] / s_flFrequency;
 	if ( p.eEvent == CHAT_CASUALTY )
@@ -478,42 +569,97 @@ void CGermanChatter::Update( void )
 	if ( p.eEvent == CHAT_RELOADING || p.eEvent == CHAT_RELOADING_COVERME )
 		sq.flNextReload = now + 20.0f / s_flFrequency;
 
-	CBaseEntity *pTarget = p.hTarget.Get();
-	{
-		// what was said, in English; for cover orders which landmark (and whether this voice had a line for it)
-		char szMeaning[160];
-		if ( p.eEvent == CHAT_ORDER_COVER )
-		{
-			bool bGeneric = Q_stristr( szSound, "order_cover_generic" ) != NULL;
-			if ( !p.szModifier[0] )
-				Q_snprintf( szMeaning, sizeof( szMeaning ), "take cover! (no landmark recognised: %s)", p.szNote[0] ? p.szNote : "?" );
-			else if ( bGeneric )
-				Q_snprintf( szMeaning, sizeof( szMeaning ), "take cover! (landmark '%s' has no line - generic)", p.szModifier );
-			else
-				Q_snprintf( szMeaning, sizeof( szMeaning ), "take cover - behind the %s!", p.szModifier );
-		}
-		else
-			Q_strncpy( szMeaning, s_ChatDefs[p.eEvent].pszMeaning, sizeof( szMeaning ) );
-		char szTo[48] = "";
-		if ( pTarget )
-			Q_snprintf( szTo, sizeof( szTo ), " -> to %s %d", pTarget->IsPlayer() ? "the player" : "soldier", pTarget->entindex() );
-		ChatLog( "soldier %d (voice %d, %s) SAID %s \"%s\"%s", pOwner->entindex(), m_iVoice, m_szSquad, szSound, szMeaning, szTo );
-	}
-	if ( npc_german_debug.GetBool() )
-		Msg( "[%.2f] npc_german_soldier %d (voice %d) says: %s%s%s\n", now, pOwner->entindex(), m_iVoice, szSound,
-			 pTarget ? " -> to " : "", pTarget ? pTarget->GetDebugName() : "" );
+	if ( !PlaySentencePart() )
+		EndSentence( "the man it was for, or the enemy, is gone" );
+	else if ( m_Sentence.iNext >= m_Sentence.nParts )
+		EndSentence( NULL );
+}
 
-	// The man an order was given to answers it.
-	CGermanChatter *pAnswer = ForEntity( pTarget );
-	if ( pAnswer && pAnswer != this )
+// One part of the sentence, after checking it still makes sense. Keeps the squad's one-speaker lock
+// past the gap to the next part, so nobody talks over him mid-sentence.
+bool CGermanChatter::PlaySentencePart( void )
+{
+	CBaseEntity *pOwner = m_hOwner.Get();
+	if ( !pOwner || m_Sentence.iNext >= m_Sentence.nParts )
+		return false;
+	const ChatPart_t &part = m_Sentence.parts[m_Sentence.iNext];
+	CBaseEntity *pTarget = m_Sentence.hTarget.Get();
+	CBaseEntity *pEnemy = m_Sentence.hEnemy.Get();
+	if ( part.eCheck == PARTCHECK_TARGET && ( !pTarget || !pTarget->IsAlive() ) )
+		return false;
+	if ( part.eCheck == PARTCHECK_ENEMY && ( !pEnemy || !pEnemy->IsAlive() ) )
+		return false;
+	char szSound[128];
+	Q_snprintf( szSound, sizeof( szSound ), "GermanChatter.v%d.%s.%s", m_iVoice, part.szCategory, s_szNation );
+	float flDuration = 0.0f;
+	pOwner->EmitSound( szSound, 0.0f, &flDuration );
+	if ( flDuration <= 0.0f )
+		flDuration = 1.0f;
+	float now = gpGlobals->curtime;
+	SquadChat_t &sq = GetSquadChat( m_szSquad );
+	m_flSpeakingUntil = sq.flSpeakingUntil = now + flDuration + 0.2f;
+	m_Sentence.flLastDuration = flDuration;
+	m_Sentence.flNextAt = now + flDuration + CHAT_PART_GAP;
+	m_Sentence.iNext++;
+	if ( npc_german_debug.GetBool() )
+		Msg( "[%.2f] npc_german_soldier %d (voice %d) says: %s\n", now, pOwner->entindex(), m_iVoice, szSound );
+	return true;
+}
+
+// The sentence is over - said in full (pszCut NULL) or cut short. One log line with every part said,
+// and the man it was said to answers (only a sentence said in full).
+void CGermanChatter::EndSentence( const char *pszCut )
+{
+	if ( !m_Sentence.bActive )
+		return;
+	m_Sentence.bActive = false;
+	CBaseEntity *pOwner = m_hOwner.Get();
+	CBaseEntity *pTarget = m_Sentence.hTarget.Get();
+	ChatEvent_t eEvent = m_Sentence.eEvent;
+
+	char szKinds[256] = "", szMeaning[320] = "";
+	for ( int i = 0; i < m_Sentence.iNext; i++ )
 	{
-		if ( p.eEvent == CHAT_ORDER_COVER || p.eEvent == CHAT_ORDER_FORWARD || p.eEvent == CHAT_ORDER_FLANK ||
-			 p.eEvent == CHAT_ORDER_FLANK_LEFT || p.eEvent == CHAT_ORDER_FLANK_RIGHT || p.eEvent == CHAT_ORDER_SUPPRESS ||
-			 p.eEvent == CHAT_ORDER_BACK )
-			pAnswer->Request( CHAT_ACK_YES, NULL, pOwner, flDuration + 0.3f );
-		else if ( p.eEvent == CHAT_RELOADING_COVERME )
-			pAnswer->Request( CHAT_ACK_COVERING, NULL, pOwner, flDuration + 0.3f );
+		if ( i )
+		{
+			Q_strncat( szKinds, " + ", sizeof( szKinds ) );
+			Q_strncat( szMeaning, " ", sizeof( szMeaning ) );
+		}
+		Q_strncat( szKinds, m_Sentence.parts[i].szCategory, sizeof( szKinds ) );
+		Q_strncat( szMeaning, m_Sentence.parts[i].szMeaning, sizeof( szMeaning ) );
 	}
+	if ( eEvent == CHAT_ORDER_COVER && m_Sentence.szNote[0] )
+	{
+		Q_strncat( szMeaning, " (no landmark recognised: ", sizeof( szMeaning ) );
+		Q_strncat( szMeaning, m_Sentence.szNote, sizeof( szMeaning ) );
+		Q_strncat( szMeaning, ")", sizeof( szMeaning ) );
+	}
+	char szTo[64] = "";
+	if ( pTarget )
+	{
+		CGermanChatter *pTo = ForEntity( pTarget );
+		Q_snprintf( szTo, sizeof( szTo ), " -> to %s %d %s", pTarget->IsPlayer() ? "the player" : "soldier", pTarget->entindex(),
+					pTo ? pTo->GetName() : "" );
+	}
+	char szCut[96] = "";
+	if ( pszCut )
+		Q_snprintf( szCut, sizeof( szCut ), " [cut after %d of %d parts: %s]", m_Sentence.iNext, m_Sentence.nParts, pszCut );
+	ChatLog( "soldier %d %s (voice %d, %s) SAID %s \"%s\"%s%s", pOwner ? pOwner->entindex() : 0, GetName(), m_iVoice, m_szSquad,
+			 szKinds, szMeaning, szTo, szCut );
+	if ( pszCut || !pOwner )
+		return;
+
+	// The man an order (or a named call) was given to answers it.
+	CGermanChatter *pAnswer = ForEntity( pTarget );
+	if ( !pAnswer || pAnswer == this )
+		return;
+	float flDelay = m_Sentence.flLastDuration + 0.3f;
+	if ( eEvent == CHAT_ORDER_COVER || eEvent == CHAT_ORDER_FORWARD || eEvent == CHAT_ORDER_FLANK ||
+		 eEvent == CHAT_ORDER_FLANK_LEFT || eEvent == CHAT_ORDER_FLANK_RIGHT || eEvent == CHAT_ORDER_SUPPRESS ||
+		 eEvent == CHAT_ORDER_BACK || ( m_Sentence.bNamed && ( eEvent == CHAT_THREAT || eEvent == CHAT_THREAT_EXPOSED ) ) )
+		pAnswer->Request( CHAT_ACK_YES, NULL, pOwner, flDelay );
+	else if ( eEvent == CHAT_RELOADING_COVERME )
+		pAnswer->Request( CHAT_ACK_COVERING, NULL, pOwner, flDelay );
 }
 
 //-----------------------------------------------------------------------------
@@ -622,6 +768,24 @@ void CGermanChatter::LevelPrecache( void )
 			return;
 		}
 		CheckChatterSounds();		// once per map: the script was just loaded
+		// C2: sentences can use any line kind of the enemy nation (names, floors, landmarks, compass):
+		// precache them all, once per map (the override script is dropped at level end, so this runs
+		// again on the next map)
+		int nAll = 0;
+		for ( int i = soundemitterbase->First(); i != soundemitterbase->InvalidIndex(); i = soundemitterbase->Next( i ) )
+		{
+			const char *pszName = soundemitterbase->GetSoundName( i );
+			if ( !pszName || Q_strnicmp( pszName, "GermanChatter.", 14 ) )
+				continue;
+			const char *pszDot = Q_strrchr( pszName, '.' );
+			if ( pszDot && !Q_stricmp( pszDot + 1, s_szNation ) )
+			{
+				CBaseEntity::PrecacheScriptSound( pszName );
+				nAll++;
+			}
+		}
+		if ( npc_german_debug.GetBool() )
+			Msg( "npc_german_soldier: battle chatter - %d line kinds precached for sentences\n", nAll );
 	}
 
 	int nPrecached = 0;
@@ -793,6 +957,9 @@ static const LandmarkRule_t s_LandmarkRules[] =
 	{ "gunbarrel", "", LM_PREFIX },		{ "chimney", "", LM_PREFIX },	{ "roof", "", LM_PREFIX },
 	{ "gutter", "", LM_PREFIX },		{ "light", "", LM_PREFIX },		{ "lamp", "", LM_PREFIX },
 	{ "sign", "", LM_PREFIX },
+
+	// building fronts (C2: the second chatter log's storefront3 had no rule)
+	{ "storefront", "house", LM_PREFIX },		{ "facade", "house", LM_PREFIX },	{ "shopfront", "house", LM_PREFIX },
 
 	// vehicles (specific before general: "flatbed" before "train", "kubel" before "car")
 	{ "boxcar", "boxcar", LM_PREFIX },			{ "flatbed", "flatbed", LM_PREFIX },
@@ -1041,4 +1208,334 @@ CON_COMMAND( npc_german_landmark, "What a German soldier at your position would 
 	Vector vecSpot = pPlayer->GetAbsOrigin();
 	const char *psz = GermanChatter_LandmarkAt( vecSpot, vecSpot + vecForward * 1000.0f, pPlayer, NULL );
 	Msg( "landmark: %s\n", psz ? psz : "(generic)" );
+}
+
+//=============================================================================
+// C2 - sentences: where the enemy is, and what a soldier says in one breath
+//=============================================================================
+static bool LineExists( int iVoice, const char *pszCategory )
+{
+	char sz[128];
+	Q_snprintf( sz, sizeof( sz ), "GermanChatter.v%d.%s.%s", iVoice, pszCategory, s_szNation );
+	return SoundExists( sz );
+}
+
+static void SetPart( ChatPart_t &part, const char *pszCategory, const char *pszMeaning, int eCheck )
+{
+	Q_strncpy( part.szCategory, pszCategory, sizeof( part.szCategory ) );
+	Q_strncpy( part.szMeaning, pszMeaning, sizeof( part.szMeaning ) );
+	part.eCheck = eCheck;
+}
+
+// Under a roof: solid (not sky) within 400 units straight up
+static bool UnderRoof( const Vector &vecFrom, CBaseEntity *pIgnore )
+{
+	trace_t tr;
+	UTIL_TraceLine( vecFrom, vecFrom + Vector( 0, 0, 400 ), MASK_SOLID_BRUSHONLY, pIgnore, COLLISION_GROUP_NONE, &tr );
+	return tr.fraction < 1.0f && !( tr.surface.flags & SURF_SKY );
+}
+
+// The voice set's word for one of our landmark names (landmark_behind_/landmark_near_ spell a few differently)
+static const char *LandmarkSetWord( const char *pszLandmark )
+{
+	if ( !Q_stricmp( pszLandmark, "tree" ) )
+		return "trees";
+	if ( !Q_stricmp( pszLandmark, "kubelwagon" ) )
+		return "kubelwagen";
+	return pszLandmark;
+}
+
+// The nearest recognised thing within 200 units of vecPos: a mapper's volume, a static prop, a prop entity
+static const char *LandmarkNear( const Vector &vecPos, CBaseEntity *pIgnore )
+{
+	for ( CBaseEntity *pEnt = gEntList.FindEntityByClassname( NULL, "trigger_german_landmark" ); pEnt;
+		  pEnt = gEntList.FindEntityByClassname( pEnt, "trigger_german_landmark" ) )
+	{
+		CGermanLandmark *pLandmark = static_cast<CGermanLandmark *>( pEnt );
+		if ( pLandmark->m_iszLandmark != NULL_STRING && pEnt->CollisionProp()->IsPointInBounds( vecPos + Vector( 0, 0, 8 ) ) )
+			return STRING( pLandmark->m_iszLandmark );
+	}
+	const float flRange = 200.0f;
+	const char *pszBest = NULL;
+	float flBest = flRange * flRange;
+	CUtlVector<ICollideable *> props;
+	staticpropmgr->GetAllStaticPropsInAABB( vecPos - Vector( flRange, flRange, 64 ), vecPos + Vector( flRange, flRange, 128 ), &props );
+	for ( int i = 0; i < props.Count(); i++ )
+	{
+		const model_t *pModel = props[i] ? props[i]->GetCollisionModel() : NULL;
+		const char *pszModel = pModel ? modelinfo->GetModelName( pModel ) : NULL;
+		const char *psz = pszModel ? LandmarkFromModel( pszModel ) : NULL;
+		float flDist = psz ? ( props[i]->GetCollisionOrigin() - vecPos ).Length2DSqr() : FLT_MAX;
+		if ( psz && flDist < flBest )
+		{
+			flBest = flDist;
+			pszBest = psz;
+		}
+	}
+	CBaseEntity *apList[64];
+	int nEnts = UTIL_EntitiesInSphere( apList, ARRAYSIZE( apList ), vecPos, flRange, 0 );
+	for ( int i = 0; i < nEnts; i++ )
+	{
+		CBaseEntity *pEnt = apList[i];
+		if ( !pEnt || pEnt == pIgnore || pEnt->IsPlayer() || pEnt->MyNPCPointer() )
+			continue;
+		const char *pszModel = STRING( pEnt->GetModelName() );
+		if ( !pszModel || !pszModel[0] || pszModel[0] == '*' )
+			continue;
+		const char *psz = LandmarkFromModel( pszModel );
+		float flDist = psz ? ( pEnt->WorldSpaceCenter() - vecPos ).Length2DSqr() : FLT_MAX;
+		if ( psz && flDist < flBest )
+		{
+			flBest = flDist;
+			pszBest = psz;
+		}
+	}
+	return pszBest;
+}
+
+// Where the enemy is, as the speaker sees him - one part, the first of these that fits:
+//  1. a building: in it (under a roof) seen from outside or from another level -> its floor and the opening
+//     (a window if there's wall below him toward us, a doorway if not); high up in the open -> a balcony
+//     (a wall right behind him) or the roof
+//  2. behind something we have a word for ("behind the barrels") - the cover between him and us
+//  3. near something we have a word for, within 200 units
+//  4. the compass
+// *pbWindow: at a window (the full call then ends "fire at the window!").
+static bool EnemyLocation( int iVoice, CBaseEntity *pSpeaker, CBaseEntity *pEnemy, ChatPart_t &part, bool *pbWindow )
+{
+	*pbWindow = false;
+	Vector vecFeet = pEnemy->GetAbsOrigin();
+	Vector vecEye = pEnemy->EyePosition();
+	Vector vecSpk = pSpeaker->EyePosition();
+	float flDZ = vecFeet.z - pSpeaker->GetAbsOrigin().z;
+	Vector vecToSpk = vecSpk - vecEye;
+	vecToSpk.z = 0.0f;
+	if ( VectorNormalize( vecToSpk ) < 1.0f )
+		vecToSpk = Vector( 1, 0, 0 );
+
+	// 1. a building
+	bool bEnemyRoof = UnderRoof( vecEye, pEnemy );
+	bool bSpeakerRoof = UnderRoof( vecSpk, pSpeaker );
+	trace_t trGround;
+	UTIL_TraceLine( vecFeet + Vector( 0, 0, 8 ), vecFeet - Vector( 0, 0, 32 ), MASK_SOLID_BRUSHONLY, pEnemy, COLLISION_GROUP_NONE, &trGround );
+	bool bOnTerrain = trGround.fraction < 1.0f && trGround.IsDispSurface();
+	if ( ( bEnemyRoof && ( !bSpeakerRoof || fabs( flDZ ) > 96.0f ) ) || ( !bEnemyRoof && !bOnTerrain && flDZ > 96.0f ) )
+	{
+		int iFloor = flDZ < -64.0f ? FLOOR_BASEMENT : flDZ < 80.0f ? FLOOR_GROUND : flDZ < 210.0f ? FLOOR_SECOND : flDZ < 340.0f ? FLOOR_THIRD : FLOOR_TOP;
+		int iKind = LOCKIND_GENERIC;
+		const char *pszCategory = NULL;
+		trace_t tr;
+		if ( !bEnemyRoof )
+		{
+			UTIL_TraceLine( vecEye, vecEye - vecToSpk * 72.0f, MASK_SOLID_BRUSHONLY, pEnemy, COLLISION_GROUP_NONE, &tr );
+			if ( tr.fraction < 1.0f && s_pszLocations[iFloor][LOCKIND_BALCONY] )
+			{
+				iKind = LOCKIND_BALCONY;
+				pszCategory = s_pszLocations[iFloor][iKind];
+			}
+			else if ( LineExists( iVoice, s_pszRoof ) )
+			{
+				SetPart( part, s_pszRoof, "on the roof!", PARTCHECK_ENEMY );
+				return true;
+			}
+		}
+		else
+		{
+			Vector vecKnee = vecFeet + Vector( 0, 0, 16 );
+			UTIL_TraceLine( vecKnee, vecKnee + vecToSpk * 64.0f, MASK_SOLID_BRUSHONLY, pEnemy, COLLISION_GROUP_NONE, &tr );
+			iKind = tr.fraction < 1.0f ? LOCKIND_WINDOW : LOCKIND_DOORWAY;
+			pszCategory = s_pszLocations[iFloor][iKind];
+		}
+		if ( !pszCategory || !LineExists( iVoice, pszCategory ) )
+		{
+			iKind = LOCKIND_GENERIC;
+			pszCategory = s_pszLocations[iFloor][LOCKIND_GENERIC];
+		}
+		if ( pszCategory && LineExists( iVoice, pszCategory ) )
+		{
+			char szMeaning[64];
+			Q_snprintf( szMeaning, sizeof( szMeaning ), "%s%s!", s_pszFloorWords[iFloor], s_pszKindWords[iKind] );
+			SetPart( part, pszCategory, szMeaning, PARTCHECK_ENEMY );
+			*pbWindow = ( iKind == LOCKIND_WINDOW );
+			return true;
+		}
+	}
+
+	// 2. behind something, 3. near something
+	char szCategory[64], szMeaning[64];
+	const char *pszBehind = GermanChatter_LandmarkAt( vecFeet, vecSpk, pEnemy, pSpeaker );
+	if ( pszBehind )
+	{
+		Q_snprintf( szCategory, sizeof( szCategory ), "landmark_behind_%s", LandmarkSetWord( pszBehind ) );
+		if ( LineExists( iVoice, szCategory ) )
+		{
+			Q_snprintf( szMeaning, sizeof( szMeaning ), "behind the %s!", pszBehind );
+			SetPart( part, szCategory, szMeaning, PARTCHECK_ENEMY );
+			return true;
+		}
+	}
+	const char *pszNear = LandmarkNear( vecFeet, pEnemy );
+	if ( pszNear )
+	{
+		Q_snprintf( szCategory, sizeof( szCategory ), "landmark_near_%s", LandmarkSetWord( pszNear ) );
+		if ( LineExists( iVoice, szCategory ) )
+		{
+			Q_snprintf( szMeaning, sizeof( szMeaning ), "near the %s!", pszNear );
+			SetPart( part, szCategory, szMeaning, PARTCHECK_ENEMY );
+			return true;
+		}
+	}
+
+	// 4. the compass
+	Vector vecDir = vecFeet - pSpeaker->GetAbsOrigin();
+	float flYaw = RAD2DEG( atan2f( vecDir.y, vecDir.x ) );
+	int iSector = ( (int)floorf( ( flYaw + 22.5f ) / 45.0f ) % 8 + 8 ) % 8;
+	if ( LineExists( iVoice, s_pszCompass[iSector] ) )
+	{
+		Q_snprintf( szMeaning, sizeof( szMeaning ), "to the %s!", s_pszCompassWords[iSector] );
+		SetPart( part, s_pszCompass[iSector], szMeaning, PARTCHECK_ENEMY );
+		return true;
+	}
+	return false;
+}
+
+int CGermanChatter::BuildSentence( const Pending_t &p, ChatPart_t *pParts, bool &bNamed )
+{
+	bNamed = false;
+	int n = 0;
+	CBaseEntity *pOwner = m_hOwner.Get();
+	if ( !pOwner )
+		return 0;
+	CBaseEntity *pTarget = p.hTarget.Get();
+	CGermanChatter *pTo = ( pTarget && pTarget != pOwner ) ? ForEntity( pTarget ) : NULL;
+	bool bToNamed = pTo && pTo->m_iName >= 0 && pTo->m_iName < (int)ARRAYSIZE( s_pszNames ) && LineExists( m_iVoice, s_pszNames[pTo->m_iName] );
+	const ChatDef_t &def = s_ChatDefs[p.eEvent];
+	char szMeaning[64];
+
+	switch ( p.eEvent )
+	{
+	case CHAT_THREAT:
+	case CHAT_THREAT_EXPOSED:
+	{
+		// THREAT + LOCATION; the full call (NAME + THREAT + LOCATION + ORDER) on first contact or when the
+		// enemy is somewhere new (300 units from the last full call, or 20 s since)
+		CAI_BaseNPC *pNPC = pOwner->MyNPCPointer();
+		CBaseEntity *pEnemy = pNPC ? pNPC->GetEnemy() : NULL;
+		ChatPart_t loc;
+		memset( &loc, 0, sizeof( loc ) );
+		bool bWindow = false;
+		bool bLoc = pEnemy && EnemyLocation( m_iVoice, pOwner, pEnemy, loc, &bWindow );
+		SquadChat_t &sq = GetSquadChat( m_szSquad );
+		float now = gpGlobals->curtime;
+		bool bFresh = pEnemy && ( sq.flLastFull <= 0.0f || now - sq.flLastFull > 20.0f || ( pEnemy->GetAbsOrigin() - sq.vecLastFull ).Length() > 300.0f );
+		bool bFull = bFresh && bLoc && bToNamed;
+		if ( bFresh && bLoc )
+		{
+			sq.vecLastFull = pEnemy->GetAbsOrigin();
+			sq.flLastFull = now;
+		}
+		if ( bFull )
+		{
+			Q_snprintf( szMeaning, sizeof( szMeaning ), "%s!", pTo->GetName() );
+			SetPart( pParts[n++], s_pszNames[pTo->m_iName], szMeaning, PARTCHECK_TARGET );
+			bNamed = true;
+		}
+		if ( !LineExists( m_iVoice, def.pszCategory ) )
+			return 0;
+		SetPart( pParts[n++], def.pszCategory, def.pszMeaning, PARTCHECK_NONE );
+		if ( bLoc )
+			pParts[n++] = loc;
+		if ( bFull )
+		{
+			const char *pszOrder = bWindow && LineExists( m_iVoice, s_pszAttackWindow ) ? s_pszAttackWindow : "order_attack_infantry";
+			SetPart( pParts[n++], pszOrder, bWindow ? "fire at the window!" : "attack!", PARTCHECK_TARGET );
+		}
+		return n;
+	}
+
+	case CHAT_ORDER_COVER:
+	case CHAT_ORDER_FORWARD:
+	case CHAT_ORDER_FLANK:
+	case CHAT_ORDER_FLANK_LEFT:
+	case CHAT_ORDER_FLANK_RIGHT:
+	case CHAT_ORDER_SUPPRESS:
+	case CHAT_ORDER_BACK:
+	{
+		// NAME + ORDER (three times in four: a squad doesn't name every order)
+		char szCategory[64];
+		if ( p.eEvent == CHAT_ORDER_COVER )
+		{
+			Q_snprintf( szCategory, sizeof( szCategory ), "order_cover_%s", p.szModifier[0] ? p.szModifier : "generic" );
+			if ( p.szModifier[0] && LineExists( m_iVoice, szCategory ) )
+				Q_snprintf( szMeaning, sizeof( szMeaning ), "take cover - behind the %s!", p.szModifier );
+			else
+			{
+				Q_strncpy( szCategory, "order_cover_generic", sizeof( szCategory ) );
+				Q_strncpy( szMeaning, "take cover!", sizeof( szMeaning ) );
+			}
+		}
+		else
+		{
+			Q_strncpy( szCategory, def.pszCategory, sizeof( szCategory ) );
+			Q_strncpy( szMeaning, def.pszMeaning, sizeof( szMeaning ) );
+		}
+		if ( !LineExists( m_iVoice, szCategory ) )
+			return 0;
+		if ( bToNamed && random->RandomFloat( 0.0f, 1.0f ) < 0.75f )
+		{
+			char szName[32];
+			Q_snprintf( szName, sizeof( szName ), "%s!", pTo->GetName() );
+			SetPart( pParts[n++], s_pszNames[pTo->m_iName], szName, PARTCHECK_TARGET );
+			bNamed = true;
+		}
+		SetPart( pParts[n++], szCategory, szMeaning, bNamed ? PARTCHECK_TARGET : PARTCHECK_NONE );
+		return n;
+	}
+
+	default:
+	{
+		const char *pszCategory = def.pszCategory;
+		if ( p.eEvent == CHAT_ACK_YES && random->RandomInt( 0, 1 ) && LineExists( m_iVoice, "response_ack_norank_yes" ) )
+			pszCategory = "response_ack_norank_yes";
+		if ( !LineExists( m_iVoice, pszCategory ) )
+			return 0;
+		SetPart( pParts[n++], pszCategory, def.pszMeaning, PARTCHECK_NONE );
+		break;
+	}
+	}
+	return n;
+}
+
+// Stand somewhere and hear (well, read) how the nearest German soldier would say where you are.
+CON_COMMAND( npc_german_callout, "Where the nearest German soldier would say you are (the location part of his threat call)." )
+{
+	CBasePlayer *pPlayer = UTIL_GetCommandClient();
+	if ( !pPlayer )
+		return;
+	CBaseEntity *pBest = NULL;
+	float flBest = FLT_MAX;
+	for ( CBaseEntity *pEnt = gEntList.FindEntityByClassname( NULL, "npc_german_soldier" ); pEnt;
+		  pEnt = gEntList.FindEntityByClassname( pEnt, "npc_german_soldier" ) )
+	{
+		float flDist = ( pEnt->GetAbsOrigin() - pPlayer->GetAbsOrigin() ).LengthSqr();
+		if ( pEnt->IsAlive() && flDist < flBest )
+		{
+			flBest = flDist;
+			pBest = pEnt;
+		}
+	}
+	CGermanChatter *pChatter = CGermanChatter::ForEntity( pBest );
+	if ( !pChatter )
+	{
+		Msg( "npc_german_callout: no live German soldier on the map\n" );
+		return;
+	}
+	ChatPart_t part;
+	memset( &part, 0, sizeof( part ) );
+	bool bWindow = false;
+	if ( EnemyLocation( pChatter->GetVoice(), pBest, pPlayer, part, &bWindow ) )
+		Msg( "npc_german_callout: soldier %d %s, %.0f units away, would say: %s \"%s\"%s\n", pBest->entindex(), pChatter->GetName(),
+			 sqrtf( flBest ), part.szCategory, part.szMeaning, bWindow ? " (then: fire at the window!)" : "" );
+	else
+		Msg( "npc_german_callout: soldier %d %s has no words for where you are\n", pBest->entindex(), pChatter->GetName() );
 }

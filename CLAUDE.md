@@ -509,6 +509,25 @@ If you learn something like this, add it here in the same commit as the fix.
   units at hip height 4 (open ground / corner spots - generic is right), static props with no rule: railing01 (not
   cover; no fence line in order_cover), piano (no line), props_exteriors/storefront3 (-> "house" in C2: storefront /
   facade / shop words = a building front).
+  **C2 BUILT 2026-11-19 (sentences).** One owner: CGermanChatter::BuildSentence picks the parts (<= CHAT_MAX_PARTS 4),
+  PlaySentencePart plays them back to back in ONE voice (gap CHAT_PART_GAP 0.12 s; the squad's one-speaker lock is held
+  through the gaps), EndSentence logs ONE line with every part + meaning and has the named man answer. Each part is
+  checked again before it plays (PARTCHECK_TARGET: the named man alive; PARTCHECK_ENEMY); a hit/death cuts the rest
+  (`[cut after k of n parts: ...]` in the log). Forms: orders = NAME + ORDER (3 in 4 named); threats = THREAT +
+  LOCATION, and the full call NAME + THREAT + LOCATION + ORDER (order_attack_window "fire at the window!" when he's at a
+  window, else order_attack_infantry) on first contact / enemy 300+ units from the squad's last full call / 20 s since;
+  the addressee = nearest squadmate free to answer (NearestSquadmate eCanSay CHAT_ACK_YES); the old separate "Angriff!"
+  follow-up is gone (it's the last part now). Names: every soldier gets a surname from the set's 69 (s_pszNames,
+  unique in the squad, random start; re-picked after a save load). Location (EnemyLocation, as the SPEAKER sees him):
+  1 building - enemy under a roof seen from outside/another level, or high (>96 units) in the open not on terrain:
+  floor by height above the speaker (<-64 basement, <80 ground = the set's "firstfloor", <210 second, <340 third, else
+  top), window if wall below him toward us (16 units up, 64 out), else doorway; in the open high up = balcony (wall
+  72 units behind him) or roof; 2 behind a landmark (GermanChatter_LandmarkAt from his feet toward the speaker); 3
+  near one (trigger_german_landmark, static props, prop entities within 200); 4 compass (+Y north). Set words differ
+  for two landmarks: tree->trees, kubelwagon->kubelwagen (LandmarkSetWord). Storefront/facade/shopfront -> house.
+  Every GermanChatter entry of the enemy nation is precached once per map (sentences can use any kind). Test command:
+  `npc_german_callout` = where the nearest soldier would say you are. Lint: EVERY literal line kind in
+  german_chatter.cpp (names, floors, compass, orders) must exist in every voice x nation (tested: a fake name fails).
 - **US battle chatter: the voice set** (review 2026-11-18, the owner's US_Voices.zip; nothing plays it yet - DOD-SP has
   no US NPC). US Voices/US/<0..3>/US_<v>_<category>_NN[b|c|d].wav: 2677 clips, 244 categories, all 22050 Hz 16-bit
   mono (no conversion). The letter suffix = another take of the same line (same length/level) - the generator must

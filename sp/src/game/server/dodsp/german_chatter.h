@@ -17,6 +17,16 @@
 // C1 (2026-11-18): every request that ISN'T said is counted with its reason (ChatDrop_t, never
 // text) - npc_german_chatter prints them, npc_german_debug 1 prints each one as it happens.
 //
+// C2 (2026-11-19): SENTENCES, HL1-HECU style. A line is up to CHAT_MAX_PARTS clips said back to back
+// by one man (one owner: BuildSentence decides the parts, PlaySentencePart plays them):
+//   orders:   NAME + ORDER                    "Mueller! Hinter die Faesser!"     (the named man answers)
+//   threats:  THREAT + LOCATION               "Infanterie! Zweiter Stock, Fenster!"
+//             NAME + THREAT + LOCATION + ORDER  - first contact, or the enemy moved to a new spot
+// Every soldier has a surname from the voice set, unique in his squad. The location is where the
+// enemy is as the speaker sees him: a building's floor and opening, what he's behind or near, or the
+// compass. Each part is checked again before it plays (the named man alive, the enemy alive); a hit
+// cuts the rest. The squad's one-speaker lock covers the whole sentence.
+//
 //==================================================================================
 #ifndef GERMAN_CHATTER_H
 #define GERMAN_CHATTER_H
@@ -48,6 +58,22 @@ enum ChatEvent_t
 };
 
 #define GERMAN_CHATTER_VOICES	4		// GE/0..3 in the voice set (folder 1's files are named GE_4_)
+#define CHAT_MAX_PARTS			4
+
+// What must still be true before a sentence part is said
+enum ChatPartCheck_t
+{
+	PARTCHECK_NONE,
+	PARTCHECK_TARGET,			// the man it's said to is alive (his name, the order to him)
+	PARTCHECK_ENEMY,			// the enemy is alive (where he is)
+};
+
+struct ChatPart_t
+{
+	char		szCategory[48];		// the line kind in the voice set (name_mueller, location_secondfloor_window ...)
+	char		szMeaning[64];		// in English, for the chatter log
+	int			eCheck;				// ChatPartCheck_t
+};
 
 // Why a requested line wasn't said (counted per kind of line, printed by npc_german_chatter)
 enum ChatDrop_t
@@ -86,6 +112,7 @@ public:
 	void		PlayPain( void );					// not every hit, never back to back
 	void		PlayDeath( bool bHeadshot );		// a head shot is usually silent
 	int			GetVoice( void ) const { return m_iVoice; }
+	const char	*GetName( void ) const;			// his surname ("Mueller"), "" if none
 	bool		IsSpeaking( void ) const;
 
 	static void	SetTuning( bool bEnabled, const char *pszNation, float flFrequency, const char *pszCrySpeakers = NULL );
@@ -106,7 +133,24 @@ private:
 		float		flPriority;
 	};
 
-	bool		BuildSoundName( const Pending_t &p, char *pszOut, int nOut );
+	struct Sentence_t
+	{
+		bool		bActive;
+		ChatEvent_t	eEvent;
+		ChatPart_t	parts[CHAT_MAX_PARTS];
+		int			nParts;
+		int			iNext;				// next part to say
+		float		flNextAt;
+		float		flLastDuration;
+		bool		bNamed;				// starts with the target's name: he answers it
+		EHANDLE		hTarget;
+		EHANDLE		hEnemy;
+		char		szNote[96];
+	};
+
+	int			BuildSentence( const Pending_t &p, ChatPart_t *pParts, bool &bNamed );	// returns the part count (0 = no line)
+	bool		PlaySentencePart( void );			// false: a check failed (the rest isn't said)
+	void		EndSentence( const char *pszCut );	// log it, have the named man answer (NULL = said in full)
 	void		Drop( ChatEvent_t eEvent, ChatDrop_t eWhy, float flDetail = 0.0f );
 
 	EHANDLE		m_hOwner;
@@ -116,6 +160,8 @@ private:
 	float		m_flSpeakingUntil;
 	float		m_flNextPain;
 	Pending_t	m_Pending;
+	Sentence_t	m_Sentence;
+	int			m_iName;				// index into the surnames, -1 = none
 };
 
 // Which landmark (barrels, wall, kubelwagon...) a soldier at vecSpot hides behind, facing

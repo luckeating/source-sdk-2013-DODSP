@@ -143,6 +143,11 @@ def check_chatter():
     landmarks = re.findall(r'"([a-z]+)"', re.search(r"s_pszLandmarks\[\]\s*=\s*\{(.*?)\};", code, re.S).group(1))
     cats += ["order_cover_" + l for l in landmarks]
     voices = re.findall(r"\d+", re.search(r"s_iVoices\[\]\s*=\s*\{(.*?)\};", code, re.S).group(1))
+    # C2: every literal line kind anywhere in the code (sentence parts: names, floors, compass, orders)
+    stripped = re.sub(r"/\*.*?\*/", "", re.sub(r"//[^\n]*", "", code), flags=re.S)
+    kinds = r"(?:name|location|direction|landmark|threat|order|inform|reaction|response|rank|area|taunt)_[a-z_]*[a-z]"
+    cats += [c for c in re.findall(r'"(%s)"' % kinds, stripped) if c != "order_cover"]
+    cats = sorted(set(cats))
     bad = []
     for v in voices:
         for c in cats:

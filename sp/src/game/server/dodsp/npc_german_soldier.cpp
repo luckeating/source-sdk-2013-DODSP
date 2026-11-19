@@ -3018,16 +3018,11 @@ void CNPC_GermanSoldier::ChatterThreat( void )
 	CTraceFilterSkipTwoEntities filter( this, pEnemy, COLLISION_GROUP_NONE );
 	trace_t tr;
 	UTIL_TraceLine( EyePosition(), pEnemy->GetAbsOrigin() + Vector( 0, 0, 8 ), COVER_MASK, &filter, &tr );
-	m_Chatter.Request( tr.fraction >= 1.0f ? CHAT_THREAT_EXPOSED : CHAT_THREAT );
-	// the leader (or a free squadmate) follows a sighting with the order - another man than the one who
-	// spotted him: one man has one line waiting. C1c: "Angriff!" was asked of the leader 8 times in the
-	// first log and never said (his own order wait, or replaced by a cover order).
-	if ( random->RandomFloat( 0.0f, 1.0f ) < 0.4f )
-	{
-		CNPC_GermanSoldier *pCaller = OrderSpeaker( CHAT_ATTACK, 1200.0f, 800.0f );
-		if ( pCaller && pCaller->m_Chatter.CanSay( CHAT_ATTACK ) )
-			pCaller->m_Chatter.Request( CHAT_ATTACK, NULL, NULL, 1.5f );
-	}
+	// C2: the call is a sentence. The man it's addressed to (the nearest squadmate free to answer) is
+	// named in the full call - "Mueller! Infanterie! Zweiter Stock, Fenster! Angriff!" - and answers it.
+	// The order that used to follow as a separate line ("Angriff!", C1c) is now the sentence's last part.
+	CNPC_GermanSoldier *pAddressee = NearestSquadmate( 800.0f, false, CHAT_ACK_YES );
+	m_Chatter.Request( tr.fraction >= 1.0f ? CHAT_THREAT_EXPOSED : CHAT_THREAT, NULL, pAddressee );
 }
 
 //=============================================================================
