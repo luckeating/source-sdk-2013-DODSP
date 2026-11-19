@@ -428,3 +428,11 @@ If you learn something like this, add it here in the same commit as the fix.
   softness, live lamps (dodsp_lamps_baked), lamp shadows, prop shadows (dodsp_sun_propshadows), shadow resolution
   (r_flashlightdepthres, restart). Those become FCVAR_ARCHIVE (saved) - update "Settings that reset" when it lands;
   debug/calibration cvars stay console-only. Needs the owner's DOD-SP\resource\GameMenu.res to add the entry.
+- **NPC soldier types as data** (owner: "hold onto that", 2026-11-18; from CoD2's AI/axis_nrmdy_wehr_reg_kar98.gsc).
+  CoD defines each soldier TYPE in a generated file: team, accuracy (x weapon spread, 0.2), health, primary/secondary
+  weapon, grenade type + COUNT (riflemen 0 - throwers are a role), and a random body from a list (4 bodies, each
+  picking head/gear). Spawner flags: count, FORCESPAWN (delete a far unimportant AI at the cap), UNDELETABLE,
+  NOENEMYINFO (spawn without knowing where the player is). For npc_german_soldier (today: model from Hammer or one
+  default, no per-type settings): one KeyValues file per type (weapon, sidearm, proficiency/spread, health,
+  grenades, body/head/bodygroup/skin variants), picked by a "type" key on the NPC/spawner; random look per spawn.
+  Start with types + random looks together. npc_template_maker already covers count.
