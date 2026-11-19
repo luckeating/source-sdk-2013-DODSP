@@ -95,8 +95,11 @@ class CGermanChatter
 public:
 	CGermanChatter();
 	~CGermanChatter();
+	DECLARE_SIMPLE_DATADESC();			// his name and voice ride in the save (C2c)
 
-	void		Init( CAI_BaseNPC *pOwner, const char *pszSquad );
+	// bRestored: after a save was loaded - keep the saved name and voice (a man doesn't change his name or
+	// his voice on a reload; C2's log had every soldier renamed after one)
+	void		Init( CAI_BaseNPC *pOwner, const char *pszSquad, bool bRestored = false );
 	// Ask to say something. Dropped at once if this kind of line was said too recently (by him
 	// or his squad); otherwise kept until it can be said (one speaker per squad) or goes stale.
 	// pTarget: who it's said to (orders: he answers). flDelay: not before this many seconds.
@@ -113,6 +116,7 @@ public:
 	void		PlayDeath( bool bHeadshot );		// a head shot is usually silent
 	int			GetVoice( void ) const { return m_iVoice; }
 	const char	*GetName( void ) const;			// his surname ("Mueller"), "" if none
+	const char	*GetNameLine( void ) const;		// his name's line kind ("name_mueller"), NULL if none
 	bool		IsSpeaking( void ) const;
 
 	static void	SetTuning( bool bEnabled, const char *pszNation, float flFrequency, const char *pszCrySpeakers = NULL );

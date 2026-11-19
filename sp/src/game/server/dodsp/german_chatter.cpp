@@ -307,7 +307,12 @@ CGermanChatter::~CGermanChatter()
 	s_AllChatter.FindAndRemove( this );
 }
 
-void CGermanChatter::Init( CAI_BaseNPC *pOwner, const char *pszSquad )
+BEGIN_SIMPLE_DATADESC( CGermanChatter )
+	DEFINE_FIELD( m_iName, FIELD_INTEGER ),
+	DEFINE_FIELD( m_iVoice, FIELD_INTEGER ),
+END_DATADESC()
+
+void CGermanChatter::Init( CAI_BaseNPC *pOwner, const char *pszSquad, bool bRestored )
 {
 	m_hOwner = pOwner;
 	if ( pszSquad && pszSquad[0] )
@@ -315,9 +320,18 @@ void CGermanChatter::Init( CAI_BaseNPC *pOwner, const char *pszSquad )
 	else
 		Q_snprintf( m_szSquad, sizeof( m_szSquad ), "#solo%d", pOwner ? pOwner->entindex() : 0 );
 	SquadChat_t &sq = GetSquadChat( m_szSquad );
+	// INVARIANT: a restored soldier keeps the name and voice he had (saved fields), so the squad calls him
+	// what it called him before the load and he sounds the same
+	bool bKeep = bRestored && m_iName >= 0 && m_iName < (int)ARRAYSIZE( s_pszNames ) &&
+				 m_iVoice >= 0 && m_iVoice < GERMAN_CHATTER_VOICES;
+	if ( bKeep )
+	{
+		sq.abNameUsed[m_iName] = true;
+		return;
+	}
 	m_iVoice = s_iVoices[ ( sq.nVoices++ ) % GERMAN_CHATTER_VOICES ];
 	// a surname nobody else in his squad has (a new squad starts at a random one)
-	if ( m_iName < 0 || sq.abNameUsed[m_iName] )
+	if ( m_iName < 0 || m_iName >= (int)ARRAYSIZE( s_pszNames ) || sq.abNameUsed[m_iName] )
 	{
 		int nNames = ARRAYSIZE( s_pszNames );
 		int iStart = random->RandomInt( 0, nNames - 1 );
@@ -333,6 +347,11 @@ void CGermanChatter::Init( CAI_BaseNPC *pOwner, const char *pszSquad )
 		}
 	}
 	sq.abNameUsed[m_iName] = true;
+}
+
+const char *CGermanChatter::GetNameLine( void ) const
+{
+	return ( m_iName >= 0 && m_iName < (int)ARRAYSIZE( s_pszNames ) ) ? s_pszNames[m_iName] : NULL;
 }
 
 const char *CGermanChatter::GetName( void ) const
@@ -1532,6 +1551,22 @@ int CGermanChatter::BuildSentence( const Pending_t &p, ChatPart_t *pParts, bool 
 		}
 		SetPart( pParts[n++], szCategory, szMeaning, bNamed ? PARTCHECK_TARGET : PARTCHECK_NONE );
 		return n;
+	}
+
+	case CHAT_CASUALTY:
+	{
+		// NAME + "man down!": the modifier is the dead man's name line (he may be gone by now, so the
+		// name travels with the request, not as a target - and nobody answers)
+		if ( !LineExists( m_iVoice, def.pszCategory ) )
+			return 0;
+		if ( !Q_strncmp( p.szModifier, "name_", 5 ) && LineExists( m_iVoice, p.szModifier ) )
+		{
+			Q_snprintf( szMeaning, sizeof( szMeaning ), "%s!", p.szModifier + 5 );
+			szMeaning[0] = (char)toupper( (unsigned char)szMeaning[0] );
+			SetPart( pParts[n++], p.szModifier, szMeaning, PARTCHECK_NONE );
+		}
+		SetPart( pParts[n++], def.pszCategory, def.pszMeaning, PARTCHECK_NONE );
+		break;
 	}
 
 	default:

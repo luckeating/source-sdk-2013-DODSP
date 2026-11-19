@@ -132,6 +132,7 @@ enum GermanSquadSlot_T
 class CNPC_GermanSoldier : public CAI_BaseActor
 {
 	DECLARE_CLASS( CNPC_GermanSoldier, CAI_BaseActor );
+	DECLARE_DATADESC();
 	DEFINE_CUSTOM_AI;
 
 public:
@@ -742,6 +743,12 @@ END_SEND_TABLE()
 
 LINK_ENTITY_TO_CLASS( npc_german_soldier, CNPC_GermanSoldier );
 
+// C2c: the first thing of the soldier's own that goes into a save - his chatter name and voice. (The
+// rest of his state isn't saved yet: after a load he starts his tactics fresh.)
+BEGIN_DATADESC( CNPC_GermanSoldier )
+	DEFINE_EMBEDDED( m_Chatter ),
+END_DATADESC()
+
 CNPC_GermanSoldier::CNPC_GermanSoldier() : m_AnimMap( DefLessFunc( int ) )
 {
 	m_iAnimMapVersion = -1;
@@ -962,7 +969,7 @@ void CNPC_GermanSoldier::Precache( void )
 void CNPC_GermanSoldier::OnRestore( void )
 {
 	BaseClass::OnRestore();
-	m_Chatter.Init( this, m_SquadName != NULL_STRING ? STRING( m_SquadName ) : NULL );
+	m_Chatter.Init( this, m_SquadName != NULL_STRING ? STRING( m_SquadName ) : NULL, true );
 }
 
 // A4a: every live soldier, for the bullet-path test (a few dozen at most - cheaper than a
@@ -6008,7 +6015,7 @@ void CNPC_GermanSoldier::Event_Killed( const CTakeDamageInfo &info )
 	m_Chatter.OnDeath();
 	CNPC_GermanSoldier *pWitness = NearestSquadmate( 800.0f, true );
 	if ( pWitness )
-		pWitness->m_Chatter.Request( CHAT_CASUALTY, NULL, NULL, random->RandomFloat( 0.4f, 1.0f ) );
+		pWitness->m_Chatter.Request( CHAT_CASUALTY, m_Chatter.GetNameLine(), NULL, random->RandomFloat( 0.4f, 1.0f ) );	// "Kahn! Man down!"
 	m_bDeathAnim = false;
 	m_actDeath = ACT_INVALID;
 	if ( m_iForceDeathSeq >= 0 )

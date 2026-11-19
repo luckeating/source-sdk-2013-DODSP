@@ -538,6 +538,11 @@ If you learn something like this, add it here in the same commit as the fix.
   said/waits start only when part 1 plays. (3) a cover call that NAMED its landmark still printed "no name rule
   matches": LandmarkAt wrote the note before checking the prop (donner_wall_160 = wall); the note is now written only
   for an unrecognised prop, and the log shows it only on a generic cover call.
+  C2c (owner asked 2026-11-19): names and voices ride in the save - CGermanChatter has a SIMPLE datadesc (m_iName,
+  m_iVoice), embedded in the soldier's FIRST datadesc (the soldier saved none of its own state before; its tactics
+  still restart after a load). OnRestore -> Init(..., bRestored) keeps both and marks the name used in the squad.
+  Casualty calls name the fallen: the dead man's name line rides in the request's modifier (he may be removed before
+  the witness's turn) -> "Kahn! man down!" (NAME + reaction_casualty_generic; nobody answers).
 - **US battle chatter: the voice set** (review 2026-11-18, the owner's US_Voices.zip; nothing plays it yet - DOD-SP has
   no US NPC). US Voices/US/<0..3>/US_<v>_<category>_NN[b|c|d].wav: 2677 clips, 244 categories, all 22050 Hz 16-bit
   mono (no conversion). The letter suffix = another take of the same line (same length/level) - the generator must
