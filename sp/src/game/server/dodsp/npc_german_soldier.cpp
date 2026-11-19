@@ -948,7 +948,7 @@ void CNPC_GermanSoldier::Precache( void )
 	}
 	if ( g_pGermanScript )
 		CGermanChatter::SetTuning( g_pGermanScript->GetBool( "chatter", true ), g_pGermanScript->GetString( "chatter_enemy_nation", "us" ),
-								   g_pGermanScript->GetFloat( "chatter_frequency", 1.0f ), g_pGermanScript->GetString( "cry_speakers", "n m o" ) );
+								   g_pGermanScript->GetFloat( "chatter_frequency", 1.0f ), g_pGermanScript->GetString( "cry_speakers", "n m m o" ) );
 	CGermanChatter::LevelPrecache();
 
 	BaseClass::Precache();
@@ -1694,7 +1694,8 @@ void CNPC_GermanSoldier::Invariant( Invariant_t eWhich, const char *pszFormat, .
 	if ( gpGlobals->curtime < m_flInvariantNext[eWhich] )
 		return;
 	m_flInvariantNext[eWhich] = gpGlobals->curtime + 2.0f;
-	static const char *s_pszNames[] = { "STANCE_FLIPS", "STANCE_OWNER", "SCHED_CHURN", "DECISION_CHURN", "COVER_CHURN", "POSE_FLIPS", "ANIM_STUCK", "COVER_STANCE", "ORDER_STUCK", "FLANK_TIMEOUT", "CORNER_YAW", "ASSAULT_TIMEOUT", "PAIR_SPLIT", "CLEAR_TIMEOUT" };
+	static const char *s_pszNames[] = { "STANCE_FLIPS", "STANCE_OWNER", "SCHED_CHURN", "DECISION_CHURN", "COVER_CHURN", "POSE_FLIPS", "ANIM_STUCK", "COVER_STANCE", "ORDER_STUCK", "FLANK_TIMEOUT", "CORNER_YAW", "ASSAULT_TIMEOUT", "PAIR_SPLIT", "CLEAR_TIMEOUT", "PINNED_STUCK", "MG_MOVING" };
+	COMPILE_TIME_ASSERT( ARRAYSIZE( s_pszNames ) == NUM_INVARIANTS );	// one name per invariant (two were missing: read past the end)
 	char sz[512];
 	va_list ap;
 	va_start( ap, pszFormat );
@@ -2943,11 +2944,12 @@ CNPC_GermanSoldier *CNPC_GermanSoldier::NearestSquadmate( float flMaxDist, bool 
 	return pBest;
 }
 
-// He's off to cover 250+ units away: the nearest squadmate (within 800) tells him where -
-// "Hinter die Fässer!" - and he answers. A bound forward gets "Vorwärts!" instead. (CoD rule.)
+// He's off to cover 150+ units away: the nearest squadmate (within 800) tells him where -
+// "Hinter die Fässer!" - and he answers. A bound forward gets "Vorwärts!" instead. (CoD rule;
+// C1: 250 -> 150 units, most cover moves in DoD's tight streets were shorter than 250.)
 void CNPC_GermanSoldier::ChatterOrderCoverMove( void )
 {
-	if ( m_eMoveKind == MOVE_COVER && ( m_vecCoverSpot - GetAbsOrigin() ).Length2D() < 250.0f )
+	if ( m_eMoveKind == MOVE_COVER && ( m_vecCoverSpot - GetAbsOrigin() ).Length2D() < 150.0f )
 		return;
 	// A3d: the squad leader calls it if he's in earshot, else the nearest man
 	CNPC_GermanSoldier *pMate = SquadLeader();
@@ -2973,28 +2975,31 @@ void CNPC_GermanSoldier::ChatterReloading( void )
 	m_Chatter.Request( pMate ? CHAT_RELOADING_COVERME : CHAT_RELOADING, NULL, pMate );
 }
 
-// Seeing the enemy after not seeing him for 15 s: call it out - out in the open, or just
-// there, sometimes "attack!" (the squad's minimum waits keep it to one voice at a time).
+// Seeing the enemy after not seeing him for 4 s (he came out of cover again): call it out - out
+// in the open, or just there - and sometimes the squad leader follows with "Angriff!". The squad's
+// minimum waits (8 s for threats) keep it from repeating. C1: was 15 s unseen, and 30% of sightings
+// said "Angriff!" INSTEAD of the threat: in a firefight the enemy is rarely out of sight for 15 s,
+// so after the first contact there were hardly any threat calls.
 void CNPC_GermanSoldier::ChatterThreat( void )
 {
 	CBaseEntity *pEnemy = GetEnemy();
 	if ( !pEnemy || !HasCondition( COND_SEE_ENEMY ) )
 		return;
 	float now = gpGlobals->curtime;
-	bool bFresh = now - m_flChatterSawEnemy > 15.0f;
+	bool bFresh = now - m_flChatterSawEnemy > 4.0f;
 	m_flChatterSawEnemy = now;
 	if ( !bFresh )
 		return;
-	if ( random->RandomFloat( 0.0f, 1.0f ) < 0.3f )
-	{
-		m_Chatter.Request( CHAT_ATTACK );
-		return;
-	}
 	// in the open: his feet are visible too (nothing in front of him)
 	CTraceFilterSkipTwoEntities filter( this, pEnemy, COLLISION_GROUP_NONE );
 	trace_t tr;
 	UTIL_TraceLine( EyePosition(), pEnemy->GetAbsOrigin() + Vector( 0, 0, 8 ), COVER_MASK, &filter, &tr );
 	m_Chatter.Request( tr.fraction >= 1.0f ? CHAT_THREAT_EXPOSED : CHAT_THREAT );
+	// the leader follows a sighting with the order (another man: one man has one line waiting)
+	CNPC_GermanSoldier *pLeader = SquadLeader();
+	if ( pLeader && pLeader != this && pLeader->IsAlive() && random->RandomFloat( 0.0f, 1.0f ) < 0.4f &&
+		 ( pLeader->GetAbsOrigin() - GetAbsOrigin() ).Length() < 1200.0f )
+		pLeader->m_Chatter.Request( CHAT_ATTACK, NULL, NULL, 1.5f );
 }
 
 //=============================================================================

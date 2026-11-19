@@ -142,6 +142,9 @@ If you learn something like this, add it here in the same commit as the fix.
 - `mod_studio` / `mod_brush` need `model_types.h`; cbase.h doesn't bring it in (C2065, build 44250885877).
 - `IMaterialVar` is only forward-declared by imaterial.h: include `materialsystem/imaterialvar.h` (C2027, 44255842127).
 - `MaterialSystem_Config_t` (GetCurrentConfigForVideoCard) needs `materialsystem/materialsystem_config.h` (C2027, 44293835742).
+- A name table for an enum (`s_pszNames[]` next to `enum Invariant_t`) gets `COMPILE_TIME_ASSERT( ARRAYSIZE( names )
+  == NUM_... )`: the soldier's INVARIANT names were two short, so INV_PINNED_STUCK / INV_MG_MOVING printed whatever
+  memory followed (found 2026-11-18, C1).
 - `IMaterialSystemHardwareConfig` has no GetShadowSlopeScaleDepthBias/GetShadowDepthBias in this SDK (only in env_projectedtexture's
   dead non-ASW branch): read Mapbase's `mat_slopescaledepthbias_shadowmap` / `mat_depthbias_shadowmap` (C2039, 44341665956).
 - GitHub warns "This repository moved" on push. That's harmless. A workflow that fails in 0 s is a
@@ -326,6 +329,8 @@ If you learn something like this, add it here in the same commit as the fix.
   CONFIRMED 2026-11-18 (build 44348802435): smooth cone edge, live brightness in the baked range (floor 0.060-0.084
   linear vs baked 0.076, camera moved slightly), chair shadow sharp - owner: "holy shit that is crispy". KNOWN-GOOD
   for stage 5-1. Still to confirm the 1/3.07 on a second lamp with another brightness/falloff.
+  OWNER'S TEST 2026-11-18: 5 live lamps on one map, two shadows cast on one object, FPS fine - "serviceable for now".
+  Lamps parked here (5-2 soft shadows, 5-3 budget) while NPC work goes on.
 - Stage 6: extras. **SSAO** (screen-space ambient occlusion: contact darkening from what's on screen),
   and then blob shadows OFF entirely while the per-pixel sun draws (agreed 2026-11-17). Also cubemap
   normalization / specular occlusion (the owner's idea). HDR moved up: it is the standard since 2026-11-18.
@@ -460,6 +465,27 @@ If you learn something like this, add it here in the same commit as the fix.
   full four-part sentence is ~5.5 s, long in a firefight: full form for first contact / when the enemy moves to a
   new spot, 2-part forms otherwise. Re-check each part before it plays (enemy still there, named man alive, speaker
   not hit - pain already cuts him off).
+  **C1 BUILT 2026-11-18 (chatter that works).** Why voice 1 was silent: folder GE/1's files are named `GE_4_...` (CoD's
+  speaker 4) and the old generator required the name's number to match the folder, so the whole voice was dropped
+  (the owner's game had de.zip = 1216 files, voices 0/2/3). Now: `dodsp_tools/gen_chatter.py Voices.zip out.txt` reads
+  the set AS SHIPPED (voice = folder, spellings merged word by word, `_NNb` = one more take, cries from Axis/M,N,O;
+  melee shouts not used yet - Axis/O/MeleeCharge_GE_0_10.wav is 48 kHz, convert before using it). Every wave path is
+  `dodsp/Battlechatter/...`: the owner copies the set's `Battlechatter` folder into `DOD-SP\sound\dodsp\` unchanged
+  (old sound/dodsp/chatter/de and sound/dodsp/voice folders are no longer read). Generated copy:
+  `dodsp_tools/generated/game_sounds_german_chatter.txt` (3762 entries, 4097 waves, all 315 kinds in all 4 voices) -
+  the owner's `DOD-SP\scripts\` copy must be this one. Guards: `dodsp_lint_client.py` check_chatter (every line the
+  code asks for x every voice x us/uk/ru exists in the generated script, plus the 6 cries); map load prints ONE line
+  `DOD-SP German chatter: 4 voices, N lines ..., all wave files found` or `INVARIANT German chatter: N of M wave files
+  missing (first: ...)` / `... line kinds have no sound entry`. Every request that isn't said is counted by reason
+  (ChatDrop_t: off, self-wait, squad-wait, kind-wait, outranked, replaced, stale, no-line, cut); `npc_german_chatter`
+  prints the totals + per line kind (soldiers, voices in use, how many have no squad = no orders/answers);
+  `npc_german_debug 1` prints each drop live. Gates relaxed: a threat after 4 s unseen (was 15), "Angriff!" no longer
+  REPLACES 30% of threat calls - the squad leader follows 40% of sightings with it (1.5 s later); threat validity
+  1 -> 2.5 s and informs 1 -> 2 s (a squadmate's line outlasted them); cover orders from 150 units (was 250).
+  Cry speakers for voices 0..3 = "n m m o" (pitch-matched; 3-letter "n m o" = the old voices 0/2/3 form).
+  Files: german_chatter.cpp/.h, npc_german_soldier.cpp (ChatterThreat, ChatterOrderCoverMove, cry default, the
+  INVARIANT name table), dodsp_tools/gen_chatter.py + generated/, devtools/dodsp_lint_client.py, dodsp_build.yml.
+  Undo: the previous server.dll + the old scripts\game_sounds_german_chatter.txt (de/ paths).
 - **US battle chatter: the voice set** (review 2026-11-18, the owner's US_Voices.zip; nothing plays it yet - DOD-SP has
   no US NPC). US Voices/US/<0..3>/US_<v>_<category>_NN[b|c|d].wav: 2677 clips, 244 categories, all 22050 Hz 16-bit
   mono (no conversion). The letter suffix = another take of the same line (same length/level) - the generator must

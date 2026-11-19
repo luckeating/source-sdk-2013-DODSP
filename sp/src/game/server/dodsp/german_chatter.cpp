@@ -10,6 +10,7 @@
 #include "engine/IStaticPropMgr.h"
 #include "engine/ICollideable.h"
 #include "triggers.h"
+#include "filesystem.h"
 
 extern ISoundEmitterSystemBase *soundemitterbase;
 
@@ -28,8 +29,9 @@ enum ChatGroup_t { GROUP_THREAT, GROUP_ORDER, GROUP_INFORM, GROUP_REACTION, GROU
 // minimum waits (s): the same man / anyone in his squad
 static const float s_flSelfWait[NUM_GROUPS]  = { 12.0f, 8.0f, 6.0f, 1.0f, 1.0f };
 static const float s_flSquadWait[NUM_GROUPS] = {  8.0f, 6.0f, 8.0f, 1.0f, 1.0f };
-// how long a request stays worth saying while he waits for his turn (s)
-static const float s_flValid[NUM_GROUPS]     = {  1.0f, 3.0f, 1.0f, 2.0f, 2.0f };
+// how long a request stays worth saying while he waits for his turn (s). C1: threats 1 -> 2.5 and
+// informs 1 -> 2: a squadmate's 1.5-2 s line used to outlast them, so they were never said.
+static const float s_flValid[NUM_GROUPS]     = {  2.5f, 3.0f, 2.0f, 2.0f, 2.0f };
 
 struct ChatDef_t
 {
@@ -38,7 +40,8 @@ struct ChatDef_t
 	float		flPriority;
 };
 
-static const ChatDef_t s_ChatDefs[NUM_CHAT_EVENTS] =
+// One row per ChatEvent_t, in its order (the assert below catches a missing row)
+static const ChatDef_t s_ChatDefs[] =
 {
 	{ "threat_infantry_generic",	GROUP_THREAT,	0.5f },	// CHAT_THREAT
 	{ "threat_infantry_exposed",	GROUP_THREAT,	0.5f },	// CHAT_THREAT_EXPOSED
@@ -57,8 +60,21 @@ static const ChatDef_t s_ChatDefs[NUM_CHAT_EVENTS] =
 	{ "response_ack_yes",			GROUP_RESPONSE,	0.9f },	// CHAT_ACK_YES
 	{ "response_ack_covering",		GROUP_RESPONSE,	0.9f },	// CHAT_ACK_COVERING
 };
+COMPILE_TIME_ASSERT( ARRAYSIZE( s_ChatDefs ) == NUM_CHAT_EVENTS );
 
-static const int s_iVoices[] = { 0, 2, 3 };
+// Lines a voice may say that aren't s_ChatDefs rows (precached; checked at load and by the CI lint)
+static const char *s_pszExtraCategories[] = { "response_ack_norank_yes", "order_cover_generic" };
+
+static const char *s_pszDropNames[] =
+{
+	"off", "self-wait", "squad-wait", "kind-wait", "outranked", "replaced", "stale", "no-line", "cut",
+};
+COMPILE_TIME_ASSERT( ARRAYSIZE( s_pszDropNames ) == NUM_CHAT_DROPS );
+
+// C1: all four voices of the set. Voice 1 (1014 lines, files named GE_4_) was left out before only
+// because the old generator dropped it.
+static const int s_iVoices[] = { 0, 1, 2, 3 };
+COMPILE_TIME_ASSERT( ARRAYSIZE( s_iVoices ) == GERMAN_CHATTER_VOICES );
 
 // Landmark names the voice set has lines for (order_cover_<name>)
 static const char *s_pszLandmarks[] =
@@ -73,19 +89,34 @@ static const char *s_pszLandmarks[] =
 // Tuning (from scripts/npc_german_soldier.txt, set by the soldier)
 //-----------------------------------------------------------------------------
 static bool		s_bEnabled = true;
-static char		s_cCrySpeaker[3] = { 'n', 'm', 'o' };	// pain/death speaker for chatter voices 0, 2, 3 (matched by pitch rank)
+// pain/death speaker (m/n/o) for chatter voices 0..3, matched by pitch (measured 2026-11-18: voices
+// 0 < 3 < 2 < 1, cries n < o < m): only three cry speakers, so the two highest voices share m
+static char		s_cCrySpeaker[GERMAN_CHATTER_VOICES] = { 'n', 'm', 'm', 'o' };
 static char		s_szNation[8] = "us";
 static float	s_flFrequency = 1.0f;
 
 void CGermanChatter::SetTuning( bool bEnabled, const char *pszNation, float flFrequency, const char *pszCrySpeakers )
 {
-	// "n m o": the pain/death speaker (m/n/o) for chatter voices 0, 2 and 3
+	// "n m m o": the pain/death speaker (m/n/o) for chatter voices 0..3. Three letters is the
+	// pre-C1 form (voices 0, 2, 3 - voice 1 keeps its default).
 	if ( pszCrySpeakers )
 	{
+		char c[GERMAN_CHATTER_VOICES];
 		int k = 0;
-		for ( const char *c = pszCrySpeakers; *c && k < 3; c++ )
-			if ( *c == 'm' || *c == 'n' || *c == 'o' )
-				s_cCrySpeaker[k++] = *c;
+		for ( const char *p = pszCrySpeakers; *p && k < GERMAN_CHATTER_VOICES; p++ )
+			if ( *p == 'm' || *p == 'n' || *p == 'o' )
+				c[k++] = *p;
+		if ( k == GERMAN_CHATTER_VOICES )
+		{
+			for ( int i = 0; i < k; i++ )
+				s_cCrySpeaker[i] = c[i];
+		}
+		else if ( k == 3 )
+		{
+			s_cCrySpeaker[0] = c[0];
+			s_cCrySpeaker[2] = c[1];
+			s_cCrySpeaker[3] = c[2];
+		}
 	}
 	s_bEnabled = bEnabled;
 	Q_strncpy( s_szNation, ( pszNation && pszNation[0] ) ? pszNation : "us", sizeof( s_szNation ) );
@@ -107,17 +138,34 @@ struct SquadChat_t
 static CUtlDict<SquadChat_t, int>	s_Squads;
 static float						s_flSquadsTime = 0.0f;
 
-static SquadChat_t &GetSquadChat( const char *pszSquad )
+// What happened to every request this map (npc_german_chatter)
+static int		s_nSaid[NUM_CHAT_EVENTS];
+static int		s_nDropped[NUM_CHAT_EVENTS][NUM_CHAT_DROPS];
+// What the map load found (LevelPrecache)
+static int		s_nEntries = 0, s_nWaves = 0, s_nWavesMissing = 0, s_nKindsMissing = 0;
+static char		s_szFirstMissing[MAX_PATH] = "";
+
+// A new map: game time went backwards. Squads and counters start over.
+static void CheckNewMap( void )
 {
 	if ( gpGlobals->curtime < s_flSquadsTime - 1.0f )
-		s_Squads.RemoveAll();		// new map
+	{
+		s_Squads.RemoveAll();
+		memset( s_nSaid, 0, sizeof( s_nSaid ) );
+		memset( s_nDropped, 0, sizeof( s_nDropped ) );
+	}
 	s_flSquadsTime = gpGlobals->curtime;
+}
+
+static SquadChat_t &GetSquadChat( const char *pszSquad )
+{
+	CheckNewMap();
 	int i = s_Squads.Find( pszSquad );
 	if ( i == s_Squads.InvalidIndex() )
 	{
 		SquadChat_t sq;
 		memset( &sq, 0, sizeof( sq ) );
-		sq.nVoices = abs( (int)HashString( pszSquad ) ) % 3;	// squads start their rotation on different voices
+		sq.nVoices = abs( (int)HashString( pszSquad ) ) % GERMAN_CHATTER_VOICES;	// squads start their rotation on different voices
 		i = s_Squads.Insert( pszSquad, sq );
 	}
 	return s_Squads[i];
@@ -163,7 +211,7 @@ void CGermanChatter::Init( CAI_BaseNPC *pOwner, const char *pszSquad )
 	else
 		Q_snprintf( m_szSquad, sizeof( m_szSquad ), "#solo%d", pOwner ? pOwner->entindex() : 0 );
 	SquadChat_t &sq = GetSquadChat( m_szSquad );
-	m_iVoice = s_iVoices[ ( sq.nVoices++ ) % 3 ];
+	m_iVoice = s_iVoices[ ( sq.nVoices++ ) % GERMAN_CHATTER_VOICES ];
 }
 
 bool CGermanChatter::IsSpeaking( void ) const
@@ -176,6 +224,8 @@ void CGermanChatter::OnDeath( void )
 	CBaseEntity *pOwner = m_hOwner.Get();
 	if ( pOwner && IsSpeaking() )
 		pOwner->StopSound( pOwner->entindex(), CHAN_VOICE, "" );
+	if ( m_Pending.bActive )
+		Drop( m_Pending.eEvent, CHATDROP_CUT );
 	m_Pending.bActive = false;
 	// let the squad talk again straight away
 	SquadChat_t &sq = GetSquadChat( m_szSquad );
@@ -186,7 +236,7 @@ void CGermanChatter::OnDeath( void )
 
 static int VoiceSlot( int iVoice )
 {
-	for ( int i = 0; i < 3; i++ )
+	for ( int i = 0; i < GERMAN_CHATTER_VOICES; i++ )
 		if ( s_iVoices[i] == iVoice )
 			return i;
 	return 0;
@@ -203,6 +253,8 @@ void CGermanChatter::PlayPain( void )
 		return;		// sometimes he just takes it
 	if ( IsSpeaking() )
 		pOwner->StopSound( pOwner->entindex(), CHAN_VOICE, "" );
+	if ( m_Pending.bActive )
+		Drop( m_Pending.eEvent, CHATDROP_CUT );
 	m_Pending.bActive = false;		// a man who's just been hit doesn't finish his sentence
 	char szSound[64];
 	Q_snprintf( szSound, sizeof( szSound ), "GermanVoice.%c.pain", s_cCrySpeaker[ VoiceSlot( m_iVoice ) ] );
@@ -223,25 +275,68 @@ void CGermanChatter::PlayDeath( bool bHeadshot )
 	pOwner->EmitSound( szSound );
 }
 
+// Every request that isn't said ends here, with its reason (C1: before, they vanished without a trace).
+void CGermanChatter::Drop( ChatEvent_t eEvent, ChatDrop_t eWhy, float flDetail )
+{
+	CheckNewMap();
+	if ( eEvent < 0 || eEvent >= NUM_CHAT_EVENTS || eWhy < 0 || eWhy >= NUM_CHAT_DROPS )
+		return;
+	s_nDropped[eEvent][eWhy]++;
+	if ( npc_german_debug.GetBool() )
+	{
+		CBaseEntity *pOwner = m_hOwner.Get();
+		Msg( "[%.2f] npc_german_soldier %d (voice %d): chatter %s not said - %s", gpGlobals->curtime,
+			 pOwner ? pOwner->entindex() : 0, m_iVoice, s_ChatDefs[eEvent].pszCategory, s_pszDropNames[eWhy] );
+		if ( flDetail > 0.0f )
+			Msg( " (%.1f s)", flDetail );
+		Msg( "\n" );
+	}
+}
+
 void CGermanChatter::Request( ChatEvent_t eEvent, const char *pszModifier, CBaseEntity *pTarget, float flDelay )
 {
 	CBaseEntity *pOwner = m_hOwner.Get();
-	if ( !s_bEnabled || !pOwner || !pOwner->IsAlive() || eEvent < 0 || eEvent >= NUM_CHAT_EVENTS )
+	if ( !pOwner || !pOwner->IsAlive() || eEvent < 0 || eEvent >= NUM_CHAT_EVENTS )
 		return;
+	if ( !s_bEnabled )
+	{
+		Drop( eEvent, CHATDROP_OFF );
+		return;
+	}
 	const ChatDef_t &def = s_ChatDefs[eEvent];
 	float now = gpGlobals->curtime;
 	SquadChat_t &sq = GetSquadChat( m_szSquad );
 
 	// Said too recently - by him, by his squad, or (casualty, reloading) this exact kind of line.
-	if ( now < m_flNextGroup[def.eGroup] || now < sq.flNextGroup[def.eGroup] )
+	if ( now < m_flNextGroup[def.eGroup] )
+	{
+		Drop( eEvent, CHATDROP_SELF_WAIT, m_flNextGroup[def.eGroup] - now );
 		return;
+	}
+	if ( now < sq.flNextGroup[def.eGroup] )
+	{
+		Drop( eEvent, CHATDROP_SQUAD_WAIT, sq.flNextGroup[def.eGroup] - now );
+		return;
+	}
 	if ( eEvent == CHAT_CASUALTY && now < sq.flNextCasualty )
+	{
+		Drop( eEvent, CHATDROP_KIND_WAIT, sq.flNextCasualty - now );
 		return;
+	}
 	if ( ( eEvent == CHAT_RELOADING || eEvent == CHAT_RELOADING_COVERME ) && now < sq.flNextReload )
+	{
+		Drop( eEvent, CHATDROP_KIND_WAIT, sq.flNextReload - now );
 		return;
+	}
 	// Something more important is already waiting to be said.
-	if ( m_Pending.bActive && now < m_Pending.flExpire && m_Pending.flPriority > def.flPriority )
+	bool bWaiting = m_Pending.bActive && now < m_Pending.flExpire;
+	if ( bWaiting && m_Pending.flPriority > def.flPriority )
+	{
+		Drop( eEvent, CHATDROP_OUTRANKED );
 		return;
+	}
+	if ( bWaiting )
+		Drop( m_Pending.eEvent, CHATDROP_REPLACED );
 
 	m_Pending.bActive = true;
 	m_Pending.eEvent = eEvent;
@@ -284,6 +379,7 @@ void CGermanChatter::Update( void )
 	if ( !pOwner || !pOwner->IsAlive() || now > m_Pending.flExpire )
 	{
 		m_Pending.bActive = false;	// stale: the moment passed
+		Drop( m_Pending.eEvent, ( pOwner && pOwner->IsAlive() ) ? CHATDROP_STALE : CHATDROP_CUT, now - m_Pending.flNotBefore );
 		return;
 	}
 	if ( now < m_Pending.flNotBefore )
@@ -297,10 +393,12 @@ void CGermanChatter::Update( void )
 	char szSound[128];
 	if ( !BuildSoundName( p, szSound, sizeof( szSound ) ) )
 	{
+		Drop( p.eEvent, CHATDROP_NO_LINE );
 		if ( npc_german_debug.GetBool() )
 			Msg( "[%.2f] npc_german_soldier %d: chatter - no sound %s (is %s loaded?)\n", now, pOwner->entindex(), szSound, CHATTER_SCRIPT );
 		return;
 	}
+	s_nSaid[p.eEvent]++;
 
 	float flDuration = 0.0f;
 	pOwner->EmitSound( szSound, 0.0f, &flDuration );
@@ -337,6 +435,86 @@ void CGermanChatter::Update( void )
 // Sounds: the script is added for this map, then every line a soldier can say is precached
 // (only the configured enemy nation's variants).
 //-----------------------------------------------------------------------------
+static bool SoundExists( const char *pszName )
+{
+	return soundemitterbase->IsValidIndex( soundemitterbase->GetSoundIndex( pszName ) );
+}
+
+// Once per map, right after the script loads: does every line kind exist for every voice, and is
+// every wave file the script names on disk? One console line either way.
+// INVARIANT: every line the code can ask for has a sound entry in every voice, and every wave exists.
+static void CheckChatterSounds( void )
+{
+	char szName[128];
+	s_nKindsMissing = 0;
+	const char *pszFirstKind = NULL;
+	for ( int v = 0; v < GERMAN_CHATTER_VOICES; v++ )
+	{
+		for ( int e = 0; e < NUM_CHAT_EVENTS + (int)ARRAYSIZE( s_pszExtraCategories ); e++ )
+		{
+			const char *pszCategory = e < NUM_CHAT_EVENTS ? s_ChatDefs[e].pszCategory : s_pszExtraCategories[e - NUM_CHAT_EVENTS];
+			if ( e == CHAT_ORDER_COVER )
+				continue;		// order_cover_<landmark>: the generic one is in the extras, landmarks fall back to it
+			Q_snprintf( szName, sizeof( szName ), "GermanChatter.v%d.%s.%s", s_iVoices[v], pszCategory, s_szNation );
+			if ( !SoundExists( szName ) )
+			{
+				if ( !s_nKindsMissing )
+					pszFirstKind = pszCategory;
+				s_nKindsMissing++;
+			}
+		}
+	}
+
+	// The waves: GermanChatter entries for this nation (each wave once) and the cries
+	s_nEntries = s_nWaves = s_nWavesMissing = 0;
+	s_szFirstMissing[0] = 0;
+	for ( int i = soundemitterbase->First(); i != soundemitterbase->InvalidIndex(); i = soundemitterbase->Next( i ) )
+	{
+		const char *pszName = soundemitterbase->GetSoundName( i );
+		if ( !pszName )
+			continue;
+		bool bLine = !Q_strnicmp( pszName, "GermanChatter.", 14 );
+		if ( !bLine && Q_strnicmp( pszName, "GermanVoice.", 12 ) )
+			continue;
+		s_nEntries++;
+		if ( bLine )
+		{
+			const char *pszDot = Q_strrchr( pszName, '.' );
+			if ( !pszDot || Q_stricmp( pszDot + 1, s_szNation ) )
+				continue;
+		}
+		CSoundParametersInternal *pParams = soundemitterbase->InternalGetParametersForSound( i );
+		if ( !pParams )
+			continue;
+		const SoundFile *pFiles = pParams->GetSoundNames();
+		for ( int w = 0; w < pParams->NumSoundNames(); w++ )
+		{
+			CUtlSymbol sym = pFiles[w].symbol;
+			const char *pszWave = soundemitterbase->GetWaveName( sym );
+			if ( !pszWave || !pszWave[0] )
+				continue;
+			s_nWaves++;
+			char szPath[MAX_PATH];
+			Q_snprintf( szPath, sizeof( szPath ), "sound/%s", pszWave );
+			if ( !filesystem->FileExists( szPath, "GAME" ) )
+			{
+				if ( !s_nWavesMissing )
+					Q_strncpy( s_szFirstMissing, szPath, sizeof( s_szFirstMissing ) );
+				s_nWavesMissing++;
+			}
+		}
+	}
+
+	if ( s_nWavesMissing )
+		Warning( "INVARIANT German chatter: %d of %d wave files missing (first: %s) - copy the voice set's Battlechatter folder into DOD-SP\\sound\\dodsp\\\n",
+				 s_nWavesMissing, s_nWaves, s_szFirstMissing );
+	if ( s_nKindsMissing )
+		Warning( "INVARIANT German chatter: %d line kinds have no sound entry (first: %s, enemy nation '%s') - %s is old or the nation is wrong\n",
+				 s_nKindsMissing, pszFirstKind ? pszFirstKind : "?", s_szNation, CHATTER_SCRIPT );
+	if ( !s_nWavesMissing && !s_nKindsMissing )
+		Msg( "DOD-SP German chatter: %d voices, %d lines for enemy nation '%s', all wave files found\n", GERMAN_CHATTER_VOICES, s_nWaves, s_szNation );
+}
+
 void CGermanChatter::LevelPrecache( void )
 {
 	// The sound system drops every override script at level end (ClearSoundOverrides), so
@@ -344,11 +522,12 @@ void CGermanChatter::LevelPrecache( void )
 	// remembered here. (A remembered "done for this map" broke on reloading the same map.)
 	char szTest[128];
 	Q_snprintf( szTest, sizeof( szTest ), "GermanChatter.v0.response_ack_yes.%s", s_szNation );
-	if ( !soundemitterbase->IsValidIndex( soundemitterbase->GetSoundIndex( szTest ) ) )
+	if ( !SoundExists( szTest ) )
 	{
 		soundemitterbase->AddSoundOverrides( CHATTER_SCRIPT, true );
-		if ( !soundemitterbase->IsValidIndex( soundemitterbase->GetSoundIndex( szTest ) ) )
+		if ( !SoundExists( szTest ) )
 		{
+			s_nEntries = s_nWaves = s_nWavesMissing = 0;
 			static float s_flNextWarn = 0.0f;
 			if ( Plat_FloatTime() >= s_flNextWarn )
 			{
@@ -357,20 +536,21 @@ void CGermanChatter::LevelPrecache( void )
 			}
 			return;
 		}
+		CheckChatterSounds();		// once per map: the script was just loaded
 	}
 
 	int nPrecached = 0;
 	char szName[128];
-	for ( int v = 0; v < 3; v++ )
+	for ( int v = 0; v < GERMAN_CHATTER_VOICES; v++ )
 	{
-		for ( int e = 0; e < NUM_CHAT_EVENTS; e++ )
+		for ( int e = 0; e < NUM_CHAT_EVENTS + (int)ARRAYSIZE( s_pszExtraCategories ); e++ )
 		{
 			if ( e == CHAT_ORDER_COVER )
 			{
-				for ( int k = -1; k < (int)ARRAYSIZE( s_pszLandmarks ); k++ )
+				for ( int k = 0; k < (int)ARRAYSIZE( s_pszLandmarks ); k++ )
 				{
-					Q_snprintf( szName, sizeof( szName ), "GermanChatter.v%d.order_cover_%s.%s", s_iVoices[v], k < 0 ? "generic" : s_pszLandmarks[k], s_szNation );
-					if ( soundemitterbase->IsValidIndex( soundemitterbase->GetSoundIndex( szName ) ) )
+					Q_snprintf( szName, sizeof( szName ), "GermanChatter.v%d.order_cover_%s.%s", s_iVoices[v], s_pszLandmarks[k], s_szNation );
+					if ( SoundExists( szName ) )
 					{
 						CBaseEntity::PrecacheScriptSound( szName );
 						nPrecached++;
@@ -378,17 +558,12 @@ void CGermanChatter::LevelPrecache( void )
 				}
 				continue;
 			}
-			for ( int pass = 0; pass < 2; pass++ )
+			const char *pszCategory = e < NUM_CHAT_EVENTS ? s_ChatDefs[e].pszCategory : s_pszExtraCategories[e - NUM_CHAT_EVENTS];
+			Q_snprintf( szName, sizeof( szName ), "GermanChatter.v%d.%s.%s", s_iVoices[v], pszCategory, s_szNation );
+			if ( SoundExists( szName ) )
 			{
-				if ( pass == 1 && e != CHAT_ACK_YES )
-					break;
-				Q_snprintf( szName, sizeof( szName ), "GermanChatter.v%d.%s.%s", s_iVoices[v],
-							pass == 1 ? "response_ack_norank_yes" : s_ChatDefs[e].pszCategory, s_szNation );
-				if ( soundemitterbase->IsValidIndex( soundemitterbase->GetSoundIndex( szName ) ) )
-				{
-					CBaseEntity::PrecacheScriptSound( szName );
-					nPrecached++;
-				}
+				CBaseEntity::PrecacheScriptSound( szName );
+				nPrecached++;
 			}
 		}
 	}
@@ -397,7 +572,7 @@ void CGermanChatter::LevelPrecache( void )
 		for ( int kind = 0; kind < 2; kind++ )
 		{
 			Q_snprintf( szName, sizeof( szName ), "GermanVoice.%c.%s", "mno"[i], kind ? "death" : "pain" );
-			if ( soundemitterbase->IsValidIndex( soundemitterbase->GetSoundIndex( szName ) ) )
+			if ( SoundExists( szName ) )
 			{
 				CBaseEntity::PrecacheScriptSound( szName );
 				nPrecached++;
@@ -405,9 +580,78 @@ void CGermanChatter::LevelPrecache( void )
 		}
 	}
 	if ( nPrecached == 0 )
-		Warning( "npc_german_soldier: no battle chatter - %s missing or empty (wave files go in sound/dodsp/chatter/de/<voice>/)\n", CHATTER_SCRIPT );
+		Warning( "npc_german_soldier: no battle chatter - %s missing or empty\n", CHATTER_SCRIPT );
 	else if ( npc_german_debug.GetBool() )
 		Msg( "npc_german_soldier: battle chatter - %d sound entries precached (enemy nation '%s')\n", nPrecached, s_szNation );
+}
+
+//-----------------------------------------------------------------------------
+// npc_german_chatter: what the soldiers said this map, and why the rest wasn't said
+//-----------------------------------------------------------------------------
+void CGermanChatter::Report( void )
+{
+	CheckNewMap();
+	int nSoldiers = 0, nSolo = 0, nVoice[GERMAN_CHATTER_VOICES] = { 0 };
+	for ( int i = 0; i < s_AllChatter.Count(); i++ )
+	{
+		CBaseEntity *pOwner = s_AllChatter[i]->m_hOwner.Get();
+		if ( !pOwner || !pOwner->IsAlive() )
+			continue;
+		nSoldiers++;
+		if ( s_AllChatter[i]->m_szSquad[0] == '#' )
+			nSolo++;
+		nVoice[ VoiceSlot( s_AllChatter[i]->m_iVoice ) ]++;
+	}
+	int nSaid = 0, nDrop[NUM_CHAT_DROPS] = { 0 };
+	for ( int e = 0; e < NUM_CHAT_EVENTS; e++ )
+	{
+		nSaid += s_nSaid[e];
+		for ( int d = 0; d < NUM_CHAT_DROPS; d++ )
+			nDrop[d] += s_nDropped[e][d];
+	}
+	char szLoad[160];
+	char szTest[128];
+	Q_snprintf( szTest, sizeof( szTest ), "GermanChatter.v0.response_ack_yes.%s", s_szNation );
+	if ( !SoundExists( szTest ) )
+		Q_snprintf( szLoad, sizeof( szLoad ), "SCRIPT NOT LOADED (%s)", CHATTER_SCRIPT );
+	else
+		Q_snprintf( szLoad, sizeof( szLoad ), "%d entries, %d/%d waves found", s_nEntries, s_nWaves - s_nWavesMissing, s_nWaves );
+	char szDrops[256] = "";
+	for ( int d = 0; d < NUM_CHAT_DROPS; d++ )
+	{
+		if ( !nDrop[d] )
+			continue;
+		char sz[32];
+		Q_snprintf( sz, sizeof( sz ), "%s%s %d", szDrops[0] ? ", " : "", s_pszDropNames[d], nDrop[d] );
+		Q_strncat( szDrops, sz, sizeof( szDrops ) );
+	}
+	Msg( "German chatter: %s, enemy '%s', %s | soldiers %d (voices %d/%d/%d/%d, %d without a squad) | said %d | not said: %s\n",
+		 s_bEnabled ? "on" : "OFF", s_szNation, szLoad, nSoldiers, nVoice[0], nVoice[1], nVoice[2], nVoice[3], nSolo, nSaid,
+		 szDrops[0] ? szDrops : "none" );
+	for ( int e = 0; e < NUM_CHAT_EVENTS; e++ )
+	{
+		int nAny = s_nSaid[e];
+		for ( int d = 0; d < NUM_CHAT_DROPS; d++ )
+			nAny += s_nDropped[e][d];
+		if ( !nAny )
+			continue;
+		char szLine[256];
+		Q_snprintf( szLine, sizeof( szLine ), "  %-26s said %d", s_ChatDefs[e].pszCategory, s_nSaid[e] );
+		for ( int d = 0; d < NUM_CHAT_DROPS; d++ )
+		{
+			if ( !s_nDropped[e][d] )
+				continue;
+			char sz[32];
+			Q_snprintf( sz, sizeof( sz ), ", %s %d", s_pszDropNames[d], s_nDropped[e][d] );
+			Q_strncat( szLine, sz, sizeof( szLine ) );
+		}
+		Msg( "%s\n", szLine );
+	}
+}
+
+CON_COMMAND( npc_german_chatter, "German battle chatter this map: what was said, what wasn't and why." )
+{
+	CGermanChatter::Report();
 }
 
 //-----------------------------------------------------------------------------

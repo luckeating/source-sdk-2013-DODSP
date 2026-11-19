@@ -16,6 +16,12 @@ into contact shadows while the per-pixel sun draws. So every line touching the s
 'dodsp-lint: map shadow value', and every ColorModulate (the shadow materials' colour) carries
 'dodsp-lint: shadow colour' (only DoDSP_ApplyShadowColor may write it). A new raw read would hand some
 shadows the map's long, slanted, dark shadow while the per-pixel sun already draws the real one.
+
+INVARIANT (German chatter, C1): every line kind german_chatter.cpp can ask for (s_ChatDefs, the extra
+categories, order_cover_<every landmark>) has a sound entry for EVERY voice in s_iVoices and every enemy
+nation in the generated script (dodsp_tools/generated/game_sounds_german_chatter.txt, the copy the owner
+gets), plus the six pain/death cries. Voice 1 was silent for months because the old generator dropped its
+files and nothing compared the code with the script.
 """
 import os
 import re
@@ -121,8 +127,48 @@ def check_owners():
     return bad
 
 
+CHATTER_CPP = os.path.join(ROOT, "game", "server", "dodsp", "german_chatter.cpp")
+CHATTER_SCRIPT = os.path.join(ROOT, "..", "..", "dodsp_tools", "generated", "game_sounds_german_chatter.txt")
+CHATTER_NATIONS = ["us", "uk", "ru"]
+
+
+def check_chatter():
+    with open(CHATTER_CPP, encoding="utf-8") as f:
+        code = f.read()
+    with open(CHATTER_SCRIPT, encoding="utf-8") as f:
+        entries = set(re.findall(r'^"([^"]+)"', f.read(), re.M))
+    defs = re.search(r"s_ChatDefs\[\]\s*=\s*\{(.*?)\};", code, re.S).group(1)
+    cats = [c for c in re.findall(r'\{\s*"([a-z_]+)",\s*GROUP_', defs) if c != "order_cover"]
+    cats += re.findall(r'"([a-z_]+)"', re.search(r"s_pszExtraCategories\[\]\s*=\s*\{(.*?)\};", code, re.S).group(1))
+    landmarks = re.findall(r'"([a-z]+)"', re.search(r"s_pszLandmarks\[\]\s*=\s*\{(.*?)\};", code, re.S).group(1))
+    cats += ["order_cover_" + l for l in landmarks]
+    voices = re.findall(r"\d+", re.search(r"s_iVoices\[\]\s*=\s*\{(.*?)\};", code, re.S).group(1))
+    bad = []
+    for v in voices:
+        for c in cats:
+            for n in CHATTER_NATIONS:
+                name = "GermanChatter.v%s.%s.%s" % (v, c, n)
+                if name not in entries:
+                    bad.append(name)
+    for spk in "mno":
+        for kind in ("pain", "death"):
+            if "GermanVoice.%s.%s" % (spk, kind) not in entries:
+                bad.append("GermanVoice.%s.%s" % (spk, kind))
+    if len(voices) < 4 or len(cats) < 50:
+        bad.append("parsed only %d voices / %d line kinds from german_chatter.cpp - the lint's patterns are out of date"
+                   % (len(voices), len(cats)))
+    return bad
+
+
 def main():
     bad = []
+    chatter_bad = check_chatter()
+    if chatter_bad:
+        print("dodsp_lint_client: German chatter asks for lines the generated sound script doesn't have:")
+        for b in chatter_bad[:30]:
+            print("  " + b)
+        print("  (%d in all) - regenerate with dodsp_tools/gen_chatter.py, or fix the category name in the code." % len(chatter_bad))
+        return 1
     owner_bad = check_owners()
     if owner_bad:
         print("dodsp_lint_client: a DOD-SP sun fact has a second owner:")
@@ -165,7 +211,7 @@ def main():
         print("Check DoDSP_SunShadersInUse() first (see c_physicsprop.cpp) and tag the line '%s'." % TAG)
         return 1
     print("dodsp_lint_client: OK (no unguarded static model lighting in the client; sun facts have one owner each; "
-          "prop shadows read through the sun-mode getters)")
+          "prop shadows read through the sun-mode getters; every chatter line exists in every voice)")
     return 0
 
 

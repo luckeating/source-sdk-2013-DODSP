@@ -36,6 +36,7 @@ on:
       - 'sp/src/public/dodsp_*.h'
       - 'sp/src/createdodspshadersprojects.bat'
       - 'sp/src/devtools/**'
+      - 'dodsp_tools/generated/**'   # the chatter sound script: the pre-build lint checks the code against it
   workflow_dispatch:
 
 jobs:

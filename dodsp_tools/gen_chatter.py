@@ -1,45 +1,115 @@
-"""Build scripts/game_sounds_german_chatter.txt from the de/<voice>/ge_<voice>_<category>_NN.wav set,
-plus (optional 3rd argument) the pain/death set: germaninjure/gen_<m|n|o>_painN.wav, germandeath/gen_<m|n|o>_deathN.wav.
-Usage: python3 gen_chatter.py de.zip out.txt [moresounds.zip]"""
-import zipfile, re, collections, sys
-z = zipfile.ZipFile(sys.argv[1]); out = sys.argv[2]
-files = [x for x in z.namelist() if x.endswith('.wav')]
+"""Build scripts/game_sounds_german_chatter.txt from the owner's CoD2 German voice set (Voices.zip).
+
+Usage: python3 gen_chatter.py Voices.zip out.txt
+
+Reads the set as shipped - .../Battlechatter/GE/<voice 0..3>/ge_<n>_<category>[_us|_uk|_ru]_NN[b].wav and
+.../Battlechatter/Axis/<M|N|O>/gen_<m|n|o>_<pain|death>N.wav - and writes one sound entry per line kind:
+    GermanChatter.v<voice>.<category>.<enemy nation>   (the plain lines + the lines naming that nation)
+    GermanVoice.<m|n|o>.<pain|death>                   (pain and death cries)
+The owner copies the set's Battlechatter folder into DOD-SP/sound/dodsp/ unchanged, so every wave path is
+dodsp/Battlechatter/<the file's path inside that folder>.
+
+What the set does that the old generator (de.zip) got wrong - lessons kept as rules here:
+- The VOICE is the folder. Folder 1's files are named GE_4_... (CoD's speaker 4); the old generator wanted the
+  number in the name to match the folder and silently dropped all 1014 of them (voice 1 was never heard).
+- One line kind has one name: voices spell some words differently (secondfloor/secondflr, northeast/ntheast,
+  crashedplane/crashplane, intersection/intersect, generic/genr, bruekner/bruckner, tree/trees in
+  order_cover). ALIASES maps each spelling to the one the code asks for, word by word.
+- A letter after the number (_01b) is another take of the same line: one more variant.
+INVARIANT (checked by devtools/dodsp_lint_client.py against the copy in dodsp_tools/generated/): every line kind
+the code can ask for exists for every voice and every enemy nation.
+"""
+import collections
+import re
+import sys
+import zipfile
+
 NATIONS = ['us', 'uk', 'ru']
-pat = re.compile(r'^ge_(\d)_(.+?)(?:_(us|uk|ru))?_(\d+)[a-z]?\.wav$')
-table = collections.defaultdict(lambda: collections.defaultdict(list))   # (voice, base) -> nation -> files
-for f in files:
-    parts = f.split('/'); name = parts[-1]; voice = parts[1]
-    m = pat.match(name)
-    if not m or m.group(1) != voice:
-        print('SKIP', f); continue
-    base = 'order_cover_tree' if m.group(2) == 'order_cover_trees' else m.group(2)
-    table[(voice, base)][m.group(3)].append(f'dodsp/chatter/de/{voice}/{name}')
-lines = ['// German battle chatter (3 voices). Generated from the de/ voice set - do not edit by hand.',
-         '// Entry: GermanChatter.v<voice>.<category>.<enemy nation>  =  the plain lines + the lines naming that nation.',
-         '// Wave files go in sound/dodsp/chatter/de/<voice>/', '']
-n = 0; bases = collections.defaultdict(set)
-for (voice, base) in sorted(table):
-    byn = table[(voice, base)]
-    for nat in NATIONS:
-        waves = sorted(byn.get(None, [])) + sorted(byn.get(nat, []))
-        if not waves: continue
-        n += 1; bases[base].add(voice)
-        lines += [f'"GermanChatter.v{voice}.{base}.{nat}"', '{', '\t"channel"\t\t"CHAN_VOICE"', '\t"volume"\t\t"1.0"',
-                  '\t"soundlevel"\t"SNDLVL_90dB"', '\t"pitch"\t\t\t"PITCH_NORM"', '\t"rndwave"', '\t{']
-        lines += [f'\t\t"wave"\t"{w}"' for w in waves]
-        lines += ['\t}', '}', '']
-if len(sys.argv) > 3:
-    z2 = zipfile.ZipFile(sys.argv[3]); cries = collections.defaultdict(list)
-    for f in z2.namelist():
-        m2 = re.match(r'^(germaninjure|germandeath)/gen_([mno])_(pain|death)\d+\.wav$', f)
-        if m2: cries[(m2.group(2), m2.group(3))].append('dodsp/voice/' + f)
-    lines += ['// Pain and death cries (3 speakers m/n/o). Wave files go in sound/dodsp/voice/germaninjure/ and germandeath/', '']
+VOICES = ['0', '1', '2', '3']
+ALIASES = {'secondflr': 'secondfloor', 'ntheast': 'northeast', 'nthwest': 'northwest', 'stheast': 'southeast',
+           'sthwest': 'southwest', 'crashplane': 'crashedplane', 'intersect': 'intersection', 'genr': 'generic',
+           'bruckner': 'bruekner'}
+WHOLE_ALIASES = {'order_cover_trees': 'order_cover_tree'}     # the code's landmark is "tree"
+LINE = re.compile(r'^ge_\d_(.+?)(?:_(us|uk|ru))?_(\d+)[a-z]?\.wav$', re.I)
+CRY = re.compile(r'^gen_([mno])_(pain|death)\d+\.wav$', re.I)
+
+
+def canonical(category):
+    category = '_'.join(ALIASES.get(w, w) for w in category.lower().split('_'))
+    return WHOLE_ALIASES.get(category, category)
+
+
+def entry(name, level, waves):
+    out = ['"%s"' % name, '{', '\t"channel"\t\t"CHAN_VOICE"', '\t"volume"\t\t"1.0"',
+           '\t"soundlevel"\t"%s"' % level, '\t"pitch"\t\t\t"PITCH_NORM"', '\t"rndwave"', '\t{']
+    out += ['\t\t"wave"\t"%s"' % w for w in waves]
+    return out + ['\t}', '}', '']
+
+
+def main():
+    z = zipfile.ZipFile(sys.argv[1])
+    out = sys.argv[2]
+    table = collections.defaultdict(lambda: collections.defaultdict(list))   # (voice, category) -> nation -> waves
+    cries = collections.defaultdict(list)
+    skipped, renamed = [], collections.Counter()
+    for f in z.namelist():
+        if not f.lower().endswith('.wav'):
+            continue
+        parts = f.replace('\\', '/').split('/')
+        if 'Battlechatter' not in parts:
+            skipped.append(f)
+            continue
+        wave = 'dodsp/' + '/'.join(parts[parts.index('Battlechatter'):])
+        name = parts[-1]
+        if len(parts) >= 3 and parts[-3] == 'GE' and parts[-2] in VOICES:
+            m = LINE.match(name)
+            if not m:
+                skipped.append(f)
+                continue
+            raw = m.group(1).lower()
+            cat = canonical(raw)
+            if cat != raw:
+                renamed[(raw, cat)] += 1
+            table[(parts[-2], cat)][m.group(2) and m.group(2).lower()].append(wave)
+        elif len(parts) >= 3 and parts[-3] == 'Axis':
+            m = CRY.match(name)
+            if m:
+                cries[(m.group(1).lower(), m.group(2).lower())].append(wave)
+            else:
+                skipped.append(f)      # melee shouts: not used yet
+        else:
+            skipped.append(f)
+
+    lines = ['// DOD-SP German battle chatter - GENERATED by dodsp_tools/gen_chatter.py from the CoD2 voice set. Do not edit.',
+             '// GermanChatter.v<voice>.<category>.<enemy nation> = the plain lines + the lines naming that nation.',
+             '// GermanVoice.<m|n|o>.<pain|death> = pain and death cries.',
+             '// Wave files: copy the set\'s Battlechatter folder into DOD-SP/sound/dodsp/ (unchanged).', '']
+    entries = 0
+    per_voice = collections.defaultdict(set)
+    for (voice, cat) in sorted(table):
+        byn = table[(voice, cat)]
+        for nat in NATIONS:
+            waves = sorted(byn.get(None, [])) + sorted(byn.get(nat, []))
+            if not waves:
+                continue
+            lines += entry('GermanChatter.v%s.%s.%s' % (voice, cat, nat), 'SNDLVL_90dB', waves)
+            entries += 1
+            per_voice[cat].add(voice)
     for (spk, kind) in sorted(cries):
-        lines += [f'"GermanVoice.{spk}.{kind}"', '{', '\t"channel"\t\t"CHAN_VOICE"', '\t"volume"\t\t"1.0"',
-                  '\t"soundlevel"\t"SNDLVL_85dB"', '\t"pitch"\t\t\t"PITCH_NORM"', '\t"rndwave"', '\t{']
-        lines += [f'\t\t"wave"\t"{w}"' for w in sorted(cries[(spk, kind)])]
-        lines += ['\t}', '}', '']
-        n += 1
-open(out, 'w', newline='\r\n').write('\n'.join(lines))
-print(n, 'entries;', len(bases), 'categories')
-for b in sorted(bases): print(' ', b, sorted(bases[b]))
+        lines += entry('GermanVoice.%s.%s' % (spk, kind), 'SNDLVL_85dB', sorted(cries[(spk, kind)]))
+        entries += 1
+    with open(out, 'w', newline='\r\n') as f:
+        f.write('\n'.join(lines))
+
+    waves = sum(len(w) for byn in table.values() for w in byn.values()) + sum(len(w) for w in cries.values())
+    print('%d entries, %d wave files, %d line kinds, %d cry sets' % (entries, waves, len(per_voice), len(cries)))
+    for (raw, cat), n in sorted(renamed.items()):
+        print('  spelling merged: %s -> %s (%d files)' % (raw, cat, n))
+    gaps = sorted((c, ''.join(sorted(v))) for c, v in per_voice.items() if len(v) < len(VOICES))
+    for c, v in gaps:
+        print('  only voices %s have %s' % (v, c))
+    print('  not used (%d): %s' % (len(skipped), ', '.join(sorted(s.split('/')[-1] for s in skipped)[:12])))
+
+
+if __name__ == '__main__':
+    main()
