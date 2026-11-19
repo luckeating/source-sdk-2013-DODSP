@@ -8,7 +8,10 @@
 //   turret_offset    where the turret model sits on the hull, model space (x sideways, y along, z up).
 //                    ESTIMATED from the models (deck height + the turret ring hole): fine-tune in game with
 //                    dodsp_vehicle_turret x y z, which prints the line to paste here.
-//   seats            riders (stage V3), model space, yaw relative to the vehicle's front. Estimated too.
+//   seats            riders (stage V3), model space, yaw relative to the vehicle's front (+90 = facing its left).
+//                    MEASURED from the models' flat surfaces (2026-11-19): halftrack troop bay floor z 30, side benches
+//                    z 40 at x +-27..43 from y 16 to 101 (riders face inward); tank riders on the engine deck behind
+//                    the turret (Panzer II z 66-72, Sherman 72-80, Tiger 76-82), facing outward.
 "DoDSP_Vehicles"
 {
 	"panzer2"
@@ -25,10 +28,10 @@
 		"turn_rate"			"30"
 		"seats"
 		{
-			"seat"	{ "origin"	"-30 60 72"		"yaw"	"90" }
-			"seat"	{ "origin"	"30 60 72"		"yaw"	"-90" }
-			"seat"	{ "origin"	"-30 95 66"		"yaw"	"90" }
-			"seat"	{ "origin"	"30 95 66"		"yaw"	"-90" }
+			"seat"	{ "origin"	"-28 45 70"		"yaw"	"-90" }
+			"seat"	{ "origin"	"28 45 70"		"yaw"	"90" }
+			"seat"	{ "origin"	"-28 85 68"		"yaw"	"-90" }
+			"seat"	{ "origin"	"28 85 68"		"yaw"	"90" }
 		}
 	}
 	"panzer2_winter"
@@ -58,10 +61,10 @@
 		"turn_rate"			"16"
 		"seats"
 		{
-			"seat"	{ "origin"	"-40 70 86"		"yaw"	"90" }
-			"seat"	{ "origin"	"40 70 86"		"yaw"	"-90" }
-			"seat"	{ "origin"	"-40 105 86"	"yaw"	"90" }
-			"seat"	{ "origin"	"40 105 86"		"yaw"	"-90" }
+			"seat"	{ "origin"	"-40 70 78"		"yaw"	"-90" }
+			"seat"	{ "origin"	"40 70 78"		"yaw"	"90" }
+			"seat"	{ "origin"	"-40 108 81"		"yaw"	"-90" }
+			"seat"	{ "origin"	"40 108 81"		"yaw"	"90" }
 		}
 	}
 	"tiger_brush"
@@ -91,10 +94,10 @@
 		"turn_rate"			"24"
 		"seats"
 		{
-			"seat"	{ "origin"	"-30 60 82"		"yaw"	"90" }
-			"seat"	{ "origin"	"30 60 82"		"yaw"	"-90" }
-			"seat"	{ "origin"	"-30 95 80"		"yaw"	"90" }
-			"seat"	{ "origin"	"30 95 80"		"yaw"	"-90" }
+			"seat"	{ "origin"	"-30 55 74"		"yaw"	"-90" }
+			"seat"	{ "origin"	"30 55 74"		"yaw"	"90" }
+			"seat"	{ "origin"	"-30 95 76"		"yaw"	"-90" }
+			"seat"	{ "origin"	"30 95 76"		"yaw"	"90" }
 		}
 	}
 	"sherman_desert"
@@ -150,14 +153,14 @@
 		"turn_rate"			"28"
 		"seats"
 		{
-			"seat"	{ "origin"	"-30 25 42"		"yaw"	"-90" }
-			"seat"	{ "origin"	"-30 50 42"		"yaw"	"-90" }
-			"seat"	{ "origin"	"-30 75 42"		"yaw"	"-90" }
-			"seat"	{ "origin"	"-30 100 42"	"yaw"	"-90" }
-			"seat"	{ "origin"	"30 25 42"		"yaw"	"90" }
-			"seat"	{ "origin"	"30 50 42"		"yaw"	"90" }
-			"seat"	{ "origin"	"30 75 42"		"yaw"	"90" }
-			"seat"	{ "origin"	"30 100 42"		"yaw"	"90" }
+			"seat"	{ "origin"	"-35 25 40"		"yaw"	"90" }
+			"seat"	{ "origin"	"-35 48 40"		"yaw"	"90" }
+			"seat"	{ "origin"	"-35 71 40"		"yaw"	"90" }
+			"seat"	{ "origin"	"-35 94 40"		"yaw"	"90" }
+			"seat"	{ "origin"	"35 25 40"		"yaw"	"-90" }
+			"seat"	{ "origin"	"35 48 40"		"yaw"	"-90" }
+			"seat"	{ "origin"	"35 71 40"		"yaw"	"-90" }
+			"seat"	{ "origin"	"35 94 40"		"yaw"	"-90" }
 		}
 	}
 	"halftrack_desert"
