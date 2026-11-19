@@ -450,6 +450,12 @@ If you learn something like this, add it here in the same commit as the fix.
   wants to move, < 8 units and < 10 degrees in 3 s -> stuck (world / entity / no-progress / no-route by reason code),
   plan again. Console: dodsp_vehicle_goto [all], dodsp_vehicles, dodsp_vehicle_turret x y z, dodsp_vehicle_reload,
   dodsp_vehicle_debug 1 (route lines). Undo: remove the entities (nothing else uses the code).
+- CoD1 set (owner's vehicles_part2.zip, 2026-11-19): REFERENCE ONLY except the **SU-152, which we keep**. One model per
+  vehicle, turret/gun as BONES (tag_turret, tag_barrel, tag_flash = muzzle, tag_coaxel), faces +X (forward_yaw 0),
+  CoD's rider tags tag_guy01..06 (Sherman, Elefant, SU-152: 6; Opel truck driver/passenger + 4), NO .phy (needs a
+  $collisionmodel before it can drive - Claude can generate box collision SMDs + QC lines). Its tag_wheel_* markers sit
+  at z 0 and contain "wheel": the client wheel spinner must skip bones at ground height before a CoD1 model drives.
+  The Elefant/SU-152 are casemate guns: V2 needs a "hull aims" mode (the owner asked about a StuG).
 
 ## Later (agreed, not scheduled)
 - **Graphics options in the menu** (owner asked 2026-11-18, "later"). Valve's Video > Advanced page is GameUI.dll (engine
