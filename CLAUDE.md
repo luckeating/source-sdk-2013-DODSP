@@ -426,6 +426,31 @@ If you learn something like this, add it here in the same commit as the fix.
     exposure, the same for brushes and props.
 - Confirmed 2026-11-17: `buildcubemaps` no longer crashes with the sun shaders loaded (3b4).
 
+## Vehicles roadmap (owner 2026-11-19: moving tanks that aim, infantry riding; ground armour first)
+- Content: the owner's CoD2 conversions (vehicles.zip, artillery.zip, planes.zip; hobby only like the rest). MDL v48,
+  checksums good, 1 LOD. LIVE models face -Y (barrels to -Y): `forward_yaw -90`; *_dead models face +X (forward_yaw
+  0, V4). Hulls carry wheel bones (panzer2 14, sherman 16, tiger 20, crusader 14, armoredcar 4); turrets: bones
+  turret+barrel, pose `barrel_pitch` -15..30, attachment `muzzle`, no .phy. Hulls have NO turret attachment: turret
+  offsets are ESTIMATES in the script (deck height + turret-ring hole; tiger fitted against its wreck: 0 -11 108).
+  Scale ~1.1-1.3x real (owner to check against a player). Textures not in the zips (materials/models/cod2/...).
+- Owner's choices: per-vehicle SCRIPT file for seats/mounts (not QC attachments), FREE AI driving (not path_track),
+  riders tank 4 / halftrack 8.
+- Stages: V1 drive, V2 aim + fire, V3 riders (seats in the script already), V4 damage (dead models).
+- **V1 BUILT 2026-11-19.** server dodsp/dodsp_vehicle.cpp (`dodsp_vehicle`, keys vehicletype/goal, inputs DriveTo/
+  Stop/SetMaxSpeed, outputs OnArrived/OnStuck/OnNoRoute), client dodsp/c_dodsp_vehicle.cpp (wheel bones turned in
+  BuildTransformations, material proxy `DoDSPTrackScroll`; one distance owner for both), content
+  dodsp_tools/content/scripts/dodsp_vehicles.txt + dodsp_vehicles.fgd. Size from the model. Navigation: the soldiers'
+  AI node graph, each link graded per vehicle half-width by CorridorClear (ground every 32 units, no step > 36,
+  normal z >= 0.6, three lines x two heights + a cross line clear) - the ONE fit test, also used to straighten routes;
+  load line `DOD-SP vehicles: <type> (<w> units wide) can drive N of M node links`. A* skipping links it got stuck on
+  (30 s refusal memory). Movement: MOVETYPE_PUSH + vphysics shadow (the engine pushes people/props, Blocked() when it
+  can't); pushers go through the world, so DriveThink sweeps its own collision model ahead (UTIL_TraceEntity) and
+  stops for walls. Orientation from four corner ground traces (BuildAngles maps model axes -> heading/ground).
+  Tracked: pivots when the turn is > 50 degrees; wheeled: yaw rate <= speed / min_turn_radius. Watchdog INVARIANT:
+  wants to move, < 8 units and < 10 degrees in 3 s -> stuck (world / entity / no-progress / no-route by reason code),
+  plan again. Console: dodsp_vehicle_goto [all], dodsp_vehicles, dodsp_vehicle_turret x y z, dodsp_vehicle_reload,
+  dodsp_vehicle_debug 1 (route lines). Undo: remove the entities (nothing else uses the code).
+
 ## Later (agreed, not scheduled)
 - **Graphics options in the menu** (owner asked 2026-11-18, "later"). Valve's Video > Advanced page is GameUI.dll (engine
   binary, not in the SDK), so: a "DOD-SP Graphics" main-menu entry (GameMenu.res, `engine <command>`) opening our own

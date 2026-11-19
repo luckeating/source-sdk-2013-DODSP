@@ -43,6 +43,7 @@ $Project "Client (HL2)"
 		$File	"dodsp\c_dodsp_lightorigin.cpp"
 		$File	"dodsp\c_dodsp_lamps.cpp"
 		$File	"dodsp\c_npc_german_soldier.cpp"
+		$File	"dodsp\c_dodsp_vehicle.cpp"
 	}
 
 	$Folder	"Source Files"

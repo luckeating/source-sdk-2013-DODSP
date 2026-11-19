@@ -1,0 +1,211 @@
+// DOD-SP vehicle types - one block per kind of vehicle. Goes in DOD-SP\scripts\dodsp_vehicles.txt.
+// A dodsp_vehicle in Hammer names one of these with its "vehicletype" key.
+//
+// Size comes from the model (never typed here). Speeds in units/s (1 unit ~ 1 inch: 39 units/s = 1 m/s),
+// accel/brake in units/s^2, turn_rate in degrees/s.
+//   forward_yaw      which way the model faces in model space: the CoD2 vehicles face -Y = -90
+//   tracked 1        pivots on the spot; 0 = turns like a car (min_turn_radius)
+//   turret_offset    where the turret model sits on the hull, model space (x sideways, y along, z up).
+//                    ESTIMATED from the models (deck height + the turret ring hole): fine-tune in game with
+//                    dodsp_vehicle_turret x y z, which prints the line to paste here.
+//   seats            riders (stage V3), model space, yaw relative to the vehicle's front. Estimated too.
+"DoDSP_Vehicles"
+{
+	"panzer2"
+	{
+		"model"				"models/cod2/vehicles/panzer2_hull.mdl"
+		"turret_model"		"models/cod2/vehicles/panzer2_turret.mdl"
+		"turret_offset"		"0 -20 97"
+		"forward_yaw"		"-90"
+		"tracked"			"1"
+		"max_speed"			"220"
+		"reverse_speed"		"80"
+		"accel"				"70"
+		"brake"				"160"
+		"turn_rate"			"30"
+		"seats"
+		{
+			"seat"	{ "origin"	"-30 60 72"		"yaw"	"90" }
+			"seat"	{ "origin"	"30 60 72"		"yaw"	"-90" }
+			"seat"	{ "origin"	"-30 95 66"		"yaw"	"90" }
+			"seat"	{ "origin"	"30 95 66"		"yaw"	"-90" }
+		}
+	}
+	"panzer2_winter"
+	{
+		"model"				"models/cod2/vehicles/panzer2_winter_hull.mdl"
+		"turret_model"		"models/cod2/vehicles/panzer2_winter_turret.mdl"
+		"turret_offset"		"0 -20 97"
+		"forward_yaw"		"-90"
+		"tracked"			"1"
+		"max_speed"			"220"
+		"reverse_speed"		"80"
+		"accel"				"70"
+		"brake"				"160"
+		"turn_rate"			"30"
+	}
+	"tiger"
+	{
+		"model"				"models/cod2/vehicles/tiger_hull.mdl"
+		"turret_model"		"models/cod2/vehicles/tiger_turret.mdl"
+		"turret_offset"		"0 -11 108"
+		"forward_yaw"		"-90"
+		"tracked"			"1"
+		"max_speed"			"150"
+		"reverse_speed"		"60"
+		"accel"				"35"
+		"brake"				"120"
+		"turn_rate"			"16"
+		"seats"
+		{
+			"seat"	{ "origin"	"-40 70 86"		"yaw"	"90" }
+			"seat"	{ "origin"	"40 70 86"		"yaw"	"-90" }
+			"seat"	{ "origin"	"-40 105 86"	"yaw"	"90" }
+			"seat"	{ "origin"	"40 105 86"		"yaw"	"-90" }
+		}
+	}
+	"tiger_brush"
+	{
+		"model"				"models/cod2/vehicles/tiger_brush_hull.mdl"
+		"turret_model"		"models/cod2/vehicles/tiger_brush_turret.mdl"
+		"turret_offset"		"0 -11 108"
+		"forward_yaw"		"-90"
+		"tracked"			"1"
+		"max_speed"			"150"
+		"reverse_speed"		"60"
+		"accel"				"35"
+		"brake"				"120"
+		"turn_rate"			"16"
+	}
+	"sherman"
+	{
+		"model"				"models/cod2/vehicles/sherman_hull.mdl"
+		"turret_model"		"models/cod2/vehicles/sherman_turret.mdl"
+		"turret_offset"		"0 -15 116"
+		"forward_yaw"		"-90"
+		"tracked"			"1"
+		"max_speed"			"190"
+		"reverse_speed"		"70"
+		"accel"				"55"
+		"brake"				"150"
+		"turn_rate"			"24"
+		"seats"
+		{
+			"seat"	{ "origin"	"-30 60 82"		"yaw"	"90" }
+			"seat"	{ "origin"	"30 60 82"		"yaw"	"-90" }
+			"seat"	{ "origin"	"-30 95 80"		"yaw"	"90" }
+			"seat"	{ "origin"	"30 95 80"		"yaw"	"-90" }
+		}
+	}
+	"sherman_desert"
+	{
+		"model"				"models/cod2/vehicles/sherman_desert_hull.mdl"
+		"turret_model"		"models/cod2/vehicles/sherman_desert_turret.mdl"
+		"turret_offset"		"0 -15 116"
+		"forward_yaw"		"-90"
+		"tracked"			"1"
+		"max_speed"			"190"
+		"reverse_speed"		"70"
+		"accel"				"55"
+		"brake"				"150"
+		"turn_rate"			"24"
+	}
+	"crusader"
+	{
+		"model"				"models/cod2/vehicles/crusader_hull.mdl"
+		"turret_model"		"models/cod2/vehicles/crusader_turret.mdl"
+		"turret_offset"		"0 -18 109"
+		"forward_yaw"		"-90"
+		"tracked"			"1"
+		"max_speed"			"220"
+		"reverse_speed"		"80"
+		"accel"				"65"
+		"brake"				"160"
+		"turn_rate"			"26"
+	}
+	"armoredcar"
+	{
+		"model"				"models/cod2/vehicles/armoredcar_hull.mdl"
+		"turret_model"		"models/cod2/vehicles/armoredcar_turret.mdl"
+		"turret_offset"		"0 -7 82"
+		"forward_yaw"		"-90"
+		"tracked"			"0"
+		"min_turn_radius"	"280"
+		"max_speed"			"260"
+		"reverse_speed"		"90"
+		"accel"				"80"
+		"brake"				"180"
+		"turn_rate"			"35"
+	}
+	"halftrack"
+	{
+		"model"				"models/cod2/vehicles/halftrack.mdl"
+		"forward_yaw"		"-90"
+		"tracked"			"0"
+		"min_turn_radius"	"300"
+		"max_speed"			"200"
+		"reverse_speed"		"70"
+		"accel"				"60"
+		"brake"				"160"
+		"turn_rate"			"28"
+		"seats"
+		{
+			"seat"	{ "origin"	"-30 25 42"		"yaw"	"-90" }
+			"seat"	{ "origin"	"-30 50 42"		"yaw"	"-90" }
+			"seat"	{ "origin"	"-30 75 42"		"yaw"	"-90" }
+			"seat"	{ "origin"	"-30 100 42"	"yaw"	"-90" }
+			"seat"	{ "origin"	"30 25 42"		"yaw"	"90" }
+			"seat"	{ "origin"	"30 50 42"		"yaw"	"90" }
+			"seat"	{ "origin"	"30 75 42"		"yaw"	"90" }
+			"seat"	{ "origin"	"30 100 42"		"yaw"	"90" }
+		}
+	}
+	"halftrack_desert"
+	{
+		"model"				"models/cod2/vehicles/halftrack_desert.mdl"
+		"forward_yaw"		"-90"
+		"tracked"			"0"
+		"min_turn_radius"	"300"
+		"max_speed"			"200"
+		"reverse_speed"		"70"
+		"accel"				"60"
+		"brake"				"160"
+		"turn_rate"			"28"
+	}
+	"halftrack_snow"
+	{
+		"model"				"models/cod2/vehicles/halftrack_snow.mdl"
+		"forward_yaw"		"-90"
+		"tracked"			"0"
+		"min_turn_radius"	"300"
+		"max_speed"			"200"
+		"reverse_speed"		"70"
+		"accel"				"60"
+		"brake"				"160"
+		"turn_rate"			"28"
+	}
+	"halftrack_rockets"
+	{
+		"model"				"models/cod2/vehicles/halftrack_rockets.mdl"
+		"forward_yaw"		"-90"
+		"tracked"			"0"
+		"min_turn_radius"	"300"
+		"max_speed"			"200"
+		"reverse_speed"		"70"
+		"accel"				"60"
+		"brake"				"160"
+		"turn_rate"			"28"
+	}
+	"carrier"
+	{
+		"model"				"models/cod2/vehicles/carrier.mdl"
+		"forward_yaw"		"-90"
+		"tracked"			"0"
+		"min_turn_radius"	"150"
+		"max_speed"			"230"
+		"reverse_speed"		"80"
+		"accel"				"75"
+		"brake"				"170"
+		"turn_rate"			"35"
+	}
+}
