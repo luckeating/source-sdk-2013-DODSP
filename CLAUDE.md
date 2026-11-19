@@ -428,8 +428,11 @@ If you learn something like this, add it here in the same commit as the fix.
 
 ## Vehicles roadmap (owner 2026-11-19: moving tanks that aim, infantry riding; ground armour first)
 - Content: the owner's CoD2 conversions (vehicles.zip, artillery.zip, planes.zip; hobby only like the rest). MDL v48,
-  checksums good, 1 LOD. LIVE models face -Y (barrels to -Y): `forward_yaw -90`; *_dead models face +X (forward_yaw
-  0, V4). Hulls carry wheel bones (panzer2 14, sherman 16, tiger 20, crusader 14, armoredcar 4); turrets: bones
+  checksums good, 1 LOD. EVERY model faces +X IN GAME (forward_yaw 0) - the live models' MESHES (.vvd) face -Y,
+  but studiomdl's default 90-degree root rotation lives in their animation (MDL hull box is X-long); *_dead and CoD1
+  models have no rotation. LESSON (V1 test): read directions from the MDL hull box, never the raw mesh. V1 shipped
+  forward_yaw -90: Panzer II graded "256 units wide", turret offset sideways. Guard: Spawn INVARIANT when a vehicle
+  is wider than long along forward_yaw. Hulls carry wheel bones (panzer2 14, sherman 16, tiger 20, crusader 14, armoredcar 4); turrets: bones
   turret+barrel, pose `barrel_pitch` -15..30, attachment `muzzle`, no .phy. Hulls have NO turret attachment: turret
   offsets are ESTIMATES in the script (deck height + turret-ring hole; tiger fitted against its wreck: 0 -11 108).
   Scale ~1.1-1.3x real (owner to check against a player). Textures not in the zips (materials/models/cod2/...).
@@ -450,6 +453,13 @@ If you learn something like this, add it here in the same commit as the fix.
   wants to move, < 8 units and < 10 degrees in 3 s -> stuck (world / entity / no-progress / no-route by reason code),
   plan again. Console: dodsp_vehicle_goto [all], dodsp_vehicles, dodsp_vehicle_turret x y z, dodsp_vehicle_reload,
   dodsp_vehicle_debug 1 (route lines). Undo: remove the entities (nothing else uses the code).
+  FIRST TEST 2026-11-19 (build 44524896164, carentan_south_1a, 4 nodes): tank spawned, turret on, but "(256 units
+  wide) can drive 0 of 0 node links" and goto -> no-route. Causes: (1) forward_yaw -90 (see Content) -> width read
+  along the length; (2) grading ran in Activate, BEFORE the engine built the node links ("Node Graph out of Date.
+  Rebuilding" came after). V1b: forward_yaw 0 + turret/seat positions turned into the in-game frame; grading 1.5 s
+  after activation and cached per map + node count + LINK count; INVARIANT when nodes exist but no links. The
+  converted tread materials name proxy "COD2TreadScroll": registered as a second name of DoDSPTrackScroll. Wheel
+  spinner skips bones below 4 units (CoD's ground tags). The owner's shader DLL was build 5a vs client 5a2.
 - CoD1 set (owner's vehicles_part2.zip, 2026-11-19): REFERENCE ONLY except the **SU-152, which we keep**. One model per
   vehicle, turret/gun as BONES (tag_turret, tag_barrel, tag_flash = muzzle, tag_coaxel), faces +X (forward_yaw 0),
   CoD's rider tags tag_guy01..06 (Sherman, Elefant, SU-152: 6; Opel truck driver/passenger + 4), NO .phy (needs a

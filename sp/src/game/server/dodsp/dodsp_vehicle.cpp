@@ -13,8 +13,13 @@
 //     Pushers pass through the world, so DriveThink sweeps the vehicle's own collision model ahead
 //     and stops for walls itself.
 //
-// Models face -Y (the CoD2 conversions): "forward_yaw" -90 in the script. Entity yaw = heading -
-// forward_yaw; DriveThink builds the full orientation from heading + ground (BuildAngles).
+// "forward_yaw" = which way the model faces IN GAME (0 = +X, every CoD2/CoD1 vehicle). Entity yaw =
+// heading - forward_yaw; DriveThink builds the full orientation from heading + ground (BuildAngles).
+// LESSON (V1 test 2026-11-19): read directions from the MDL's hull box, never from the raw mesh (.vvd): an
+// animated model's mesh is in the SMD's frame and studiomdl's default 90-degree root rotation lives in
+// its animation - the CoD2 meshes face -Y, the models face +X in game. V1 shipped forward_yaw -90 and
+// the Panzer II graded as 256 units wide. INVARIANT (Spawn): a vehicle longer sideways than along its
+// forward_yaw says so.
 //
 // INVARIANTs (console, "INVARIANT DOD-SP vehicle"): a vehicle that wants to move and hasn't moved 8 units
 // in 3 s is stuck - it says why (world / an entity / no route) by reason code, remembers the bad link for
@@ -104,7 +109,7 @@ static void LoadVehicleTypes( bool bForce )
 		Q_strncpy( t->szModel, pType->GetString( "model" ), sizeof( t->szModel ) );
 		Q_strncpy( t->szTurretModel, pType->GetString( "turret_model" ), sizeof( t->szTurretModel ) );
 		ParseVector( pType->GetString( "turret_offset", "0 0 0" ), t->vecTurretOffset );
-		t->flForwardYaw = pType->GetFloat( "forward_yaw", -90.0f );
+		t->flForwardYaw = pType->GetFloat( "forward_yaw", 0.0f );
 		t->bTracked = pType->GetBool( "tracked", true );
 		t->flMaxSpeed = pType->GetFloat( "max_speed", 160.0f );
 		t->flReverseSpeed = pType->GetFloat( "reverse_speed", 60.0f );
@@ -235,6 +240,7 @@ struct VehicleNav_t
 	int		iHalfWidth;
 	char	szMap[64];
 	int		nNodes;
+	int		nGraphLinks;
 	CUtlVector< CUtlVector<int> > links;	// per node: the nodes a vehicle this wide can drive to
 };
 static CUtlVector<VehicleNav_t *> s_Navs;
@@ -250,16 +256,21 @@ static VehicleNav_t *GetVehicleNav( float flHalfWidth, const char *pszTypeName )
 		return NULL;
 	int iHalf = (int)( ceilf( flHalfWidth / 8.0f ) * 8.0f );
 	const char *pszMap = STRING( gpGlobals->mapname );
+	// the graph as it is now: a grading is for one map, node count and link count (the engine builds or
+	// rebuilds the links AFTER entities activate - V1 graded the unbuilt graph: "0 of 0 node links")
+	int nGraphLinks = 0;
+	for ( int i = 0; i < g_pBigAINet->NumNodes(); i++ )
+		nGraphLinks += g_pBigAINet->GetNode( i, false )->NumLinks();
 	for ( int i = 0; i < s_Navs.Count(); i++ )
 	{
 		VehicleNav_t *pNav = s_Navs[i];
-		if ( pNav->iHalfWidth == iHalf && pNav->nNodes == g_pBigAINet->NumNodes() && !Q_strcmp( pNav->szMap, pszMap ) )
+		if ( pNav->iHalfWidth == iHalf && pNav->nNodes == g_pBigAINet->NumNodes() && pNav->nGraphLinks == nGraphLinks && !Q_strcmp( pNav->szMap, pszMap ) )
 			return pNav;
 	}
-	// a new map: forget the old maps' grading
+	// a new map or a rebuilt graph: forget the old grading
 	for ( int i = s_Navs.Count() - 1; i >= 0; i-- )
 	{
-		if ( Q_strcmp( s_Navs[i]->szMap, pszMap ) || s_Navs[i]->nNodes != g_pBigAINet->NumNodes() )
+		if ( Q_strcmp( s_Navs[i]->szMap, pszMap ) || s_Navs[i]->nNodes != g_pBigAINet->NumNodes() || s_Navs[i]->nGraphLinks != nGraphLinks )
 		{
 			delete s_Navs[i];
 			s_Navs.Remove( i );
@@ -270,6 +281,7 @@ static VehicleNav_t *GetVehicleNav( float flHalfWidth, const char *pszTypeName )
 	pNav->iHalfWidth = iHalf;
 	Q_strncpy( pNav->szMap, pszMap, sizeof( pNav->szMap ) );
 	pNav->nNodes = g_pBigAINet->NumNodes();
+	pNav->nGraphLinks = nGraphLinks;
 	pNav->links.SetCount( pNav->nNodes );
 	int nLinks = 0, nOK = 0, nNodesReach = 0;
 	for ( int i = 0; i < pNav->nNodes; i++ )
@@ -298,8 +310,10 @@ static VehicleNav_t *GetVehicleNav( float flHalfWidth, const char *pszTypeName )
 		if ( pNav->links[i].Count() )
 			nNodesReach++;
 	s_Navs.AddToTail( pNav );
-	Msg( "DOD-SP vehicles: %s (%d units wide) can drive %d of %d node links (%d of %d nodes) on %s - graded in %.2f s\n",
+	Msg( "DOD-SP vehicles: %s (%d units wide, rounded up) can drive %d of %d node links (%d of %d nodes) on %s - graded in %.2f s\n",
 		 pszTypeName, iHalf * 2, nOK, nLinks, nNodesReach, pNav->nNodes, pszMap, Plat_FloatTime() - flStart );
+	if ( pNav->nNodes > 1 && nLinks == 0 )
+		Warning( "INVARIANT DOD-SP vehicles: %s has %d nodes but no links between them yet (graph not built, or nodes out of each other's sight)\n", pszMap, pNav->nNodes );
 	if ( nLinks > 0 && nOK == 0 )
 		Warning( "INVARIANT DOD-SP vehicles: no node link on %s is wide enough for %s - it can only drive straight to a goal in plain view\n", pszMap, pszTypeName );
 	return pNav;
@@ -364,6 +378,7 @@ private:
 	float			m_flProgressHeading;
 	float			m_flProgressTime;
 	bool			m_bInitialGoalDone;
+	float			m_flNavCheckTime;			// >0: grade the graph (and drive to the initial goal) at this time
 	VehicleStuck_t	m_eStuck;
 	EHANDLE			m_hBlocker;
 	float			m_flBlockedTime;
@@ -417,6 +432,7 @@ CDoDSPVehicle::CDoDSPVehicle()
 	m_flProgressTime = 0.0f;
 	m_flProgressHeading = 0.0f;
 	m_bInitialGoalDone = false;
+	m_flNavCheckTime = 0.0f;
 	m_iLastFrom = m_iLastTo = -1;
 	s_All.AddToTail( this );
 }
@@ -459,6 +475,9 @@ void CDoDSPVehicle::Spawn( void )
 	Vector vecFwd( cosf( flYawRad ), sinf( flYawRad ), 0.0f );
 	m_flHalfLength = 0.5f * fabs( DotProduct( vecMaxs - vecMins, vecFwd ) );
 	m_flHalfWidth = 0.5f * fabs( DotProduct( vecMaxs - vecMins, Vector( -vecFwd.y, vecFwd.x, 0.0f ) ) );
+	if ( m_flHalfWidth > m_flHalfLength * 1.05f )
+		Warning( "INVARIANT DOD-SP vehicle %s (%s): the model is %.0f long but %.0f wide along forward_yaw %.0f - a vehicle is longer than it is wide, so forward_yaw is probably wrong (90 off)\n",
+				 GetDebugName(), m_pType->szName, m_flHalfLength * 2.0f, m_flHalfWidth * 2.0f, m_pType->flForwardYaw );
 
 	SetSolid( SOLID_VPHYSICS );
 	SetMoveType( MOVETYPE_PUSH );
@@ -498,15 +517,7 @@ void CDoDSPVehicle::Spawn( void )
 void CDoDSPVehicle::Activate( void )
 {
 	BaseClass::Activate();
-	if ( m_pType )
-		GetVehicleNav( m_flHalfWidth, m_pType->szName );		// grade the map now, not mid-fight
-	if ( m_iszInitialGoal != NULL_STRING && !m_bInitialGoalDone )
-	{
-		m_bInitialGoalDone = true;		// once - Activate runs again after a save is loaded
-		CBaseEntity *pGoal = gEntList.FindEntityByName( NULL, m_iszInitialGoal );
-		if ( pGoal )
-			DriveTo( pGoal->GetAbsOrigin() );
-	}
+	m_flNavCheckTime = gpGlobals->curtime + 1.5f;		// grade and set off once the node graph is built (DriveThink)
 }
 
 float CDoDSPVehicle::HeadingFromAngles( void ) const
@@ -757,6 +768,20 @@ void CDoDSPVehicle::DriveThink( void )
 	float now = gpGlobals->curtime;
 	Vector vecPos = GetAbsOrigin();
 	Vector vecFwd( cosf( DEG2RAD( m_flHeading ) ), sinf( DEG2RAD( m_flHeading ) ), 0.0f );
+	if ( m_flNavCheckTime > 0.0f && now >= m_flNavCheckTime )
+	{
+		m_flNavCheckTime = 0.0f;
+		GetVehicleNav( m_flHalfWidth, m_pType->szName );		// the load line, before the fight
+		if ( m_iszInitialGoal != NULL_STRING && !m_bInitialGoalDone )
+		{
+			m_bInitialGoalDone = true;		// once - not again after a save is loaded
+			CBaseEntity *pGoal = gEntList.FindEntityByName( NULL, m_iszInitialGoal );
+			if ( pGoal )
+				DriveTo( pGoal->GetAbsOrigin() );
+			else
+				Warning( "DOD-SP vehicle %s: goal '%s' not found\n", GetDebugName(), STRING( m_iszInitialGoal ) );
+		}
+	}
 	if ( m_bHasGoal && !m_Route.Count() && !PlanRoute() )		// the route isn't saved: plan again after a load
 		Stop();
 

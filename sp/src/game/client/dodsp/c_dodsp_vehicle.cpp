@@ -62,7 +62,7 @@ END_RECV_TABLE()
 C_DoDSPVehicle::C_DoDSPVehicle()
 {
 	m_flTrackSpeed = 0.0f;
-	m_flModelForwardYaw = -90.0f;
+	m_flModelForwardYaw = 0.0f;
 	m_flDistance = 0.0f;
 	m_flDistanceTime = 0.0f;
 	m_pWheelHdr = NULL;
@@ -115,7 +115,10 @@ void C_DoDSPVehicle::BuildTransformations( CStudioHdr *pStudioHdr, Vector *pos, 
 		matrix3x4_t &bone = GetBoneForWrite( iBone );
 		Vector vecCentre;
 		MatrixGetColumn( bone, 3, vecCentre );
-		float flRadius = clamp( DotProduct( vecCentre - vecOrigin, vecUp ), 6.0f, 60.0f );
+		float flHeight = DotProduct( vecCentre - vecOrigin, vecUp );
+		if ( flHeight < 4.0f )
+			continue;		// a marker at ground level (CoD's tag_wheel_*), not a wheel
+		float flRadius = MIN( flHeight, 60.0f );
 		float flDeg = RAD2DEG( flDist / flRadius );
 		matrix3x4_t rot, moved, out;
 		MatrixBuildRotationAboutAxis( vecAxle, flDeg, rot );
@@ -173,3 +176,8 @@ private:
 };
 
 EXPOSE_INTERFACE( CDoDSPTrackScrollProxy, IMaterialProxy, "DoDSPTrackScroll" IMATERIAL_PROXY_INTERFACE_VERSION );
+
+// The CoD2 conversion's tread materials already name a "COD2TreadScroll" proxy (V1 test: "proxy not found").
+// Same proxy under that name, so those materials scroll as they are - one implementation, two names.
+class CDoDSPCoD2TreadScrollProxy : public CDoDSPTrackScrollProxy {};
+EXPOSE_INTERFACE( CDoDSPCoD2TreadScrollProxy, IMaterialProxy, "COD2TreadScroll" IMATERIAL_PROXY_INTERFACE_VERSION );
