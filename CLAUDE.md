@@ -436,3 +436,19 @@ If you learn something like this, add it here in the same commit as the fix.
   default, no per-type settings): one KeyValues file per type (weapon, sidearm, proficiency/spread, health,
   grenades, body/head/bodygroup/skin variants), picked by a "type" key on the NPC/spawner; random look per spawn.
   Start with types + random looks together. npc_template_maker already covers count.
+- **German battle chatter: the voice set vs the code** (review 2026-11-18, the owner's Voices.zip). The set:
+  Voices/German/Battlechatter/GE/<0..3>/ge_<v>_<category>[_us|_uk|_ru]_NN.wav - 4050 files, 328 categories, 4 voices
+  (~1012 each); Axis/A,N,O = melee attack/charge shouts, Axis/M,N,O gen_<m|n|o> = pain/death (used). The code
+  (german_chatter.cpp) can play 793 of the 4050 (20%): voices {0,2,3} only - VOICE 1 (1014 lines) IS NEVER USED;
+  16 kinds of line + order_cover_<38 landmarks>. Unused families (files): landmark_near_/behind_<x> 870, name_<surname>
+  355 (70 names), location_<floor>_<window|doorway|balcony> 264, direction_relative/inbound/side_<dir> 228, taunt 149,
+  area_<x> 104, inform_killconfirm 92 + response_killconfirm 36, inform_attacking_grenade 82, order_action
+  grenade/coverme/smoke/boost 120, order_smokescreen 64, inform_incoming mg/mortar/artillery/smkgrenade 100,
+  threat_vehicle tank/brencarrier/trooptruck 48, threat_emplace (MGs) 44, threat_infantry many/sniper/panzerfaust/
+  panzerschreck 92, rank_<x> 24, inform_suppressed 16, reaction_surprise_ambush 12, response_ack_no/follow,
+  order_move_follow/generic, order_cover_tank/antitankgun. CoD builds a callout from PARTS said back to back by one
+  speaker ("Infanterie!" + "bei der Scheune!", or name + order) - ours plays one clip per line.
+  Silent-chatter suspects: script/waves missing (load warning), strict gates (threat only after 15 s unseen, 30%
+  become "Angriff!", threat expires after 1 s if a squadmate talks, orders only for 250+ unit moves with a mate in
+  800, a soldier with no squad name never gets/answers orders), and npc_german_debug prints only what was SAID -
+  dropped/expired lines leave no trace. Source's info_landmark is the changelevel marker - never reuse it.
