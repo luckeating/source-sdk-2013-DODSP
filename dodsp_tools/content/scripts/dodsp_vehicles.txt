@@ -38,6 +38,7 @@
 //                    in order (commander gunner loader driver radio). ammo_fire / fuel_fire = chance an ammunition /
 //                    engine hit sets it burning (Sherman dry stowage: 60-80% of penetrated tanks burned - real).
 //                    engine rear / front / middle.
+//   display          its name in Hammer (the FGD is generated from this file: dodsp_tools/gen_vehicle_fgd.py)
 //   dead_model       the wreck (its own paint, so every variant names its own)
 //   hatches          V4e: where each crew role gets out when they bail: "turret x y z" (turret model space - it turns
 //                    with the turret) or "hull x y z" (hull model space), the roof his feet end up on. MEASURED from the
@@ -66,6 +67,7 @@
 
 	"panzer2"
 	{
+		"display"			"Panzer II"
 		"model"				"models/cod2/vehicles/panzer2_hull.mdl"
 		"turret_model"		"models/cod2/vehicles/panzer2_turret.mdl"
 		"turret_offset"		"20 0 97"
@@ -116,6 +118,7 @@
 	}
 	"panzer2_winter"
 	{
+		"display"			"Panzer II (winter)"
 		"base"				"panzer2"
 		"model"				"models/cod2/vehicles/panzer2_winter_hull.mdl"
 		"turret_model"		"models/cod2/vehicles/panzer2_winter_turret.mdl"
@@ -123,6 +126,7 @@
 	}
 	"tiger"
 	{
+		"display"			"Tiger"
 		"model"				"models/cod2/vehicles/tiger_hull.mdl"
 		"turret_model"		"models/cod2/vehicles/tiger_turret.mdl"
 		"turret_offset"		"11 0 108"
@@ -176,6 +180,7 @@
 	}
 	"tiger_brush"
 	{
+		"display"			"Tiger (brush camouflage)"
 		"base"				"tiger"
 		"model"				"models/cod2/vehicles/tiger_brush_hull.mdl"
 		"turret_model"		"models/cod2/vehicles/tiger_brush_turret.mdl"
@@ -183,6 +188,7 @@
 	}
 	"sherman"
 	{
+		"display"			"Sherman"
 		"model"				"models/cod2/vehicles/sherman_hull.mdl"
 		"turret_model"		"models/cod2/vehicles/sherman_turret.mdl"
 		"turret_offset"		"15 0 116"
@@ -236,6 +242,7 @@
 	}
 	"sherman_desert"
 	{
+		"display"			"Sherman (desert)"
 		"base"				"sherman"
 		"model"				"models/cod2/vehicles/sherman_desert_hull.mdl"
 		"turret_model"		"models/cod2/vehicles/sherman_desert_turret.mdl"
@@ -243,6 +250,7 @@
 	}
 	"crusader"
 	{
+		"display"			"Crusader"
 		"model"				"models/cod2/vehicles/crusader_hull.mdl"
 		"turret_model"		"models/cod2/vehicles/crusader_turret.mdl"
 		"turret_offset"		"18 0 109"
@@ -287,6 +295,7 @@
 	}
 	"armoredcar"
 	{
+		"display"			"Armoured car (Sd.Kfz. 222)"
 		"model"				"models/cod2/vehicles/armoredcar_hull.mdl"
 		"turret_model"		"models/cod2/vehicles/armoredcar_turret.mdl"
 		"turret_offset"		"7 0 82"
@@ -332,6 +341,7 @@
 	}
 	"halftrack"
 	{
+		"display"			"Halftrack (Sd.Kfz. 251)"
 		"model"				"models/cod2/vehicles/halftrack.mdl"
 		"forward_yaw"		"0"
 		"faction"			"axis"
@@ -371,24 +381,28 @@
 	}
 	"halftrack_desert"
 	{
+		"display"			"Halftrack (desert)"
 		"base"				"halftrack"
 		"model"				"models/cod2/vehicles/halftrack_desert.mdl"
 		"dead_model"		"models/cod2/vehicles/halftrack_desert_dead.mdl"
 	}
 	"halftrack_snow"
 	{
+		"display"			"Halftrack (snow)"
 		"base"				"halftrack"
 		"model"				"models/cod2/vehicles/halftrack_snow.mdl"
 		"dead_model"		"models/cod2/vehicles/halftrack_snow_dead.mdl"
 	}
 	"halftrack_rockets"
 	{
+		"display"			"Halftrack (rockets)"
 		"base"				"halftrack"
 		"model"				"models/cod2/vehicles/halftrack_rockets.mdl"
 		"dead_model"		"models/cod2/vehicles/halftrack_rockets_dead.mdl"
 	}
 	"carrier"
 	{
+		"display"			"Bren carrier"
 		"model"				"models/cod2/vehicles/carrier.mdl"
 		"forward_yaw"		"0"
 		"faction"			"allies"

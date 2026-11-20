@@ -1,26 +1,14 @@
 // DOD-SP vehicles for Hammer. Add this file to your DOD-SP game configuration (Tools > Options >
 // Game Configurations > Game Data files > Add), next to the base FGDs.
+// Place a dodsp_vehicle_<type> (one per vehicle, with its own preview); the plain dodsp_vehicle + "vehicletype" still works.
 @include "base.fgd"
 
-@PointClass base(Targetname, Angles) studio("models/cod2/vehicles/panzer2_hull.mdl") = dodsp_vehicle :
-	"DOD-SP armoured vehicle (drives itself over the AI nodes; turreted ones aim and fire at the other side). The preview is always the Panzer II; " +
-	"the real model comes from the vehicle type. Point its front the way it should start facing."
+@BaseClass base(Targetname, Angles) = DoDSPVehicleBase
 [
-	vehicletype(choices) : "Vehicle type" : "panzer2" : "A block in scripts/dodsp_vehicles.txt." =
+	riders(choices) : "Riders" : "0" : "Spawn with its full riding complement: soldiers of its side on every seat in scripts/dodsp_vehicles.txt (tank deck / troop bay). Stage V3 - until it's built the option is kept and the console says no riders were spawned." =
 	[
-		"panzer2" : "Panzer II"
-		"panzer2_winter" : "Panzer II (winter)"
-		"tiger" : "Tiger"
-		"tiger_brush" : "Tiger (brush camouflage)"
-		"sherman" : "Sherman"
-		"sherman_desert" : "Sherman (desert)"
-		"crusader" : "Crusader"
-		"armoredcar" : "Armoured car (Sd.Kfz. 222)"
-		"halftrack" : "Halftrack (Sd.Kfz. 251)"
-		"halftrack_desert" : "Halftrack (desert)"
-		"halftrack_snow" : "Halftrack (snow)"
-		"halftrack_rockets" : "Halftrack (rockets)"
-		"carrier" : "Bren carrier"
+		"0" : "No riders"
+		"1" : "Full riding complement"
 	]
 	goal(target_destination) : "Drive to at start" : "" : "Optional: an entity it drives to when the map starts."
 	behavior(choices) : "Behaviour" : "offensive" : "Offensive: hunts, closes in, shoots on the move. Defensive: holds long-range spots, stops to shoot, backs away from what gets close, stays in its leash. Hold: stays put. Scripted: moves only on inputs." =
@@ -56,3 +44,43 @@
 	output OnBailOut(void) : "The crew got out (German crews come out as soldiers)."
 	output OnKnockedOut(void) : "Out of the fight: burning, abandoned or wrecked (fires once)."
 ]
+
+// Everything below is GENERATED from scripts/dodsp_vehicles.txt by dodsp_tools/gen_vehicle_fgd.py (the lint checks it is
+// up to date). One class per vehicle type, so Hammer shows that vehicle WITH its turret (models/dodsp/editor/<type>.mdl,
+// compiled from the editor-model pack - Hammer only; the game never spawns it).
+// BEGIN GENERATED
+@PointClass base(DoDSPVehicleBase) studio("models/cod2/vehicles/panzer2_hull.mdl") = dodsp_vehicle :
+	"DOD-SP armoured vehicle, type chosen by a key (the preview is always the Panzer II). Prefer the dodsp_vehicle_<type> classes: they show the right vehicle."
+[
+	vehicletype(choices) : "Vehicle type" : "panzer2" : "A block in scripts/dodsp_vehicles.txt." =
+	[
+		"panzer2" : "Panzer II"
+		"panzer2_winter" : "Panzer II (winter)"
+		"tiger" : "Tiger"
+		"tiger_brush" : "Tiger (brush camouflage)"
+		"sherman" : "Sherman"
+		"sherman_desert" : "Sherman (desert)"
+		"crusader" : "Crusader"
+		"armoredcar" : "Armoured car (Sd.Kfz. 222)"
+		"halftrack" : "Halftrack (Sd.Kfz. 251)"
+		"halftrack_desert" : "Halftrack (desert)"
+		"halftrack_snow" : "Halftrack (snow)"
+		"halftrack_rockets" : "Halftrack (rockets)"
+		"carrier" : "Bren carrier"
+	]
+]
+
+@PointClass base(DoDSPVehicleBase) studio("models/dodsp/editor/panzer2.mdl") = dodsp_vehicle_panzer2 : "Panzer II - DOD-SP vehicle (scripts/dodsp_vehicles.txt). Point its front the way it should start facing." []
+@PointClass base(DoDSPVehicleBase) studio("models/dodsp/editor/panzer2_winter.mdl") = dodsp_vehicle_panzer2_winter : "Panzer II (winter) - DOD-SP vehicle (scripts/dodsp_vehicles.txt). Point its front the way it should start facing." []
+@PointClass base(DoDSPVehicleBase) studio("models/dodsp/editor/tiger.mdl") = dodsp_vehicle_tiger : "Tiger - DOD-SP vehicle (scripts/dodsp_vehicles.txt). Point its front the way it should start facing." []
+@PointClass base(DoDSPVehicleBase) studio("models/dodsp/editor/tiger_brush.mdl") = dodsp_vehicle_tiger_brush : "Tiger (brush camouflage) - DOD-SP vehicle (scripts/dodsp_vehicles.txt). Point its front the way it should start facing." []
+@PointClass base(DoDSPVehicleBase) studio("models/dodsp/editor/sherman.mdl") = dodsp_vehicle_sherman : "Sherman - DOD-SP vehicle (scripts/dodsp_vehicles.txt). Point its front the way it should start facing." []
+@PointClass base(DoDSPVehicleBase) studio("models/dodsp/editor/sherman_desert.mdl") = dodsp_vehicle_sherman_desert : "Sherman (desert) - DOD-SP vehicle (scripts/dodsp_vehicles.txt). Point its front the way it should start facing." []
+@PointClass base(DoDSPVehicleBase) studio("models/dodsp/editor/crusader.mdl") = dodsp_vehicle_crusader : "Crusader - DOD-SP vehicle (scripts/dodsp_vehicles.txt). Point its front the way it should start facing." []
+@PointClass base(DoDSPVehicleBase) studio("models/dodsp/editor/armoredcar.mdl") = dodsp_vehicle_armoredcar : "Armoured car (Sd.Kfz. 222) - DOD-SP vehicle (scripts/dodsp_vehicles.txt). Point its front the way it should start facing." []
+@PointClass base(DoDSPVehicleBase) studio("models/cod2/vehicles/halftrack.mdl") = dodsp_vehicle_halftrack : "Halftrack (Sd.Kfz. 251) - DOD-SP vehicle (scripts/dodsp_vehicles.txt). Point its front the way it should start facing." []
+@PointClass base(DoDSPVehicleBase) studio("models/cod2/vehicles/halftrack_desert.mdl") = dodsp_vehicle_halftrack_desert : "Halftrack (desert) - DOD-SP vehicle (scripts/dodsp_vehicles.txt). Point its front the way it should start facing." []
+@PointClass base(DoDSPVehicleBase) studio("models/cod2/vehicles/halftrack_snow.mdl") = dodsp_vehicle_halftrack_snow : "Halftrack (snow) - DOD-SP vehicle (scripts/dodsp_vehicles.txt). Point its front the way it should start facing." []
+@PointClass base(DoDSPVehicleBase) studio("models/cod2/vehicles/halftrack_rockets.mdl") = dodsp_vehicle_halftrack_rockets : "Halftrack (rockets) - DOD-SP vehicle (scripts/dodsp_vehicles.txt). Point its front the way it should start facing." []
+@PointClass base(DoDSPVehicleBase) studio("models/cod2/vehicles/carrier.mdl") = dodsp_vehicle_carrier : "Bren carrier - DOD-SP vehicle (scripts/dodsp_vehicles.txt). Point its front the way it should start facing." []
+// END GENERATED

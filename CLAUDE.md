@@ -753,6 +753,18 @@ If you learn something like this, add it here in the same commit as the fix.
   explosion "actually intense", the bail-out animations "work perfect", survivors emerge from the hatches and hop down.
   KNOWN-GOOD for V4 (damage, crews, bail-outs, hit feedback, wrecks). Next by the owner's order: V2b, then V3 riders
   (preview every get-out against the vehicle mesh first - dodsp_tools/vehicle_preview).
+- **V4j BUILT 2026-11-20 (Hammer shows the right vehicle; riders option).** Owner: every dodsp_vehicle showed the Panzer II
+  hull in Hammer (one fixed studio() in the FGD; Hammer can't pick a model from a key, and draws one model per
+  entity, so the turret never showed). Now ONE class per type: `dodsp_vehicle_<type>`. One owner = the script:
+  `display` key per type; dodsp_tools/gen_vehicle_fgd.py writes the FGD's generated part (lint check_vehicle_fgd runs
+  it with --check, tested with a renamed class); the server registers the same names from the same script at DLL
+  init + every map (RegisterVehicleClasses, CEntityFactory per type) and Precache takes the type from the class name
+  (INVARIANT if a vehicletype key disagrees). The plain dodsp_vehicle + vehicletype still works (old maps). Hammer
+  previews: models/dodsp/editor/<type>.mdl = hull + turret merged, built by dodsp_tools/vehicle_preview/editor_models.py
+  (SMD in the compiled meshes' -Y frame, turret at turret_offset turned (x,y,z)->(y,-x,z); studiomdl's default rotation
+  then faces it +X like the originals) - the owner compiles the pack with Crowbar; types without a turret use their own
+  model. The FGD ships in the game artifact (DOD-SP\dodsp_vehicles.fgd). `riders` key (0/1, "full riding complement")
+  in the shared base class: stored, the spawn line says riders arrive with V3 (none spawned yet).
 - CoD1 set (owner's vehicles_part2.zip, 2026-11-19): REFERENCE ONLY except the **SU-152, which we keep**. One model per
   vehicle, turret/gun as BONES (tag_turret, tag_barrel, tag_flash = muzzle, tag_coaxel), faces +X (forward_yaw 0),
   CoD's rider tags tag_guy01..06 (Sherman, Elefant, SU-152: 6; Opel truck driver/passenger + 4), NO .phy (needs a

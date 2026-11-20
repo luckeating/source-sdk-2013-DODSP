@@ -264,6 +264,24 @@ def kv_get(blk, key):
     return None
 
 
+def check_vehicle_fgd():
+    """V4j: dodsp_vehicles.fgd's per-type classes are generated from dodsp_vehicles.txt (the server registers the same
+    dodsp_vehicle_<type> names from the same script) - the FGD must be what the generator writes, every type needs a
+    "display" name."""
+    import subprocess
+    tools = os.path.join(ROOT, "..", "..", "dodsp_tools")
+    bad = []
+    r = subprocess.run([sys.executable, os.path.join(tools, "gen_vehicle_fgd.py"), "--check"], capture_output=True, text=True)
+    if r.returncode != 0:
+        bad.append((r.stdout + r.stderr).strip() or "gen_vehicle_fgd.py --check failed")
+    with open(VEHICLE_SCRIPT, encoding="utf-8") as f:
+        top = parse_kv(f.read())
+    for name, t in (kv_get(top, "DoDSP_Vehicles") or []):
+        if isinstance(t, list) and kv_get(t, "display") is None:
+            bad.append("%s: no \"display\" name (Hammer)" % name)
+    return bad
+
+
 def check_vehicle_types():
     """V4: every vehicle type has armour, a wreck and real ammunition (no V2 flat damage) - the C++ loader prints
     the same as INVARIANTs at map load, this catches them before a build."""
@@ -384,7 +402,8 @@ def main():
             print("  " + b)
         return 1
     for what, fn in (("a vehicle type is missing V4's armour / wreck / real ammunition", check_vehicle_types),
-                     ("the vehicle damage state is written outside its owner (V4)", check_vehicle_damage)):
+                     ("the vehicle damage state is written outside its owner (V4)", check_vehicle_damage),
+                     ("the Hammer FGD doesn't match the vehicle types (V4j)", check_vehicle_fgd)):
         vbad = fn()
         if vbad:
             print("dodsp_lint_client: %s:" % what)

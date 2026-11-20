@@ -107,6 +107,7 @@ jobs:
         copy /y ${{inputs.branch}}\game\mod_${{inputs.game}}\bin\*.dll dodsp_game_out\bin\ || exit /b 1
         copy /y dodsp_tools\content\scripts\*.txt dodsp_game_out\scripts\ || exit /b 1
         copy /y dodsp_tools\generated\game_sounds_german_chatter.txt dodsp_game_out\scripts\ || exit /b 1
+        copy /y dodsp_tools\content\dodsp_vehicles.fgd dodsp_game_out\ || exit /b 1
         dir /s /b dodsp_game_out
 
     - name: Publish game binaries

@@ -51,6 +51,7 @@
 #include "tier0/memdbgon.h"
 
 #define DODSP_VEHICLE_SCRIPT	"scripts/dodsp_vehicles.txt"
+#define DODSP_VEHICLE_CLASS_PREFIX	"dodsp_vehicle_"		// + a type name = that type's own Hammer class (V4j)
 // INVARIANT (V4e): the type script and this server.dll come from ONE build. The script's "script_version" must equal
 // this; the lint checks the repo copy against it, the loader checks the owner's copy (V4e's first run: the old script
 // had no hatches, every crewman got out beside the tank and nothing at bail time said why). Bump both together
@@ -982,6 +983,7 @@ private:
 	void			StopSounds( void );
 
 	string_t		m_iszVehicleType;
+	bool			m_bRiders;					// Hammer "riders": spawn with the full riding complement (V3)
 	string_t		m_iszInitialGoal;
 	VehicleType_t	*m_pType;
 	float			m_flHalfWidth, m_flHalfLength, m_flBodyHeight;	// from the model (MeasureBody), not saved
@@ -1106,6 +1108,7 @@ LINK_ENTITY_TO_CLASS( dodsp_vehicle, CDoDSPVehicle );
 
 BEGIN_DATADESC( CDoDSPVehicle )
 	DEFINE_KEYFIELD( m_iszVehicleType, FIELD_STRING, "vehicletype" ),
+	DEFINE_KEYFIELD( m_bRiders, FIELD_BOOLEAN, "riders" ),
 	DEFINE_KEYFIELD( m_iszInitialGoal, FIELD_STRING, "goal" ),
 	DEFINE_FIELD( m_hTurret, FIELD_EHANDLE ),
 	DEFINE_FIELD( m_flSpeed, FIELD_FLOAT ),
@@ -1267,6 +1270,16 @@ void CDoDSPVehicle::UpdateOnRemove( void )
 
 void CDoDSPVehicle::Precache( void )
 {
+	// V4j: the type is the classname's (dodsp_vehicle_<type>, one Hammer class per type so Hammer shows the right
+	// model) or, on the plain dodsp_vehicle, its "vehicletype" key. ONE owner: this.
+	const char *pszClass = GetClassname();
+	if ( !Q_strnicmp( pszClass, DODSP_VEHICLE_CLASS_PREFIX, Q_strlen( DODSP_VEHICLE_CLASS_PREFIX ) ) )
+	{
+		const char *pszFromClass = pszClass + Q_strlen( DODSP_VEHICLE_CLASS_PREFIX );
+		if ( m_iszVehicleType != NULL_STRING && Q_stricmp( STRING( m_iszVehicleType ), pszFromClass ) )
+			Warning( "INVARIANT DOD-SP vehicle %s: class %s but vehicletype '%s' - the class wins\n", Label(), pszClass, STRING( m_iszVehicleType ) );
+		m_iszVehicleType = AllocPooledString( pszFromClass );
+	}
 	m_pType = FindVehicleType( STRING( m_iszVehicleType ) );
 	if ( m_pType )
 	{
@@ -1320,6 +1333,11 @@ void CDoDSPVehicle::Spawn( void )
 	if ( DoDSP_FactionOf( this ) != m_eFaction )
 		Warning( "INVARIANT DOD-SP vehicle %s: side %s but its class counts as %s (dodsp_factions.cpp tables disagree)\n",
 				 Label(), DoDSP_FactionName( m_eFaction ), DoDSP_FactionName( DoDSP_FactionOf( this ) ) );
+
+	// V4j: the Hammer option is in place; the riders themselves (seated, riding, dismounting) are stage V3
+	if ( m_bRiders )
+		Msg( "DOD-SP vehicle %s: \"riders\" is set (%d seats in its type) - riders arrive with stage V3, none spawned yet\n",
+			 Label(), m_pType->seats.Count() );
 
 	// how it fights (V2c): offensive unless the map says otherwise
 	m_eBehavior = VBEHAVE_OFFENSIVE;
@@ -4312,3 +4330,42 @@ CON_COMMAND( dodsp_vehicle_turret, "Move the nearest DOD-SP vehicle's turret: do
 	if ( pBest )
 		pBest->SetTurretOffset( Vector( atof( args[1] ), atof( args[2] ), atof( args[3] ) ) );
 }
+
+//-----------------------------------------------------------------------------
+// V4j: one entity class per vehicle type - dodsp_vehicle_<type> for every block in scripts/dodsp_vehicles.txt - so
+// the FGD (generated from the same script: dodsp_tools/gen_vehicle_fgd.py) gives each its own Hammer preview model.
+// Registered when the DLL loads (before any map or save is read) and again before each map (a type added to the script
+// since). CDoDSPVehicle::Precache takes the type from the class name.
+//-----------------------------------------------------------------------------
+static void RegisterVehicleClasses( void )
+{
+	KeyValues *pKV = new KeyValues( "DoDSP_Vehicles" );
+	if ( !pKV->LoadFromFile( filesystem, DODSP_VEHICLE_SCRIPT, "GAME" ) )
+	{
+		pKV->deleteThis();
+		return;		// LoadVehicleTypes says so at the first vehicle
+	}
+	static CUtlVector<char *> s_Names;
+	for ( KeyValues *pType = pKV->GetFirstTrueSubKey(); pType; pType = pType->GetNextTrueSubKey() )
+	{
+		char szClass[128];
+		Q_snprintf( szClass, sizeof( szClass ), "%s%s", DODSP_VEHICLE_CLASS_PREFIX, pType->GetName() );
+		Q_strlower( szClass );
+		if ( EntityFactoryDictionary()->FindFactory( szClass ) )
+			continue;
+		char *pszName = new char[Q_strlen( szClass ) + 1];
+		Q_strcpy( pszName, szClass );
+		s_Names.AddToTail( pszName );
+		new CEntityFactory<CDoDSPVehicle>( pszName );		// installs itself; lives as long as the DLL
+	}
+	pKV->deleteThis();
+}
+
+class CDoDSPVehicleClasses : public CAutoGameSystem
+{
+public:
+	CDoDSPVehicleClasses() : CAutoGameSystem( "CDoDSPVehicleClasses" ) {}
+	virtual bool Init( void ) { RegisterVehicleClasses(); return true; }
+	virtual void LevelInitPreEntity( void ) { RegisterVehicleClasses(); }
+};
+static CDoDSPVehicleClasses s_DoDSPVehicleClasses;
