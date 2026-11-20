@@ -165,8 +165,47 @@ def check_chatter():
     return bad
 
 
+VEHICLE_SCRIPT = os.path.join(ROOT, "..", "..", "dodsp_tools", "content", "scripts", "dodsp_vehicles.txt")
+VEHICLE_SOUNDS = os.path.join(ROOT, "..", "..", "dodsp_tools", "content", "scripts", "game_sounds_dodsp_vehicles.txt")
+
+
+def check_vehicle_sounds():
+    """Every DoDSP_Vehicle.* sound the vehicle types name exists in the vehicle sound script (DoD:S's own
+    Weapon_* entries are checked in game at map load: 'DOD-SP vehicle sounds: ...')."""
+    with open(VEHICLE_SOUNDS, encoding="utf-8") as f:
+        entries = set(re.findall(r'^"([^"]+)"', f.read(), re.M))
+    with open(VEHICLE_SCRIPT, encoding="utf-8") as f:
+        script = re.sub(r"//[^\n]*", "", f.read())
+    used = set(re.findall(r'"(DoDSP_Vehicle\.[A-Za-z0-9_]+)"', script))
+    bad = ["%s (named in dodsp_vehicles.txt)" % u for u in sorted(used) if u not in entries]
+    # the file's shape: braces balance, ONE top block, every type has a model or a base (a stray header once
+    # opened the top block twice - the loader would have read the real types as one type's keys)
+    depth, tops = 0, 0
+    for ch in script:
+        if ch == "{":
+            depth += 1
+            if depth == 1:
+                tops += 1
+        elif ch == "}":
+            depth -= 1
+    if depth != 0 or tops != 1:
+        bad.append("dodsp_vehicles.txt: braces unbalanced (%+d) or %d top-level blocks (must be 1)" % (depth, tops))
+    for name, body in re.findall(r'^\t"([a-z0-9_]+)"\s*\{(.*?)^\t\}', script, re.M | re.S):
+        if '"model"' not in body and '"base"' not in body:
+            bad.append("dodsp_vehicles.txt: type %s has neither a model nor a base" % name)
+    if len(used) < 5:
+        bad.append("found only %d DoDSP_Vehicle sounds in dodsp_vehicles.txt - the lint's pattern is out of date" % len(used))
+    return bad
+
+
 def main():
     bad = []
+    vsound_bad = check_vehicle_sounds()
+    if vsound_bad:
+        print("dodsp_lint_client: a vehicle type names a sound the vehicle sound script doesn't have:")
+        for b in vsound_bad:
+            print("  " + b)
+        return 1
     chatter_bad = check_chatter()
     if chatter_bad:
         print("dodsp_lint_client: German chatter asks for lines the generated sound script doesn't have:")
@@ -216,7 +255,7 @@ def main():
         print("Check DoDSP_SunShadersInUse() first (see c_physicsprop.cpp) and tag the line '%s'." % TAG)
         return 1
     print("dodsp_lint_client: OK (no unguarded static model lighting in the client; sun facts have one owner each; "
-          "prop shadows read through the sun-mode getters; every chatter line exists in every voice)")
+          "prop shadows read through the sun-mode getters; every chatter line exists in every voice; every vehicle sound exists)")
     return 0
 
 

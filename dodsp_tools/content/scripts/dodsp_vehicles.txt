@@ -15,6 +15,20 @@
 //                    MEASURED from the models' flat surfaces (2026-11-19): halftrack troop bay floor z 30, side benches
 //                    z 40 at x +-27..43 from y 16 to 101 (riders face inward); tank riders on the engine deck behind
 //                    the turret (Panzer II z 66-72, Sherman 72-80, Tiger 76-82), facing outward.
+//   base             another type this one copies everything from; its own keys (and whole blocks) win. The
+//                    paint variants (winter, desert, brush, snow) are only their models - one owner per number.
+//   faction          axis or allies (who it shoots; a dodsp_vehicle's own "faction" key wins - captured tanks)
+//   turret_rate      degrees/s the turret traverses; pitch_rate: degrees/s the barrel elevates
+//   gun              main gun: damage at the centre of the burst (falls off to 0 at radius), reload seconds,
+//                    range, spread (degrees), sound. Super deadly on purpose (owner, 2026-11-19).
+//   coax             machine gun beside the main gun, fires bursts at infantry: damage per bullet, rate (shots/s),
+//                    burst / pause (seconds), range, spread (degrees), sound (DoD:S's own MG sounds)
+//   sounds           engine_idle / engine_move (looped; idle fades into move with speed), turret_turn (loop) /
+//                    turret_stop, reload, explode (shell impact). Entries: scripts/game_sounds_dodsp_vehicles.txt.
+//                    Which engine sound fits which vehicle is a GUESS (engine1 light, 2 medium, 3 heavy, truck for
+//                    wheels) - swap them by ear.
+//   Halftracks and the carrier have no weapons yet (their MG mounts come after V2).
+
 "DoDSP_Vehicles"
 {
 	"panzer2"
@@ -23,12 +37,19 @@
 		"turret_model"		"models/cod2/vehicles/panzer2_turret.mdl"
 		"turret_offset"		"20 0 97"
 		"forward_yaw"		"0"
+		"faction"			"axis"
 		"tracked"			"1"
 		"max_speed"			"220"
 		"reverse_speed"		"80"
 		"accel"				"70"
 		"brake"				"160"
 		"turn_rate"			"30"
+		"turret_rate"		"40"
+		"pitch_rate"		"20"
+		"gun"		{ "damage" "300"	"radius" "128"	"reload" "1.5"	"range" "5000"	"spread" "0.8"	"sound" "DoDSP_Vehicle.GunFire20mm" }
+		"coax"		{ "damage" "12"		"rate" "15"		"burst" "1.5"	"pause" "1.2"	"range" "2500"	"spread" "3"	"sound" "Weapon_Mg42.Shoot" }
+		"sounds"	{ "engine_idle" "DoDSP_Vehicle.Engine1Idle"	"engine_move" "DoDSP_Vehicle.Engine1Move"	"turret_turn" "DoDSP_Vehicle.TurretTurn"
+					  "turret_stop" "DoDSP_Vehicle.TurretStop"	"reload" "DoDSP_Vehicle.Reload"	"explode" "DoDSP_Vehicle.ShellExplode" }
 		"seats"
 		{
 			"seat"	{ "origin"	"-45 -28 70"		"yaw"	"-90" }
@@ -39,16 +60,9 @@
 	}
 	"panzer2_winter"
 	{
+		"base"				"panzer2"
 		"model"				"models/cod2/vehicles/panzer2_winter_hull.mdl"
 		"turret_model"		"models/cod2/vehicles/panzer2_winter_turret.mdl"
-		"turret_offset"		"20 0 97"
-		"forward_yaw"		"0"
-		"tracked"			"1"
-		"max_speed"			"220"
-		"reverse_speed"		"80"
-		"accel"				"70"
-		"brake"				"160"
-		"turn_rate"			"30"
 	}
 	"tiger"
 	{
@@ -56,12 +70,19 @@
 		"turret_model"		"models/cod2/vehicles/tiger_turret.mdl"
 		"turret_offset"		"11 0 108"
 		"forward_yaw"		"0"
+		"faction"			"axis"
 		"tracked"			"1"
 		"max_speed"			"150"
 		"reverse_speed"		"60"
 		"accel"				"35"
 		"brake"				"120"
 		"turn_rate"			"16"
+		"turret_rate"		"18"
+		"pitch_rate"		"8"
+		"gun"		{ "damage" "1000"	"radius" "320"	"reload" "7"	"range" "8000"	"spread" "0.3"	"sound" "DoDSP_Vehicle.GunFire1" }
+		"coax"		{ "damage" "12"		"rate" "15"		"burst" "1.5"	"pause" "1.2"	"range" "2500"	"spread" "3"	"sound" "Weapon_Mg42.Shoot" }
+		"sounds"	{ "engine_idle" "DoDSP_Vehicle.Engine3Idle"	"engine_move" "DoDSP_Vehicle.Engine3Move"	"turret_turn" "DoDSP_Vehicle.TurretTurn"
+					  "turret_stop" "DoDSP_Vehicle.TurretStop"	"reload" "DoDSP_Vehicle.Reload"	"explode" "DoDSP_Vehicle.ShellExplode" }
 		"seats"
 		{
 			"seat"	{ "origin"	"-70 -40 78"		"yaw"	"-90" }
@@ -72,16 +93,9 @@
 	}
 	"tiger_brush"
 	{
+		"base"				"tiger"
 		"model"				"models/cod2/vehicles/tiger_brush_hull.mdl"
 		"turret_model"		"models/cod2/vehicles/tiger_brush_turret.mdl"
-		"turret_offset"		"11 0 108"
-		"forward_yaw"		"0"
-		"tracked"			"1"
-		"max_speed"			"150"
-		"reverse_speed"		"60"
-		"accel"				"35"
-		"brake"				"120"
-		"turn_rate"			"16"
 	}
 	"sherman"
 	{
@@ -89,12 +103,19 @@
 		"turret_model"		"models/cod2/vehicles/sherman_turret.mdl"
 		"turret_offset"		"15 0 116"
 		"forward_yaw"		"0"
+		"faction"			"allies"
 		"tracked"			"1"
 		"max_speed"			"190"
 		"reverse_speed"		"70"
 		"accel"				"55"
 		"brake"				"150"
 		"turn_rate"			"24"
+		"turret_rate"		"25"
+		"pitch_rate"		"12"
+		"gun"		{ "damage" "700"	"radius" "256"	"reload" "5"	"range" "7000"	"spread" "0.5"	"sound" "DoDSP_Vehicle.GunFire2" }
+		"coax"		{ "damage" "12"		"rate" "9"		"burst" "1.8"	"pause" "1.0"	"range" "2500"	"spread" "3"	"sound" "Weapon_30cal.Shoot" }
+		"sounds"	{ "engine_idle" "DoDSP_Vehicle.Engine2Idle"	"engine_move" "DoDSP_Vehicle.Engine2Move"	"turret_turn" "DoDSP_Vehicle.TurretTurn"
+					  "turret_stop" "DoDSP_Vehicle.TurretStop"	"reload" "DoDSP_Vehicle.Reload"	"explode" "DoDSP_Vehicle.ShellExplode" }
 		"seats"
 		{
 			"seat"	{ "origin"	"-55 -30 74"		"yaw"	"-90" }
@@ -105,16 +126,9 @@
 	}
 	"sherman_desert"
 	{
+		"base"				"sherman"
 		"model"				"models/cod2/vehicles/sherman_desert_hull.mdl"
 		"turret_model"		"models/cod2/vehicles/sherman_desert_turret.mdl"
-		"turret_offset"		"15 0 116"
-		"forward_yaw"		"0"
-		"tracked"			"1"
-		"max_speed"			"190"
-		"reverse_speed"		"70"
-		"accel"				"55"
-		"brake"				"150"
-		"turn_rate"			"24"
 	}
 	"crusader"
 	{
@@ -122,12 +136,19 @@
 		"turret_model"		"models/cod2/vehicles/crusader_turret.mdl"
 		"turret_offset"		"18 0 109"
 		"forward_yaw"		"0"
+		"faction"			"allies"
 		"tracked"			"1"
 		"max_speed"			"220"
 		"reverse_speed"		"80"
 		"accel"				"65"
 		"brake"				"160"
 		"turn_rate"			"26"
+		"turret_rate"		"30"
+		"pitch_rate"		"15"
+		"gun"		{ "damage" "500"	"radius" "192"	"reload" "4"	"range" "6000"	"spread" "0.5"	"sound" "DoDSP_Vehicle.GunFire2" }
+		"coax"		{ "damage" "12"		"rate" "10"		"burst" "1.5"	"pause" "1.2"	"range" "2500"	"spread" "3"	"sound" "Weapon_30cal.Shoot" }
+		"sounds"	{ "engine_idle" "DoDSP_Vehicle.Engine2Idle"	"engine_move" "DoDSP_Vehicle.Engine2Move"	"turret_turn" "DoDSP_Vehicle.TurretTurn"
+					  "turret_stop" "DoDSP_Vehicle.TurretStop"	"reload" "DoDSP_Vehicle.Reload"	"explode" "DoDSP_Vehicle.ShellExplode" }
 	}
 	"armoredcar"
 	{
@@ -135,6 +156,7 @@
 		"turret_model"		"models/cod2/vehicles/armoredcar_turret.mdl"
 		"turret_offset"		"7 0 82"
 		"forward_yaw"		"0"
+		"faction"			"axis"
 		"tracked"			"0"
 		"min_turn_radius"	"280"
 		"max_speed"			"260"
@@ -142,11 +164,18 @@
 		"accel"				"80"
 		"brake"				"180"
 		"turn_rate"			"35"
+		"turret_rate"		"45"
+		"pitch_rate"		"25"
+		"gun"		{ "damage" "300"	"radius" "128"	"reload" "1.5"	"range" "5000"	"spread" "0.8"	"sound" "DoDSP_Vehicle.GunFire20mm" }
+		"coax"		{ "damage" "12"		"rate" "15"		"burst" "1.5"	"pause" "1.2"	"range" "2500"	"spread" "3"	"sound" "Weapon_Mg42.Shoot" }
+		"sounds"	{ "engine_idle" "DoDSP_Vehicle.TruckIdle"	"engine_move" "DoDSP_Vehicle.TruckMove"	"turret_turn" "DoDSP_Vehicle.TurretTurn"
+					  "turret_stop" "DoDSP_Vehicle.TurretStop"	"reload" "DoDSP_Vehicle.Reload"	"explode" "DoDSP_Vehicle.ShellExplode" }
 	}
 	"halftrack"
 	{
 		"model"				"models/cod2/vehicles/halftrack.mdl"
 		"forward_yaw"		"0"
+		"faction"			"axis"
 		"tracked"			"0"
 		"min_turn_radius"	"300"
 		"max_speed"			"200"
@@ -154,6 +183,7 @@
 		"accel"				"60"
 		"brake"				"160"
 		"turn_rate"			"28"
+		"sounds"	{ "engine_idle" "DoDSP_Vehicle.TruckIdle"	"engine_move" "DoDSP_Vehicle.TruckMove" }
 		"seats"
 		{
 			"seat"	{ "origin"	"-25 -35 40"		"yaw"	"90" }
@@ -168,44 +198,24 @@
 	}
 	"halftrack_desert"
 	{
+		"base"				"halftrack"
 		"model"				"models/cod2/vehicles/halftrack_desert.mdl"
-		"forward_yaw"		"0"
-		"tracked"			"0"
-		"min_turn_radius"	"300"
-		"max_speed"			"200"
-		"reverse_speed"		"70"
-		"accel"				"60"
-		"brake"				"160"
-		"turn_rate"			"28"
 	}
 	"halftrack_snow"
 	{
+		"base"				"halftrack"
 		"model"				"models/cod2/vehicles/halftrack_snow.mdl"
-		"forward_yaw"		"0"
-		"tracked"			"0"
-		"min_turn_radius"	"300"
-		"max_speed"			"200"
-		"reverse_speed"		"70"
-		"accel"				"60"
-		"brake"				"160"
-		"turn_rate"			"28"
 	}
 	"halftrack_rockets"
 	{
+		"base"				"halftrack"
 		"model"				"models/cod2/vehicles/halftrack_rockets.mdl"
-		"forward_yaw"		"0"
-		"tracked"			"0"
-		"min_turn_radius"	"300"
-		"max_speed"			"200"
-		"reverse_speed"		"70"
-		"accel"				"60"
-		"brake"				"160"
-		"turn_rate"			"28"
 	}
 	"carrier"
 	{
 		"model"				"models/cod2/vehicles/carrier.mdl"
 		"forward_yaw"		"0"
+		"faction"			"allies"
 		"tracked"			"0"
 		"min_turn_radius"	"150"
 		"max_speed"			"230"
@@ -213,5 +223,6 @@
 		"accel"				"75"
 		"brake"				"170"
 		"turn_rate"			"35"
+		"sounds"	{ "engine_idle" "DoDSP_Vehicle.TruckIdle"	"engine_move" "DoDSP_Vehicle.TruckMove" }
 	}
 }

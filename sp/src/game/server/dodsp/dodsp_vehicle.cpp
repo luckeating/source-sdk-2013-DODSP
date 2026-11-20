@@ -34,6 +34,14 @@
 #include "engine/IStaticPropMgr.h"
 #include "filesystem.h"
 #include "KeyValues.h"
+#include "ai_basenpc.h"
+#include "explode.h"
+#include "IEffects.h"
+#include "ammodef.h"
+#include "soundenvelope.h"
+#include "SoundEmitterSystem/isoundemittersystembase.h"
+#include "dodsp_factions.h"
+#include "soundchars.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -84,6 +92,15 @@ struct VehicleType_t
 	float	flBrake;
 	float	flTurnRate;				// degrees/s (tracked: on the spot; wheeled: at speed)
 	float	flMinTurnRadius;		// wheeled only
+	// V2: side and weapons
+	int		eFaction;				// DoDSPFaction_t ("faction" - the entity's own key wins)
+	float	flTurretRate;			// degrees/s the turret traverses
+	float	flPitchRate;			// degrees/s the barrel elevates
+	struct Gun_t { bool bHas; float flDamage, flRadius, flReload, flRange, flSpread; char szSound[64]; };
+	Gun_t	gun;					// main gun: one shell, explodes where it hits (damage falls off over radius)
+	struct Coax_t { bool bHas; float flDamage, flRate, flBurst, flPause, flRange, flSpread; char szSound[64]; };
+	Coax_t	coax;					// machine gun beside the main gun: bursts at infantry
+	char	szEngineIdle[64], szEngineMove[64], szTurretTurn[64], szTurretStop[64], szReload[64], szExplode[64];
 	struct Seat_t { Vector vecOrigin; float flYaw; };
 	CUtlVector<Seat_t> seats;		// V3
 };
@@ -95,6 +112,36 @@ static void ParseVector( const char *psz, Vector &v )
 	v.Init();
 	if ( psz )
 		sscanf( psz, "%f %f %f", &v.x, &v.y, &v.z );
+}
+
+// A type with "base" copies everything from that type; its own keys (and whole blocks) win. Returns a new
+// KeyValues the caller deletes. The paint variants are only their models - one owner per number.
+static KeyValues *MergedVehicleType( KeyValues *pAll, KeyValues *pType, int nDepth )
+{
+	const char *pszBase = pType->GetString( "base", "" );
+	KeyValues *pBase = pszBase[0] ? pAll->FindKey( pszBase ) : NULL;
+	if ( pszBase[0] && ( !pBase || nDepth > 4 || pBase == pType ) )
+	{
+		Warning( "INVARIANT DOD-SP vehicles: type '%s' has base '%s' - %s\n", pType->GetName(), pszBase,
+				 !pBase ? "no such type" : "a loop of bases" );
+		pBase = NULL;
+	}
+	KeyValues *pOut = pBase ? MergedVehicleType( pAll, pBase, nDepth + 1 ) : new KeyValues( pType->GetName() );
+	pOut->SetName( pType->GetName() );
+	for ( KeyValues *pKey = pType->GetFirstSubKey(); pKey; pKey = pKey->GetNextKey() )
+	{
+		if ( !Q_stricmp( pKey->GetName(), "base" ) )
+			continue;
+		KeyValues *pOld = pOut->FindKey( pKey->GetName() );
+		if ( pOld )
+		{
+			pOut->RemoveSubKey( pOld );
+			pOld->deleteThis();
+		}
+		pOut->AddSubKey( pKey->MakeCopy() );
+	}
+	pOut->SetString( "base", "" );
+	return pOut;
 }
 
 static void LoadVehicleTypes( bool bForce )
@@ -110,8 +157,9 @@ static void LoadVehicleTypes( bool bForce )
 		pKV->deleteThis();
 		return;
 	}
-	for ( KeyValues *pType = pKV->GetFirstTrueSubKey(); pType; pType = pType->GetNextTrueSubKey() )
+	for ( KeyValues *pRawType = pKV->GetFirstTrueSubKey(); pRawType; pRawType = pRawType->GetNextTrueSubKey() )
 	{
+		KeyValues *pType = MergedVehicleType( pKV, pRawType, 0 );
 		VehicleType_t *t = new VehicleType_t;
 		Q_strncpy( t->szName, pType->GetName(), sizeof( t->szName ) );
 		Q_strncpy( t->szModel, pType->GetString( "model" ), sizeof( t->szModel ) );
@@ -125,6 +173,38 @@ static void LoadVehicleTypes( bool bForce )
 		t->flBrake = pType->GetFloat( "brake", 150.0f );
 		t->flTurnRate = pType->GetFloat( "turn_rate", 30.0f );
 		t->flMinTurnRadius = pType->GetFloat( "min_turn_radius", 300.0f );
+		t->eFaction = DoDSP_FactionFromName( pType->GetString( "faction", "axis" ) );
+		if ( t->eFaction < 0 )
+		{
+			Warning( "INVARIANT DOD-SP vehicles: type '%s' has faction '%s' - not a side (axis / allies) - made axis\n", t->szName, pType->GetString( "faction" ) );
+			t->eFaction = DODSP_FACTION_AXIS;
+		}
+		t->flTurretRate = pType->GetFloat( "turret_rate", 30.0f );
+		t->flPitchRate = pType->GetFloat( "pitch_rate", 15.0f );
+		KeyValues *pGun = pType->FindKey( "gun" );
+		t->gun.bHas = pGun != NULL;
+		t->gun.flDamage = pGun ? pGun->GetFloat( "damage", 600.0f ) : 0.0f;
+		t->gun.flRadius = pGun ? pGun->GetFloat( "radius", 256.0f ) : 0.0f;
+		t->gun.flReload = pGun ? pGun->GetFloat( "reload", 5.0f ) : 0.0f;
+		t->gun.flRange = pGun ? pGun->GetFloat( "range", 6000.0f ) : 0.0f;
+		t->gun.flSpread = pGun ? pGun->GetFloat( "spread", 0.5f ) : 0.0f;
+		Q_strncpy( t->gun.szSound, pGun ? pGun->GetString( "sound", "DoDSP_Vehicle.GunFire1" ) : "", sizeof( t->gun.szSound ) );
+		KeyValues *pCoax = pType->FindKey( "coax" );
+		t->coax.bHas = pCoax != NULL;
+		t->coax.flDamage = pCoax ? pCoax->GetFloat( "damage", 12.0f ) : 0.0f;
+		t->coax.flRate = pCoax ? pCoax->GetFloat( "rate", 10.0f ) : 0.0f;
+		t->coax.flBurst = pCoax ? pCoax->GetFloat( "burst", 1.5f ) : 0.0f;
+		t->coax.flPause = pCoax ? pCoax->GetFloat( "pause", 1.2f ) : 0.0f;
+		t->coax.flRange = pCoax ? pCoax->GetFloat( "range", 2500.0f ) : 0.0f;
+		t->coax.flSpread = pCoax ? pCoax->GetFloat( "spread", 3.0f ) : 0.0f;
+		Q_strncpy( t->coax.szSound, pCoax ? pCoax->GetString( "sound", "Weapon_Mg42.Shoot" ) : "", sizeof( t->coax.szSound ) );
+		KeyValues *pSnd = pType->FindKey( "sounds" );
+		Q_strncpy( t->szEngineIdle, pSnd ? pSnd->GetString( "engine_idle" ) : "", sizeof( t->szEngineIdle ) );
+		Q_strncpy( t->szEngineMove, pSnd ? pSnd->GetString( "engine_move" ) : "", sizeof( t->szEngineMove ) );
+		Q_strncpy( t->szTurretTurn, pSnd ? pSnd->GetString( "turret_turn" ) : "", sizeof( t->szTurretTurn ) );
+		Q_strncpy( t->szTurretStop, pSnd ? pSnd->GetString( "turret_stop" ) : "", sizeof( t->szTurretStop ) );
+		Q_strncpy( t->szReload, pSnd ? pSnd->GetString( "reload" ) : "", sizeof( t->szReload ) );
+		Q_strncpy( t->szExplode, pSnd ? pSnd->GetString( "explode", "DoDSP_Vehicle.ShellExplode" ) : "DoDSP_Vehicle.ShellExplode", sizeof( t->szExplode ) );
 		KeyValues *pSeats = pType->FindKey( "seats" );
 		for ( KeyValues *pSeat = pSeats ? pSeats->GetFirstTrueSubKey() : NULL; pSeat; pSeat = pSeat->GetNextTrueSubKey() )
 		{
@@ -137,8 +217,10 @@ static void LoadVehicleTypes( bool bForce )
 		{
 			Warning( "INVARIANT DOD-SP vehicles: type '%s' in %s has no \"model\" - skipped\n", t->szName, DODSP_VEHICLE_SCRIPT );
 			delete t;
+			pType->deleteThis();
 			continue;
 		}
+		pType->deleteThis();
 		s_Types.AddToTail( t );
 	}
 	pKV->deleteThis();
@@ -341,6 +423,89 @@ static bool CorridorClear( const Vector &a, const Vector &b, float flHalfWidth, 
 }
 
 //-----------------------------------------------------------------------------
+// Sounds (V2): the owner's tanksounds in scripts/game_sounds_dodsp_vehicles.txt, loaded by the game (the sound
+// system drops override scripts at level end, so "is it loaded" is asked of the sound system every time).
+// Once per map: every sound any vehicle type names must exist as an entry AND every wave behind it as a file -
+// ONE console line either way (the chatter's rule: the owner sees at load what's missing, not in a fight).
+//-----------------------------------------------------------------------------
+extern ISoundEmitterSystemBase *soundemitterbase;
+#define DODSP_VEHICLE_SOUND_SCRIPT	"scripts/game_sounds_dodsp_vehicles.txt"
+
+static bool VehicleSoundEntryExists( const char *pszName )
+{
+	return soundemitterbase->IsValidIndex( soundemitterbase->GetSoundIndex( pszName ) );
+}
+
+// 0 = fine, 1 = no such entry, 2 = a wave file behind it is missing (*pszWave says which)
+static int VehicleSoundCheck( const char *pszName, char *pszWave, int nWave )
+{
+	int i = soundemitterbase->GetSoundIndex( pszName );
+	if ( !soundemitterbase->IsValidIndex( i ) )
+		return 1;
+	CSoundParametersInternal *pParams = soundemitterbase->InternalGetParametersForSound( i );
+	if ( !pParams )
+		return 1;
+	const SoundFile *pFiles = pParams->GetSoundNames();
+	for ( int w = 0; w < pParams->NumSoundNames(); w++ )
+	{
+		const char *pszW = soundemitterbase->GetWaveName( pFiles[w].symbol );
+		if ( !pszW || !pszW[0] )
+			continue;
+		char szPath[MAX_PATH];
+		Q_snprintf( szPath, sizeof( szPath ), "sound/%s", PSkipSoundChars( pszW ) );
+		if ( !filesystem->FileExists( szPath, "GAME" ) )
+		{
+			Q_strncpy( pszWave, szPath, nWave );
+			return 2;
+		}
+	}
+	return 0;
+}
+
+static void VehicleSoundsLevelInit( void )
+{
+	if ( !VehicleSoundEntryExists( "DoDSP_Vehicle.ShellExplode" ) )
+		soundemitterbase->AddSoundOverrides( DODSP_VEHICLE_SOUND_SCRIPT, true );
+	static char s_szCheckedMap[64] = "";
+	if ( !Q_strcmp( s_szCheckedMap, STRING( gpGlobals->mapname ) ) )
+		return;
+	Q_strncpy( s_szCheckedMap, STRING( gpGlobals->mapname ), sizeof( s_szCheckedMap ) );
+	int nNames = 0, nNoEntry = 0, nNoWave = 0;
+	char szFirst[MAX_PATH] = "";
+	for ( int t = 0; t < s_Types.Count(); t++ )
+	{
+		VehicleType_t *pT = s_Types[t];
+		const char *pszNames[] = { pT->gun.szSound, pT->coax.szSound, pT->szEngineIdle, pT->szEngineMove, pT->szTurretTurn,
+								   pT->szTurretStop, pT->szReload, pT->szExplode };
+		for ( int k = 0; k < ARRAYSIZE( pszNames ); k++ )
+		{
+			if ( !pszNames[k][0] )
+				continue;
+			nNames++;
+			char szWave[MAX_PATH] = "";
+			int eWhy = VehicleSoundCheck( pszNames[k], szWave, sizeof( szWave ) );
+			if ( eWhy == 1 )
+			{
+				if ( !nNoEntry && !nNoWave )
+					Q_snprintf( szFirst, sizeof( szFirst ), "%s: no sound entry '%s'", pT->szName, pszNames[k] );
+				nNoEntry++;
+			}
+			else if ( eWhy == 2 )
+			{
+				if ( !nNoEntry && !nNoWave )
+					Q_snprintf( szFirst, sizeof( szFirst ), "%s: '%s' -> %s not found", pT->szName, pszNames[k], szWave );
+				nNoWave++;
+			}
+		}
+	}
+	if ( nNoEntry || nNoWave )
+		Warning( "INVARIANT DOD-SP vehicle sounds: %d of %d missing (%d no entry, %d wave file missing) - first: %s. Entries live in %s, waves in DOD-SP\\sound\\dodsp\\vehicles\\\n",
+				 nNoEntry + nNoWave, nNames, nNoEntry, nNoWave, szFirst, DODSP_VEHICLE_SOUND_SCRIPT );
+	else
+		Msg( "DOD-SP vehicle sounds: all %d found\n", nNames );
+}
+
+//-----------------------------------------------------------------------------
 // The node graph, graded per vehicle width (built once per map per width, printed once)
 //-----------------------------------------------------------------------------
 struct VehicleNav_t
@@ -448,6 +613,8 @@ public:
 	virtual void	UpdateOnRemove( void );
 	virtual void	Blocked( CBaseEntity *pOther );
 	virtual int		DrawDebugTextOverlays( void );
+	virtual Class_T	Classify( void ) { return DoDSP_ClassForFaction( m_eFaction ); }	// one owner: dodsp_factions
+	int				GetFaction( void ) const { return m_eFaction; }
 
 	void			DriveThink( void );
 	bool			DriveTo( const Vector &vecGoal );
@@ -458,6 +625,10 @@ public:
 	void			InputDriveTo( inputdata_t &inputdata );
 	void			InputStop( inputdata_t &inputdata );
 	void			InputSetMaxSpeed( inputdata_t &inputdata );
+	void			InputSetTarget( inputdata_t &inputdata );
+	void			InputClearTarget( inputdata_t &inputdata );
+	void			InputHoldFire( inputdata_t &inputdata );
+	void			InputOpenFire( inputdata_t &inputdata );
 
 	static CUtlVector<CDoDSPVehicle *> s_All;
 
@@ -470,6 +641,20 @@ private:
 	QAngle			BuildAngles( float flHeading, const Vector &vecPos, float *pflGroundZ );
 	void			MeasureBody( void );
 	float			HeadingFromAngles( void ) const;
+	// V2 weapons
+	void			WeaponThink( float dt );
+	bool			CalibrateTurret( void );
+	CBaseEntity		*FindTarget( void );
+	bool			TargetValid( CBaseEntity *pTarget, float flRange, bool bNeedSight );
+	bool			CanSee( CBaseEntity *pTarget );
+	Vector			AimPivot( void );
+	Vector			BarrelDir( void );
+	Vector			MuzzlePos( const Vector &vecDir );
+	bool			FriendlyInTheWay( const Vector &vecFrom, const Vector &vecDir, float flRange, float flRadius, CBaseEntity **ppWho );
+	void			FireMainGun( const Vector &vecDir );
+	void			FireCoax( const Vector &vecDir );
+	void			UpdateSounds( float flTurretRate );
+	void			StopSounds( void );
 
 	string_t		m_iszVehicleType;
 	string_t		m_iszInitialGoal;
@@ -501,6 +686,30 @@ private:
 	CUtlVector<BadLink_t> m_BadLinks;
 	int				m_iLastFrom, m_iLastTo;		// the node link it was driving when stuck
 
+	// V2: side, target, turret
+	string_t		m_iszFaction;				// Hammer key "faction" (empty = the type's)
+	int				m_eFaction;
+	EHANDLE			m_hTarget;
+	EHANDLE			m_hForcedTarget;			// SetTarget input
+	bool			m_bHoldFire;
+	float			m_flNextScan;
+	float			m_flTurretYaw;				// local to the hull, degrees (turret model's own front = 0)
+	float			m_flTurretPitch;			// degrees up
+	float			m_flNextGun;
+	float			m_flNextCoaxShot, m_flCoaxBurstEnd, m_flCoaxPauseUntil;
+	bool			m_bReloadSoundDone;
+	// measured from the turret model (CalibrateTurret), not saved
+	bool			m_bTurretCalibrated;
+	float			m_flTurretFwdOffset;		// where the barrel points in the turret model at yaw 0
+	float			m_flPitchSign;				// barrel_pitch value per degree up (+1 or -1)
+	float			m_flPoseMin, m_flPoseMax;
+	int				m_iMuzzleAttach, m_iPitchPose;
+	// sounds (not saved: made again after a load)
+	CSoundPatch		*m_pEngineIdle, *m_pEngineMove, *m_pTurretTurn;
+	bool			m_bTurretTurning;
+	COutputEvent	m_OnFire;
+	COutputEvent	m_OnTargetSeen;
+
 	COutputEvent	m_OnArrived;
 	COutputEvent	m_OnStuck;
 	COutputEvent	m_OnNoRoute;
@@ -520,6 +729,19 @@ BEGIN_DATADESC( CDoDSPVehicle )
 	DEFINE_FIELD( m_bHasGoal, FIELD_BOOLEAN ),
 	DEFINE_FIELD( m_vecGoal, FIELD_POSITION_VECTOR ),
 	DEFINE_FIELD( m_bInitialGoalDone, FIELD_BOOLEAN ),
+	DEFINE_KEYFIELD( m_iszFaction, FIELD_STRING, "faction" ),
+	DEFINE_FIELD( m_eFaction, FIELD_INTEGER ),
+	DEFINE_FIELD( m_hForcedTarget, FIELD_EHANDLE ),
+	DEFINE_FIELD( m_bHoldFire, FIELD_BOOLEAN ),
+	DEFINE_FIELD( m_flTurretYaw, FIELD_FLOAT ),
+	DEFINE_FIELD( m_flTurretPitch, FIELD_FLOAT ),
+	DEFINE_FIELD( m_flNextGun, FIELD_TIME ),
+	DEFINE_INPUTFUNC( FIELD_STRING, "SetTarget", InputSetTarget ),
+	DEFINE_INPUTFUNC( FIELD_VOID, "ClearTarget", InputClearTarget ),
+	DEFINE_INPUTFUNC( FIELD_VOID, "HoldFire", InputHoldFire ),
+	DEFINE_INPUTFUNC( FIELD_VOID, "OpenFire", InputOpenFire ),
+	DEFINE_OUTPUT( m_OnFire, "OnFire" ),
+	DEFINE_OUTPUT( m_OnTargetSeen, "OnTargetSeen" ),
 	DEFINE_FUNCTION( DriveThink ),
 	DEFINE_INPUTFUNC( FIELD_STRING, "DriveTo", InputDriveTo ),
 	DEFINE_INPUTFUNC( FIELD_VOID, "Stop", InputStop ),
@@ -549,6 +771,20 @@ CDoDSPVehicle::CDoDSPVehicle()
 	m_bInitialGoalDone = false;
 	m_flNavCheckTime = 0.0f;
 	m_flHalfWidth = m_flHalfLength = m_flBodyHeight = 0.0f;
+	m_eFaction = DODSP_FACTION_AXIS;
+	m_bHoldFire = false;
+	m_flNextScan = 0.0f;
+	m_flTurretYaw = m_flTurretPitch = 0.0f;
+	m_flNextGun = 0.0f;
+	m_flNextCoaxShot = m_flCoaxBurstEnd = m_flCoaxPauseUntil = 0.0f;
+	m_bReloadSoundDone = true;
+	m_bTurretCalibrated = false;
+	m_flTurretFwdOffset = 0.0f;
+	m_flPitchSign = 1.0f;
+	m_flPoseMin = m_flPoseMax = 0.0f;
+	m_iMuzzleAttach = m_iPitchPose = -1;
+	m_pEngineIdle = m_pEngineMove = m_pTurretTurn = NULL;
+	m_bTurretTurning = false;
 	m_iLastFrom = m_iLastTo = -1;
 	s_All.AddToTail( this );
 }
@@ -556,6 +792,7 @@ CDoDSPVehicle::CDoDSPVehicle()
 void CDoDSPVehicle::UpdateOnRemove( void )
 {
 	s_All.FindAndRemove( this );
+	StopSounds();
 	if ( m_hTurret.Get() )
 		UTIL_Remove( m_hTurret.Get() );
 	BaseClass::UpdateOnRemove();
@@ -569,6 +806,12 @@ void CDoDSPVehicle::Precache( void )
 		PrecacheModel( m_pType->szModel );
 		if ( m_pType->szTurretModel[0] )
 			PrecacheModel( m_pType->szTurretModel );
+		VehicleSoundsLevelInit();
+		const char *pszNames[] = { m_pType->gun.szSound, m_pType->coax.szSound, m_pType->szEngineIdle, m_pType->szEngineMove,
+								   m_pType->szTurretTurn, m_pType->szTurretStop, m_pType->szReload, m_pType->szExplode };
+		for ( int k = 0; k < ARRAYSIZE( pszNames ); k++ )
+			if ( pszNames[k][0] )
+				PrecacheScriptSound( pszNames[k] );
 	}
 	BaseClass::Precache();
 }
@@ -586,6 +829,21 @@ void CDoDSPVehicle::Spawn( void )
 	m_flModelForwardYaw = m_pType->flForwardYaw;
 
 	MeasureBody();
+
+	// its side: the Hammer key wins, else the type's (a captured tank is a key away)
+	m_eFaction = m_pType->eFaction;
+	if ( m_iszFaction != NULL_STRING && STRING( m_iszFaction )[0] )
+	{
+		int e = DoDSP_FactionFromName( STRING( m_iszFaction ) );
+		if ( e >= 0 )
+			m_eFaction = e;
+		else
+			Warning( "INVARIANT DOD-SP vehicle %s: faction '%s' is not a side (axis / allies) - kept %s\n", GetDebugName(), STRING( m_iszFaction ), DoDSP_FactionName( m_eFaction ) );
+	}
+	// guard: what it answers to Classify must map back to its side (dodsp_factions is the one owner)
+	if ( DoDSP_FactionOf( this ) != m_eFaction )
+		Warning( "INVARIANT DOD-SP vehicle %s: side %s but its class counts as %s (dodsp_factions.cpp tables disagree)\n",
+				 GetDebugName(), DoDSP_FactionName( m_eFaction ), DoDSP_FactionName( DoDSP_FactionOf( this ) ) );
 
 	SetSolid( SOLID_VPHYSICS );
 	SetMoveType( MOVETYPE_PUSH );
@@ -1101,6 +1359,8 @@ void CDoDSPVehicle::DriveThink( void )
 		}
 	}
 
+	WeaponThink( dt );
+
 	if ( dodsp_vehicle_debug.GetBool() && m_Route.Count() )
 	{
 		Vector vecLast = vecPos;
@@ -1110,6 +1370,438 @@ void CDoDSPVehicle::DriveThink( void )
 			vecLast = m_Route[i];
 		}
 	}
+}
+
+//-----------------------------------------------------------------------------
+// V2: aim and fire
+//
+// Who it shoots: anyone of a side hostile to its own (dodsp_factions - one owner), alive, not notarget, in
+// range and in sight from the turret. It keeps its target while that stays valid (no flicking between two
+// men), and a SetTarget input overrides the choice.
+// How it aims: the turret turns about the hull's up axis (turret_rate) and the barrel elevates (pitch_rate)
+// toward the target, both in the hull's own frame, so a tank on a slope still aims true. The gun fires only
+// along where the barrel REALLY points (never "at" the target): if the turret is still turning, it waits.
+// The turret model is measured once (CalibrateTurret): which way its barrel faces, which sign of the
+// barrel_pitch pose raises it, and its muzzle - so no model's convention is guessed.
+// It never fires when a friend is in the line of fire or near the impact (the shell kills everyone there).
+//-----------------------------------------------------------------------------
+#define VEHICLE_SCAN_INTERVAL	0.3f
+#define VEHICLE_GUN_CONE		1.5f		// degrees: the barrel must be this close to the target to fire the main gun
+#define VEHICLE_COAX_CONE		5.0f
+
+bool CDoDSPVehicle::CalibrateTurret( void )
+{
+	CBaseAnimating *pT = dynamic_cast<CBaseAnimating *>( m_hTurret.Get() );
+	if ( !pT || !pT->GetModelPtr() )
+		return false;
+	m_bTurretCalibrated = true;
+	m_iMuzzleAttach = pT->LookupAttachment( "muzzle" );
+	m_iPitchPose = pT->LookupPoseParameter( "barrel_pitch" );
+	m_flPoseMin = m_flPoseMax = 0.0f;
+	if ( m_iPitchPose >= 0 )
+		pT->GetPoseParameterRange( m_iPitchPose, m_flPoseMin, m_flPoseMax );
+	// measure in the turret's own frame, turret straight, barrel level
+	QAngle angSave = pT->GetLocalAngles();
+	pT->SetLocalAngles( vec3_angle );
+	Vector vecLevel( 0, 0, 0 ), vecHigh( 0, 0, 0 ), vecLow( 0, 0, 0 );
+	if ( m_iMuzzleAttach > 0 )
+	{
+		Vector vecWorld;
+		if ( m_iPitchPose >= 0 )
+			pT->SetPoseParameter( m_iPitchPose, 0.0f );
+		pT->InvalidateBoneCache();
+		pT->GetAttachment( m_iMuzzleAttach, vecWorld );
+		VectorITransform( vecWorld, pT->EntityToWorldTransform(), vecLevel );
+		if ( m_iPitchPose >= 0 )
+		{
+			pT->SetPoseParameter( m_iPitchPose, m_flPoseMax );
+			pT->InvalidateBoneCache();
+			pT->GetAttachment( m_iMuzzleAttach, vecWorld );
+			VectorITransform( vecWorld, pT->EntityToWorldTransform(), vecHigh );
+			pT->SetPoseParameter( m_iPitchPose, m_flPoseMin );
+			pT->InvalidateBoneCache();
+			pT->GetAttachment( m_iMuzzleAttach, vecWorld );
+			VectorITransform( vecWorld, pT->EntityToWorldTransform(), vecLow );
+			pT->SetPoseParameter( m_iPitchPose, 0.0f );
+			pT->InvalidateBoneCache();
+		}
+		m_flTurretFwdOffset = ( vecLevel.Length2D() > 1.0f ) ? RAD2DEG( atan2f( vecLevel.y, vecLevel.x ) ) : 0.0f;
+	}
+	pT->SetLocalAngles( angSave );
+	m_flPitchSign = ( vecHigh.z >= vecLow.z ) ? 1.0f : -1.0f;
+	Msg( "DOD-SP vehicle %s (%s, %s): turret barrel faces %.0f deg in its model, barrel_pitch %s%.0f..%.0f (%s = up), muzzle %s; "
+		 "main gun %s, coax %s\n", GetDebugName(), m_pType->szName, DoDSP_FactionName( m_eFaction ), m_flTurretFwdOffset,
+		 m_iPitchPose >= 0 ? "" : "MISSING ", m_flPoseMin, m_flPoseMax, m_flPitchSign > 0 ? "+" : "-",
+		 m_iMuzzleAttach > 0 ? "found" : "MISSING", m_pType->gun.bHas ? "yes" : "no", m_pType->coax.bHas ? "yes" : "no" );
+	if ( m_iMuzzleAttach <= 0 )
+		Warning( "INVARIANT DOD-SP vehicle %s: turret model %s has no \"muzzle\" attachment - shots start at the turret's middle\n",
+				 GetDebugName(), m_pType->szTurretModel );
+	if ( m_iPitchPose < 0 )
+		Warning( "INVARIANT DOD-SP vehicle %s: turret model %s has no \"barrel_pitch\" pose - the barrel can't elevate\n",
+				 GetDebugName(), m_pType->szTurretModel );
+	else if ( fabs( vecHigh.z - vecLow.z ) < 1.0f )
+		Warning( "INVARIANT DOD-SP vehicle %s: barrel_pitch %.0f..%.0f doesn't move the muzzle (%.1f units) - the barrel can't elevate\n",
+				 GetDebugName(), m_flPoseMin, m_flPoseMax, fabs( vecHigh.z - vecLow.z ) );
+	return true;
+}
+
+// where the barrel turns about (the turret's middle; the hull's top when it has no turret)
+Vector CDoDSPVehicle::AimPivot( void )
+{
+	if ( m_hTurret.Get() )
+		return m_hTurret->GetAbsOrigin() + Vector( 0, 0, 8 );
+	return GetAbsOrigin() + Vector( 0, 0, m_flBodyHeight );
+}
+
+// where the barrel really points now (world)
+Vector CDoDSPVehicle::BarrelDir( void )
+{
+	float flYaw = DEG2RAD( m_flTurretYaw + m_flTurretFwdOffset ), flPitch = DEG2RAD( m_flTurretPitch );
+	Vector vecLocal( cosf( flYaw ) * cosf( flPitch ), sinf( flYaw ) * cosf( flPitch ), sinf( flPitch ) );
+	Vector vecWorld;
+	VectorRotate( vecLocal, EntityToWorldTransform(), vecWorld );
+	return vecWorld;
+}
+
+Vector CDoDSPVehicle::MuzzlePos( const Vector &vecDir )
+{
+	CBaseAnimating *pT = dynamic_cast<CBaseAnimating *>( m_hTurret.Get() );
+	Vector vecPos;
+	if ( pT && m_iMuzzleAttach > 0 && pT->GetAttachment( m_iMuzzleAttach, vecPos ) )
+		return vecPos;
+	return AimPivot() + vecDir * 64.0f;
+}
+
+bool CDoDSPVehicle::CanSee( CBaseEntity *pTarget )
+{
+	trace_t tr;
+	CTraceFilterSkipTwoEntities filter( this, m_hTurret.Get(), COLLISION_GROUP_NONE );
+	Vector vecFrom = AimPivot();
+	// the target's middle or its eyes
+	Vector vecPoints[2] = { pTarget->WorldSpaceCenter(), pTarget->EyePosition() };
+	for ( int i = 0; i < 2; i++ )
+	{
+		UTIL_TraceLine( vecFrom, vecPoints[i], MASK_SHOT, &filter, &tr );
+		if ( tr.fraction >= 1.0f || ( tr.m_pEnt && ( tr.m_pEnt == pTarget || tr.m_pEnt->GetRootMoveParent() == pTarget ) ) )
+			return true;
+	}
+	return false;
+}
+
+bool CDoDSPVehicle::TargetValid( CBaseEntity *pTarget, float flRange, bool bNeedSight )
+{
+	if ( !pTarget || pTarget == this || !pTarget->IsAlive() || ( pTarget->GetFlags() & FL_NOTARGET ) )
+		return false;
+	if ( !DoDSP_Hostile( m_eFaction, DoDSP_FactionOf( pTarget ) ) )
+		return false;
+	if ( ( pTarget->WorldSpaceCenter() - AimPivot() ).Length() > flRange )
+		return false;
+	return !bNeedSight || CanSee( pTarget );
+}
+
+CBaseEntity *CDoDSPVehicle::FindTarget( void )
+{
+	float flRange = MAX( m_pType->gun.bHas ? m_pType->gun.flRange : 0.0f, m_pType->coax.bHas ? m_pType->coax.flRange : 0.0f );
+	if ( m_hForcedTarget.Get() )
+		return TargetValid( m_hForcedTarget.Get(), flRange, false ) ? m_hForcedTarget.Get() : NULL;
+	// keep the one it has while it's still good
+	CBaseEntity *pKeep = m_hTarget.Get();
+	if ( pKeep && TargetValid( pKeep, flRange, true ) )
+		return pKeep;
+	CUtlVector<CBaseEntity *> cands;
+	for ( int i = 1; i <= gpGlobals->maxClients; i++ )
+		if ( UTIL_PlayerByIndex( i ) )
+			cands.AddToTail( UTIL_PlayerByIndex( i ) );
+	CAI_BaseNPC **ppAIs = g_AI_Manager.AccessAIs();
+	for ( int i = 0; i < g_AI_Manager.NumAIs(); i++ )
+		cands.AddToTail( ppAIs[i] );
+	for ( int i = 0; i < s_All.Count(); i++ )
+		cands.AddToTail( s_All[i] );
+	CBaseEntity *pBest = NULL;
+	float flBest = FLT_MAX;
+	Vector vecPivot = AimPivot();
+	for ( int i = 0; i < cands.Count(); i++ )
+	{
+		CBaseEntity *p = cands[i];
+		if ( !TargetValid( p, flRange, false ) )
+			continue;
+		float flDist = ( p->WorldSpaceCenter() - vecPivot ).Length();
+		if ( flDist < flBest && CanSee( p ) )
+		{
+			flBest = flDist;
+			pBest = p;
+		}
+	}
+	return pBest;
+}
+
+// A friend on the line of fire, or within flRadius of where the shot lands (flRadius 0 = line only)
+bool CDoDSPVehicle::FriendlyInTheWay( const Vector &vecFrom, const Vector &vecDir, float flRange, float flRadius, CBaseEntity **ppWho )
+{
+	trace_t tr;
+	CTraceFilterSkipTwoEntities filter( this, m_hTurret.Get(), COLLISION_GROUP_NONE );
+	UTIL_TraceLine( vecFrom, vecFrom + vecDir * flRange, MASK_SHOT, &filter, &tr );
+	if ( tr.m_pEnt && !tr.m_pEnt->IsWorld() && DoDSP_FactionOf( tr.m_pEnt ) == m_eFaction )
+	{
+		*ppWho = tr.m_pEnt;
+		return true;
+	}
+	if ( flRadius > 0.0f && tr.fraction < 1.0f )
+	{
+		CBaseEntity *pList[64];
+		int n = UTIL_EntitiesInSphere( pList, ARRAYSIZE( pList ), tr.endpos, flRadius, FL_CLIENT | FL_NPC );
+		for ( int i = 0; i < n; i++ )
+		{
+			if ( pList[i] != this && pList[i]->IsAlive() && DoDSP_FactionOf( pList[i] ) == m_eFaction )
+			{
+				*ppWho = pList[i];
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+void CDoDSPVehicle::FireMainGun( const Vector &vecAim )
+{
+	Vector vecDir = vecAim;
+	// a little spread: a shell isn't a laser
+	float flSpread = DEG2RAD( m_pType->gun.flSpread ) * 0.5f;
+	vecDir += Vector( random->RandomFloat( -flSpread, flSpread ), random->RandomFloat( -flSpread, flSpread ), random->RandomFloat( -flSpread, flSpread ) );
+	VectorNormalize( vecDir );
+	Vector vecMuzzle = MuzzlePos( vecDir );
+	trace_t tr;
+	CTraceFilterSkipTwoEntities filter( this, m_hTurret.Get(), COLLISION_GROUP_NONE );
+	UTIL_TraceLine( vecMuzzle, vecMuzzle + vecDir * m_pType->gun.flRange, MASK_SHOT, &filter, &tr );
+	QAngle angDir;
+	VectorAngles( vecDir, angDir );
+	g_pEffects->MuzzleFlash( vecMuzzle, angDir, 6.0f, MUZZLEFLASH_TYPE_DEFAULT );
+	if ( m_pType->gun.szSound[0] )
+		EmitSound( m_pType->gun.szSound );
+	UTIL_ScreenShake( vecMuzzle, 6.0f, 150.0f, 0.6f, 1024.0f, SHAKE_START );
+	if ( tr.fraction < 1.0f && !tr.startsolid )
+	{
+		Vector vecBoom = tr.endpos + tr.plane.normal * 8.0f;
+		// the game's explosion does the damage (falls off over the radius) and the fireball; ours is the sound
+		ExplosionCreate( vecBoom, angDir, this, (int)m_pType->gun.flDamage, (int)m_pType->gun.flRadius, true, 0.0f, false, true );
+		if ( m_pType->szExplode[0] )
+		{
+			CPASAttenuationFilter boomFilter( vecBoom, SNDLVL_140dB );
+			EmitSound( boomFilter, entindex(), m_pType->szExplode, &vecBoom );
+		}
+		UTIL_ScreenShake( vecBoom, 12.0f, 150.0f, 1.0f, m_pType->gun.flRadius * 3.0f, SHAKE_START );
+	}
+	m_flNextGun = gpGlobals->curtime + m_pType->gun.flReload;
+	m_bReloadSoundDone = false;
+	m_OnFire.FireOutput( m_hTarget.Get(), this );
+	if ( dodsp_vehicle_debug.GetBool() )
+		Msg( "DOD-SP vehicle %s: main gun fired at %s - hit %s %.0f units out\n", GetDebugName(),
+			 m_hTarget.Get() ? m_hTarget->GetClassname() : "?", tr.fraction < 1.0f ? VehicleHitName( tr ) : "nothing",
+			 ( tr.endpos - vecMuzzle ).Length() );
+}
+
+void CDoDSPVehicle::FireCoax( const Vector &vecDir )
+{
+	Vector vecMuzzle = MuzzlePos( vecDir );
+	FireBulletsInfo_t info;
+	info.m_iShots = 1;
+	info.m_vecSrc = vecMuzzle;
+	info.m_vecDirShooting = vecDir;
+	float flHalf = sinf( DEG2RAD( m_pType->coax.flSpread ) * 0.5f );
+	info.m_vecSpread = Vector( flHalf, flHalf, flHalf );
+	info.m_flDistance = m_pType->coax.flRange;
+	info.m_iAmmoType = GetAmmoDef()->Index( "AR2" );
+	info.m_iTracerFreq = 2;
+	info.m_flDamage = m_pType->coax.flDamage;
+	info.m_pAttacker = this;
+	FireBullets( info );
+	if ( m_pType->coax.szSound[0] )
+		EmitSound( m_pType->coax.szSound );
+}
+
+void CDoDSPVehicle::WeaponThink( float dt )
+{
+	if ( !m_pType->gun.bHas && !m_pType->coax.bHas )
+		return;
+	if ( m_hTurret.Get() && !m_bTurretCalibrated )
+		CalibrateTurret();
+	float now = gpGlobals->curtime;
+
+	// target
+	if ( now >= m_flNextScan )
+	{
+		m_flNextScan = now + VEHICLE_SCAN_INTERVAL;
+		CBaseEntity *pOld = m_hTarget.Get();
+		m_hTarget = FindTarget();
+		if ( m_hTarget.Get() && m_hTarget.Get() != pOld )
+		{
+			m_OnTargetSeen.FireOutput( m_hTarget.Get(), this );
+			if ( dodsp_vehicle_debug.GetBool() )
+				Msg( "DOD-SP vehicle %s (%s): target %s (%s) at %.0f units\n", GetDebugName(), DoDSP_FactionName( m_eFaction ),
+					 m_hTarget->GetClassname(), DoDSP_FactionName( DoDSP_FactionOf( m_hTarget.Get() ) ),
+					 ( m_hTarget->WorldSpaceCenter() - AimPivot() ).Length() );
+		}
+	}
+	CBaseEntity *pTarget = m_hTarget.Get();
+
+	// turn the turret and raise the barrel toward it (in the hull's frame), else back to the front
+	float flWantYaw = 0.0f, flWantPitch = 0.0f;
+	Vector vecAimPoint = vec3_origin;
+	if ( pTarget )
+	{
+		vecAimPoint = pTarget->WorldSpaceCenter();
+		Vector vecLocal;
+		VectorIRotate( vecAimPoint - AimPivot(), EntityToWorldTransform(), vecLocal );
+		flWantYaw = RAD2DEG( atan2f( vecLocal.y, vecLocal.x ) ) - m_flTurretFwdOffset;
+		flWantPitch = RAD2DEG( atan2f( vecLocal.z, vecLocal.Length2D() ) );
+	}
+	float flOldYaw = m_flTurretYaw;
+	if ( m_hTurret.Get() )
+	{
+		m_flTurretYaw = ApproachAngle( flWantYaw, m_flTurretYaw, m_pType->flTurretRate * dt );
+		float flPitchMin = MIN( m_flPoseMin * m_flPitchSign, m_flPoseMax * m_flPitchSign );
+		float flPitchMax = MAX( m_flPoseMin * m_flPitchSign, m_flPoseMax * m_flPitchSign );
+		if ( m_iPitchPose < 0 )
+			flPitchMin = flPitchMax = 0.0f;
+		flWantPitch = clamp( flWantPitch, flPitchMin, flPitchMax );
+		m_flTurretPitch = Approach( flWantPitch, m_flTurretPitch, m_pType->flPitchRate * dt );
+		m_hTurret->SetLocalAngles( QAngle( 0, m_flTurretYaw, 0 ) );
+		CBaseAnimating *pT = dynamic_cast<CBaseAnimating *>( m_hTurret.Get() );
+		if ( pT && m_iPitchPose >= 0 )
+			pT->SetPoseParameter( m_iPitchPose, m_flTurretPitch * m_flPitchSign );
+	}
+	UpdateSounds( fabs( AngleDiff( m_flTurretYaw, flOldYaw ) ) / MAX( dt, 0.001f ) );
+
+	// reload clank shortly before the gun is ready again
+	if ( !m_bReloadSoundDone && m_pType->szReload[0] && now >= m_flNextGun - 2.0f )
+	{
+		m_bReloadSoundDone = true;
+		EmitSound( m_pType->szReload );
+	}
+
+	if ( !pTarget || m_bHoldFire )
+		return;
+	Vector vecBarrel = BarrelDir();
+	Vector vecToTarget = vecAimPoint - MuzzlePos( vecBarrel );
+	float flDist = VectorNormalize( vecToTarget );
+	float flErr = RAD2DEG( acosf( clamp( DotProduct( vecBarrel, vecToTarget ), -1.0f, 1.0f ) ) );
+	bool bSeen = CanSee( pTarget );
+	if ( !bSeen )
+		return;
+	CBaseEntity *pFriend = NULL;
+	// main gun: at anything hostile, when the barrel is on it
+	if ( m_pType->gun.bHas && now >= m_flNextGun && flErr <= VEHICLE_GUN_CONE && flDist <= m_pType->gun.flRange )
+	{
+		if ( FriendlyInTheWay( MuzzlePos( vecBarrel ), vecBarrel, flDist + 64.0f, m_pType->gun.flRadius, &pFriend ) )
+		{
+			if ( dodsp_vehicle_debug.GetBool() )
+				Msg( "DOD-SP vehicle %s: holding fire - %s in the way\n", GetDebugName(), pFriend->GetClassname() );
+			m_flNextGun = now + 1.0f;		// look again in a second
+		}
+		else
+			FireMainGun( vecBarrel );
+		return;
+	}
+	// coax: bursts at infantry (not at vehicles - it can't hurt them)
+	if ( m_pType->coax.bHas && !dynamic_cast<CDoDSPVehicle *>( pTarget ) && flErr <= VEHICLE_COAX_CONE && flDist <= m_pType->coax.flRange )
+	{
+		if ( now >= m_flCoaxBurstEnd && now >= m_flCoaxPauseUntil )
+		{
+			m_flCoaxBurstEnd = now + m_pType->coax.flBurst;
+			m_flCoaxPauseUntil = m_flCoaxBurstEnd + m_pType->coax.flPause;
+		}
+		if ( now < m_flCoaxBurstEnd && now >= m_flNextCoaxShot )
+		{
+			m_flNextCoaxShot = now + 1.0f / MAX( m_pType->coax.flRate, 1.0f );
+			if ( !FriendlyInTheWay( MuzzlePos( vecBarrel ), vecBarrel, flDist + 64.0f, 0.0f, &pFriend ) )
+				FireCoax( vecBarrel );
+		}
+	}
+}
+
+// Engines: idle fades into move with speed (move pitch rises); the turret's turn loop while it traverses
+void CDoDSPVehicle::UpdateSounds( float flTurretRate )
+{
+	CSoundEnvelopeController &ctl = CSoundEnvelopeController::GetController();
+	if ( !m_pEngineIdle && m_pType->szEngineIdle[0] )
+	{
+		CPASAttenuationFilter filter( this );
+		m_pEngineIdle = ctl.SoundCreate( filter, entindex(), m_pType->szEngineIdle );
+		if ( m_pEngineIdle )
+			ctl.Play( m_pEngineIdle, 1.0f, 100 );
+	}
+	if ( !m_pEngineMove && m_pType->szEngineMove[0] )
+	{
+		CPASAttenuationFilter filter( this );
+		m_pEngineMove = ctl.SoundCreate( filter, entindex(), m_pType->szEngineMove );
+		if ( m_pEngineMove )
+			ctl.Play( m_pEngineMove, 0.0f, 85 );
+	}
+	float t = clamp( fabs( m_flSpeed ) / MAX( m_pType->flMaxSpeed, 1.0f ), 0.0f, 1.0f );
+	if ( m_pEngineIdle )
+		ctl.SoundChangeVolume( m_pEngineIdle, 1.0f - 0.8f * t, 0.2f );
+	if ( m_pEngineMove )
+	{
+		ctl.SoundChangeVolume( m_pEngineMove, MIN( 1.0f, t * 1.5f ), 0.2f );
+		ctl.SoundChangePitch( m_pEngineMove, 85.0f + 30.0f * t, 0.2f );
+	}
+	bool bTurning = flTurretRate > 2.0f;
+	if ( bTurning && !m_bTurretTurning && m_pType->szTurretTurn[0] )
+	{
+		if ( !m_pTurretTurn )
+		{
+			CPASAttenuationFilter filter( this );
+			m_pTurretTurn = ctl.SoundCreate( filter, entindex(), m_pType->szTurretTurn );
+		}
+		if ( m_pTurretTurn )
+			ctl.Play( m_pTurretTurn, 0.8f, 100 );
+	}
+	else if ( !bTurning && m_bTurretTurning )
+	{
+		if ( m_pTurretTurn )
+			ctl.SoundChangeVolume( m_pTurretTurn, 0.0f, 0.1f );
+		if ( m_pType->szTurretStop[0] )
+			EmitSound( m_pType->szTurretStop );
+	}
+	m_bTurretTurning = bTurning;
+}
+
+void CDoDSPVehicle::StopSounds( void )
+{
+	CSoundEnvelopeController &ctl = CSoundEnvelopeController::GetController();
+	CSoundPatch **ppAll[] = { &m_pEngineIdle, &m_pEngineMove, &m_pTurretTurn };
+	for ( int i = 0; i < ARRAYSIZE( ppAll ); i++ )
+	{
+		if ( *ppAll[i] )
+		{
+			ctl.SoundDestroy( *ppAll[i] );
+			*ppAll[i] = NULL;
+		}
+	}
+}
+
+void CDoDSPVehicle::InputSetTarget( inputdata_t &inputdata )
+{
+	m_hForcedTarget = gEntList.FindEntityByName( NULL, inputdata.value.String(), this, inputdata.pActivator, inputdata.pCaller );
+	if ( !m_hForcedTarget.Get() )
+		Warning( "DOD-SP vehicle %s: SetTarget '%s' - no such entity\n", GetDebugName(), inputdata.value.String() );
+	m_flNextScan = 0.0f;
+}
+
+void CDoDSPVehicle::InputClearTarget( inputdata_t &inputdata )
+{
+	m_hForcedTarget = NULL;
+	m_flNextScan = 0.0f;
+}
+
+void CDoDSPVehicle::InputHoldFire( inputdata_t &inputdata )
+{
+	m_bHoldFire = true;
+}
+
+void CDoDSPVehicle::InputOpenFire( inputdata_t &inputdata )
+{
+	m_bHoldFire = false;
 }
 
 int CDoDSPVehicle::DrawDebugTextOverlays( void )
@@ -1131,6 +1823,9 @@ void CDoDSPVehicle::Report( void )
 		 m_pType ? m_pType->szName : "?", m_flHalfLength * 2.0f, m_flHalfWidth * 2.0f, p.x, p.y, p.z, m_flHeading, m_flSpeed,
 		 m_bHasGoal ? "driving" : "parked", m_eStuck != VSTUCK_NONE ? ( m_eStuck == VSTUCK_WORLD ? ", wall ahead" : ", was stuck" ) : "",
 		 m_iRoute, m_Route.Count() );
+	Msg( "    side %s, target %s%s, turret %.0f deg / barrel %.0f deg, main gun %s\n", DoDSP_FactionName( m_eFaction ),
+		 m_hTarget.Get() ? m_hTarget->GetClassname() : "none", m_bHoldFire ? " (holding fire)" : "", m_flTurretYaw, m_flTurretPitch,
+		 !m_pType || !m_pType->gun.bHas ? "none" : ( gpGlobals->curtime >= m_flNextGun ? "loaded" : "reloading" ) );
 }
 
 // Fine-tuning the script's estimate in game: move the turret, print the line for the script

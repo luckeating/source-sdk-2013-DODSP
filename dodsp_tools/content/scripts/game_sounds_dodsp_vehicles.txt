@@ -1,0 +1,27 @@
+// DOD-SP vehicle sounds - goes in DOD-SP\scripts\game_sounds_dodsp_vehicles.txt (loaded by the game itself,
+// no manifest edit). The waves are the owner's tanksounds.zip, copied unchanged into DOD-SP\sound\dodsp\vehicles\.
+// All 44.1 kHz mono 16-bit; the engine and turret loops carry cue points (that's what makes Source loop them).
+// Which vehicle uses which entry is in scripts/dodsp_vehicles.txt ("sounds" block of each type).
+
+// --- engines (looped; the game fades idle into move with speed and raises the move pitch) ---
+"DoDSP_Vehicle.Engine1Idle"	{ "channel" "CHAN_STATIC"	"volume" "1"	"soundlevel" "SNDLVL_85dB"	"pitch" "100"	"wave" "dodsp/vehicles/engine1_idle.wav" }
+"DoDSP_Vehicle.Engine1Move"	{ "channel" "CHAN_STATIC"	"volume" "1"	"soundlevel" "SNDLVL_85dB"	"pitch" "100"	"wave" "dodsp/vehicles/engine1_move.wav" }
+"DoDSP_Vehicle.Engine2Idle"	{ "channel" "CHAN_STATIC"	"volume" "1"	"soundlevel" "SNDLVL_85dB"	"pitch" "100"	"wave" "dodsp/vehicles/engine2_idle.wav" }
+"DoDSP_Vehicle.Engine2Move"	{ "channel" "CHAN_STATIC"	"volume" "1"	"soundlevel" "SNDLVL_85dB"	"pitch" "100"	"wave" "dodsp/vehicles/engine2_move.wav" }
+"DoDSP_Vehicle.Engine3Idle"	{ "channel" "CHAN_STATIC"	"volume" "1"	"soundlevel" "SNDLVL_85dB"	"pitch" "100"	"wave" "dodsp/vehicles/engine3_idle.wav" }
+"DoDSP_Vehicle.Engine3Move"	{ "channel" "CHAN_STATIC"	"volume" "1"	"soundlevel" "SNDLVL_85dB"	"pitch" "100"	"wave" "dodsp/vehicles/engine3_move.wav" }
+"DoDSP_Vehicle.TruckIdle"	{ "channel" "CHAN_STATIC"	"volume" "1"	"soundlevel" "SNDLVL_80dB"	"pitch" "100"	"wave" "dodsp/vehicles/truck_idle.wav" }
+"DoDSP_Vehicle.TruckMove"	{ "channel" "CHAN_STATIC"	"volume" "1"	"soundlevel" "SNDLVL_80dB"	"pitch" "100"	"wave" "dodsp/vehicles/truck_move.wav" }
+
+// --- turret (the turn loop plays while the turret moves, the stop clunk when it stops) ---
+"DoDSP_Vehicle.TurretTurn"	{ "channel" "CHAN_STATIC"	"volume" "0.8"	"soundlevel" "SNDLVL_70dB"	"pitch" "100"	"wave" "dodsp/vehicles/turret_turn.wav" }
+"DoDSP_Vehicle.TurretStop"	{ "channel" "CHAN_ITEM"		"volume" "0.8"	"soundlevel" "SNDLVL_70dB"	"pitch" "100"	"wave" "dodsp/vehicles/turret_stop.wav" }
+
+// --- main guns (heard across the map) ---
+"DoDSP_Vehicle.GunFire1"	{ "channel" "CHAN_WEAPON"	"volume" "1"	"soundlevel" "SNDLVL_140dB"	"pitch" "98,102"	"wave" "dodsp/vehicles/fire1.wav" }
+"DoDSP_Vehicle.GunFire2"	{ "channel" "CHAN_WEAPON"	"volume" "1"	"soundlevel" "SNDLVL_140dB"	"pitch" "98,102"	"wave" "dodsp/vehicles/fire2.wav" }
+"DoDSP_Vehicle.GunFire20mm"	{ "channel" "CHAN_WEAPON"	"volume" "1"	"soundlevel" "SNDLVL_120dB"	"pitch" "97,103"	"wave" "dodsp/vehicles/fire20mm.wav" }
+"DoDSP_Vehicle.Reload"		{ "channel" "CHAN_ITEM"		"volume" "0.9"	"soundlevel" "SNDLVL_75dB"	"pitch" "100"	"wave" "dodsp/vehicles/reload.wav" }
+
+// --- shell impact ---
+"DoDSP_Vehicle.ShellExplode" { "channel" "CHAN_STATIC"	"volume" "1"	"soundlevel" "SNDLVL_140dB"	"pitch" "95,105"	"wave" "dodsp/vehicles/explode.wav" }

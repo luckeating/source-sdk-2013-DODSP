@@ -524,6 +524,33 @@ If you learn something like this, add it here in the same commit as the fix.
   VEHICLE_TURN_COST 512 units for a full about-turn, 0 straight ahead) and ends at whichever end node makes the
   cheapest whole drive (+ the distance on to the goal); it stops once nothing left can beat the best found.
   OWNER 2026-11-19 (build 44663089277): "good enough for now" - V1 (driving) parked as KNOWN-GOOD; slack default 160 kept.
+- **V2 BUILT 2026-11-19 (aim + fire).** Owner: targets = "anyone hostile to the faction" (Axis vs Allies - American,
+  British, Russian all one side), main gun "super deadly". FACTIONS: one owner, dodsp/dodsp_factions.cpp
+  (`DoDSP_FactionOf` maps AI classes -> side: player/ally/rebel = allies, CLASS_COMBINE (npc_german_soldier)/metropolice/
+  military = axis, anything else none = never a target; `DoDSP_ClassForFaction` = what a side's entity answers to
+  Classify). A nation is NOT a side (chatter us/uk/ru = which words; faction = who gets shot). Vehicles: type key
+  "faction", Hammer key "faction" wins; Spawn INVARIANT if Classify doesn't map back to its side. TURRET: measured from
+  the model at first use (CalibrateTurret: barrel direction at yaw 0 from the muzzle attachment, which sign of
+  `barrel_pitch` raises the muzzle, pose range) - one load line `turret barrel faces N deg, barrel_pitch a..b (+/- = up),
+  muzzle found; main gun yes, coax yes`, INVARIANT for no muzzle / no pose / a pose that doesn't move the muzzle.
+  Aims in the HULL's frame (works on slopes); turret_rate / pitch_rate per type. Fires only along where the barrel
+  REALLY points (within 1.5 deg main / 5 deg coax), never "at" the target. Holds fire for a friend on the line or
+  within the shell's radius of the impact. Main gun = trace + ExplosionCreate (damage falls off over radius, silent) +
+  our explode sound + screen shake; coax = FireBullets bursts at infantry only. Target: nearest hostile in range and
+  sight (players, every AI, every vehicle), kept while valid; notarget respected; inputs SetTarget/ClearTarget/HoldFire/
+  OpenFire, outputs OnTargetSeen/OnFire. SOUNDS: owner's tanksounds.zip (15 waves, 44.1 kHz mono, loops have cue points)
+  -> DOD-SP\sound\dodsp\vehicles\, entries in dodsp_tools/content/scripts/game_sounds_dodsp_vehicles.txt (loaded by
+  the game like the chatter's); engine idle fades into move with speed (CSoundPatch), turret turn loop + stop clunk,
+  reload clank 2 s before the gun is ready. Coax uses DoD:S's Weapon_Mg42.Shoot / Weapon_30cal.Shoot (names NOT
+  verified - the load line says if they're missing). Guards: map load `DOD-SP vehicle sounds: all N found` or ONE
+  INVARIANT naming the first missing entry/wave; lint check_vehicle_sounds (every DoDSP_Vehicle.* name in the types
+  exists in the sound script; the type file has balanced braces, ONE top block, every type a model or base - a doubled
+  header slipped in while writing it). Script: "base" inheritance (paint variants = only their models; whole blocks
+  override). Engine-sound choice per vehicle is a guess (engine1 light/2 medium/3 heavy/truck wheels). NOT in V2:
+  halftrack/carrier hull MGs, the SU-152 "hull aims" mode (needs its collision model first), damage to vehicles (V4).
+  Files: dodsp_vehicle.cpp, dodsp_factions.cpp/.h (server_hl2.vpc), dodsp_vehicles.txt/.fgd, game_sounds_dodsp_vehicles.txt,
+  dodsp_lint_client.py, dodsp_build.yml (content/scripts path). Undo: the V1f server.dll (build 44663089277) - the old
+  type file still loads (unknown keys are ignored).
 - CoD1 set (owner's vehicles_part2.zip, 2026-11-19): REFERENCE ONLY except the **SU-152, which we keep**. One model per
   vehicle, turret/gun as BONES (tag_turret, tag_barrel, tag_flash = muzzle, tag_coaxel), faces +X (forward_yaw 0),
   CoD's rider tags tag_guy01..06 (Sherman, Elefant, SU-152: 6; Opel truck driver/passenger + 4), NO .phy (needs a

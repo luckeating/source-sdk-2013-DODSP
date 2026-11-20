@@ -3,7 +3,7 @@
 @include "base.fgd"
 
 @PointClass base(Targetname, Angles) studio("models/cod2/vehicles/panzer2_hull.mdl") = dodsp_vehicle :
-	"DOD-SP armoured vehicle (stage V1: drives itself over the AI nodes). The preview is always the Panzer II; " +
+	"DOD-SP armoured vehicle (drives itself over the AI nodes; turreted ones aim and fire at the other side). The preview is always the Panzer II; " +
 	"the real model comes from the vehicle type. Point its front the way it should start facing."
 [
 	vehicletype(choices) : "Vehicle type" : "panzer2" : "A block in scripts/dodsp_vehicles.txt." =
@@ -23,12 +23,24 @@
 		"carrier" : "Bren carrier"
 	]
 	goal(target_destination) : "Drive to at start" : "" : "Optional: an entity it drives to when the map starts."
+	faction(choices) : "Side" : "" : "Who it fights for. Empty = the type's own side (German vehicles axis, Allied ones allies)." =
+	[
+		"" : "The type's side"
+		"axis" : "Axis (German)"
+		"allies" : "Allies (American, British, Russian)"
+	]
 
 	input DriveTo(string) : "Drive to the named entity (over the AI nodes)."
 	input Stop(void) : "Stop where it is."
 	input SetMaxSpeed(float) : "Scale its top speed (1 = the type's, 0.5 = half)."
+	input SetTarget(string) : "Shoot at this entity (if it's on the other side) instead of choosing."
+	input ClearTarget(void) : "Choose its own targets again."
+	input HoldFire(void) : "Stop firing (it still aims)."
+	input OpenFire(void) : "Fire again."
 
 	output OnArrived(void) : "Reached the goal."
 	output OnStuck(void) : "Couldn't move for 3 s (it plans around the spot by itself)."
 	output OnNoRoute(void) : "No route to the goal for a vehicle this wide."
+	output OnTargetSeen(void) : "Picked a new target (the activator)."
+	output OnFire(void) : "Fired its main gun (the activator is the target)."
 ]
