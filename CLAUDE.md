@@ -491,6 +491,18 @@ If you learn something like this, add it here in the same commit as the fix.
   V1c TESTED 2026-11-19 (build 44648397962, same map): "working pretty well" - drives the forest road, arrives, sits on
   the ground right. Note: route straightening (CorridorClear) cuts across open ground on the inside of road bends - it
   is drivable, so allowed; a "keep to the road" mode is an option for later, if the owner wants it.
+  SECOND V1c RUN (same build): (1) `INVARIANT ... the sweep found a wall (worldspawn, normal z -0.15 ...) where CorridorClear
+  says it can drive` - the guard worked: a straightened leg passed beside a TREE (static props come back as worldspawn)
+  that the old thin-line test missed (3 lines 64 apart at 24/64 units up; ground on the centre line only). (2) owner:
+  "it seems to skip most of the nodes" - straightening cut across country between road nodes.
+  V1d: CorridorClear tests the BODY: VEHICLE_BODY_COLUMN (16) boxes side by side across the width, from step height to
+  the model's top (m_flBodyHeight), every 32 units, each column on its own ground with the step/slope rule (closes the
+  one-track gap). What blocks has ONE owner, `VehicleSweepBlocked` (drivable ground is climbed + re-check 48 higher),
+  used by the boxes AND the drive sweep of the real model. Grading is keyed by width AND height. Routes keep to the
+  nodes (the mapper's roads): straight to the goal only within VEHICLE_DIRECT_DIST (768) or with no reachable node;
+  a shortcut may skip a node only if it passes it within VEHICLE_ROAD_SLACK (48). Hits on static props print
+  "static prop". Also fixed: the body sizes weren't saved, so after a save load they were 0 - MeasureBody() runs on
+  Spawn AND OnRestore (INVARIANT in DriveThink if a body is ever unmeasured).
 - CoD1 set (owner's vehicles_part2.zip, 2026-11-19): REFERENCE ONLY except the **SU-152, which we keep**. One model per
   vehicle, turret/gun as BONES (tag_turret, tag_barrel, tag_flash = muzzle, tag_coaxel), faces +X (forward_yaw 0),
   CoD's rider tags tag_guy01..06 (Sherman, Elefant, SU-152: 6; Opel truck driver/passenger + 4), NO .phy (needs a

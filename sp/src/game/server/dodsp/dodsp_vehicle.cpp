@@ -44,6 +44,8 @@
 #define VEHICLE_MAX_STEP_PER_32	36.0f		// ground change between two samples 32 units apart (a slope of ~48 degrees)
 #define VEHICLE_STUCK_TIME		3.0f
 #define VEHICLE_MIN_GROUND_NZ	0.6f		// steepest ground the tracks take (normal z; ~53 degrees)
+#define VEHICLE_DIRECT_DIST		768.0f		// a goal this close is driven to straight, off the road
+#define VEHICLE_ROAD_SLACK		48.0f		// a shortcut may pass a node it skips this far off
 #define VEHICLE_BADLINK_TIME	30.0f
 
 ConVar dodsp_vehicle_debug( "dodsp_vehicle_debug", "0", 0, "1 = draw vehicle routes and print their decisions." );
@@ -188,11 +190,51 @@ static bool GroundAt( const Vector &vecPos, float flUp, float flDown, float *pfl
 	return true;
 }
 
-// THE test of whether a vehicle of half-width flHalfWidth can drive straight from a to b (both on
-// the ground): ground all the way (no drop or wall steeper than ~48 degrees, no slope the tracks can't
-// take), and nothing solid in a corridor 2 x half-width wide from step height to 64 units up.
-// Used to grade the node graph's links at load and to straighten routes - one owner.
-static bool CorridorClear( const Vector &a, const Vector &b, float flHalfWidth, CBaseEntity *pSelf )
+// THE rule for what stops a vehicle's body (one owner), used by CorridorClear's boxes AND the drive sweep of
+// the real model: sweep from a to b; ground it can climb (VehicleDrivable) doesn't stop it - the sweep then
+// looks again 48 units higher, so a wall behind the slope is still found. pBody: sweep that entity's own
+// collision model; else the box vecMins..vecMaxs. bStartSolidBlocks: a planned stretch starting inside
+// something is blocked; the moving vehicle ignores it (it would never get free).
+static bool VehicleSweepBlocked( CBaseEntity *pBody, const Vector &vecMins, const Vector &vecMaxs, const Vector &a, const Vector &b,
+								 ITraceFilter *pFilter, bool bStartSolidBlocks, trace_t *ptr )
+{
+	for ( int k = 0; k < 2; k++ )
+	{
+		Vector vecUp( 0, 0, k ? 48.0f : 0.0f );
+		if ( pBody )
+			UTIL_TraceEntity( pBody, a + vecUp, b + vecUp, MASK_SOLID, pFilter, ptr );
+		else
+			UTIL_TraceHull( a + vecUp, b + vecUp, vecMins, vecMaxs, MASK_SOLID, pFilter, ptr );
+		if ( ptr->startsolid )
+			return bStartSolidBlocks && k == 0;
+		if ( ptr->fraction >= 1.0f )
+			return false;
+		if ( !VehicleDrivable( ptr->plane.normal.z ) )
+			return true;
+		// climbable ground: look again from higher up
+	}
+	return false;
+}
+
+// What a sweep hit, in words: static props come back as the world entity - say so (a tree is not a wall)
+static const char *VehicleHitName( const trace_t &tr )
+{
+	if ( tr.surface.name && Q_stristr( tr.surface.name, "studio" ) )
+		return "static prop";
+	return tr.m_pEnt ? tr.m_pEnt->GetClassname() : "world";
+}
+
+#define VEHICLE_BODY_COLUMN		16.0f		// half-size of the boxes CorridorClear lines up across the body
+
+// THE test of whether a vehicle can drive straight from a to b (both on the ground): its BODY - half-width x
+// height, from step height up to its top - fits all the way, and every column of it has ground it can drive
+// on. The body is boxes side by side across its width (each VEHICLE_BODY_COLUMN wide, every 32 units along),
+// each riding its own ground, so a tree trunk between sample lines or a branch at hull height is found, and so
+// is a bump under one track. Used to grade the node graph's links at load, to straighten routes and by the
+// drive watchdog - one owner. V1c test: the old test (3 thin lines at 24/64 units up, ground on the centre
+// line only) passed a straight leg beside a tree that the tank's own model then hit ("INVARIANT ... the sweep
+// found a wall ... where CorridorClear says it can drive").
+static bool CorridorClear( const Vector &a, const Vector &b, float flHalfWidth, float flHeight, CBaseEntity *pSelf )
 {
 	Vector vecDir = b - a;
 	vecDir.z = 0.0f;
@@ -200,43 +242,49 @@ static bool CorridorClear( const Vector &a, const Vector &b, float flHalfWidth, 
 	if ( flLen < 1.0f )
 		return true;
 	Vector vecRight( vecDir.y, -vecDir.x, 0.0f );
+	float flCol = MIN( VEHICLE_BODY_COLUMN, flHalfWidth );
+	int nCols = 1 + (int)ceilf( ( 2.0f * ( flHalfWidth - flCol ) ) / ( 2.0f * flCol ) - 0.001f );
+	nCols = MAX( nCols, 1 );
+	if ( nCols > 16 )
+		nCols = 16;
+	float flBodyUp = MAX( flHeight - VEHICLE_STEP, 8.0f );
+	Vector vecMins( -flCol, -flCol, 0.0f ), vecMaxs( flCol, flCol, flBodyUp );
 	int nSteps = (int)ceilf( flLen / 32.0f );
 	CTraceFilterVehicleWorld filter( pSelf );
-	float flPrevZ = a.z;
-	Vector vecPrev = a;
+	float flPrevCenterZ = a.z;
+	float flPrevZ[16];
+	Vector vecPrevCol[16];
 	for ( int i = 0; i <= nSteps; i++ )
 	{
 		Vector p = a + vecDir * ( flLen * i / nSteps );
-		float flZ, flNZ;
-		if ( !GroundAt( p, 64.0f, 128.0f, &flZ, &flNZ, pSelf ) || !VehicleDrivable( flNZ ) )
+		float flCenterZ, flNZ;
+		// the centre line finds the ground first (from up to 64 above the last ground: hills on the way)
+		p.z = flPrevCenterZ;
+		if ( !GroundAt( p, 64.0f, 128.0f, &flCenterZ, &flNZ, pSelf ) || !VehicleDrivable( flNZ ) )
 			return false;
-		if ( i > 0 && fabs( flZ - flPrevZ ) > VEHICLE_MAX_STEP_PER_32 )
+		if ( i > 0 && fabs( flCenterZ - flPrevCenterZ ) > VEHICLE_MAX_STEP_PER_32 )
 			return false;
-		p.z = flZ;
-		if ( i > 0 )
+		for ( int c = 0; c < nCols; c++ )
 		{
-			static const float s_flHeights[2] = { VEHICLE_STEP, 64.0f };
-			static const float s_flSides[3] = { -1.0f, 0.0f, 1.0f };
-			for ( int h = 0; h < 2; h++ )
+			float flSide = ( nCols == 1 ) ? 0.0f : -( flHalfWidth - flCol ) + c * ( 2.0f * ( flHalfWidth - flCol ) / ( nCols - 1 ) );
+			Vector vecCol = p + vecRight * flSide;
+			vecCol.z = flCenterZ;
+			float flZ;
+			if ( !GroundAt( vecCol, 64.0f, 128.0f, &flZ, &flNZ, pSelf ) || !VehicleDrivable( flNZ ) )
+				return false;
+			if ( i > 0 && fabs( flZ - flPrevZ[c] ) > VEHICLE_MAX_STEP_PER_32 )
+				return false;
+			vecCol.z = flZ + VEHICLE_STEP;
+			if ( i > 0 )
 			{
-				for ( int s = 0; s < 3; s++ )
-				{
-					Vector vecOff = vecRight * ( flHalfWidth * s_flSides[s] ) + Vector( 0, 0, s_flHeights[h] );
-					trace_t tr;
-					UTIL_TraceLine( vecPrev + vecOff, p + vecOff, MASK_SOLID, &filter, &tr );
-					if ( tr.fraction < 1.0f || tr.startsolid )
-						return false;
-				}
-				// and across, so a post between the three lines is found
 				trace_t tr;
-				UTIL_TraceLine( p - vecRight * flHalfWidth + Vector( 0, 0, s_flHeights[h] ),
-								p + vecRight * flHalfWidth + Vector( 0, 0, s_flHeights[h] ), MASK_SOLID, &filter, &tr );
-				if ( tr.fraction < 1.0f || tr.startsolid )
+				if ( VehicleSweepBlocked( NULL, vecMins, vecMaxs, vecPrevCol[c], vecCol, &filter, true, &tr ) )
 					return false;
 			}
+			flPrevZ[c] = flZ;
+			vecPrevCol[c] = vecCol;
 		}
-		flPrevZ = flZ;
-		vecPrev = p;
+		flPrevCenterZ = flCenterZ;
 	}
 	return true;
 }
@@ -247,6 +295,7 @@ static bool CorridorClear( const Vector &a, const Vector &b, float flHalfWidth, 
 struct VehicleNav_t
 {
 	int		iHalfWidth;
+	int		iHeight;				// the body's height (CorridorClear tests the whole body)
 	char	szMap[64];
 	int		nNodes;
 	int		nGraphLinks;
@@ -259,11 +308,12 @@ static bool NodeUsable( CAI_Node *pNode )
 	return pNode && pNode->GetType() == NODE_GROUND;
 }
 
-static VehicleNav_t *GetVehicleNav( float flHalfWidth, const char *pszTypeName )
+static VehicleNav_t *GetVehicleNav( float flHalfWidth, float flHeight, const char *pszTypeName )
 {
 	if ( !g_pBigAINet )
 		return NULL;
 	int iHalf = (int)( ceilf( flHalfWidth / 8.0f ) * 8.0f );
+	int iHeight = (int)( ceilf( flHeight / 8.0f ) * 8.0f );
 	const char *pszMap = STRING( gpGlobals->mapname );
 	// the graph as it is now: a grading is for one map, node count and link count (the engine builds or
 	// rebuilds the links AFTER entities activate - V1 graded the unbuilt graph: "0 of 0 node links")
@@ -273,7 +323,7 @@ static VehicleNav_t *GetVehicleNav( float flHalfWidth, const char *pszTypeName )
 	for ( int i = 0; i < s_Navs.Count(); i++ )
 	{
 		VehicleNav_t *pNav = s_Navs[i];
-		if ( pNav->iHalfWidth == iHalf && pNav->nNodes == g_pBigAINet->NumNodes() && pNav->nGraphLinks == nGraphLinks && !Q_strcmp( pNav->szMap, pszMap ) )
+		if ( pNav->iHalfWidth == iHalf && pNav->iHeight == iHeight && pNav->nNodes == g_pBigAINet->NumNodes() && pNav->nGraphLinks == nGraphLinks && !Q_strcmp( pNav->szMap, pszMap ) )
 			return pNav;
 	}
 	// a new map or a rebuilt graph: forget the old grading
@@ -288,6 +338,7 @@ static VehicleNav_t *GetVehicleNav( float flHalfWidth, const char *pszTypeName )
 	double flStart = Plat_FloatTime();
 	VehicleNav_t *pNav = new VehicleNav_t;
 	pNav->iHalfWidth = iHalf;
+	pNav->iHeight = iHeight;
 	Q_strncpy( pNav->szMap, pszMap, sizeof( pNav->szMap ) );
 	pNav->nNodes = g_pBigAINet->NumNodes();
 	pNav->nGraphLinks = nGraphLinks;
@@ -308,7 +359,7 @@ static VehicleNav_t *GetVehicleNav( float flHalfWidth, const char *pszTypeName )
 			if ( !NodeUsable( pOther ) )
 				continue;
 			nLinks++;
-			if ( !CorridorClear( pNode->GetOrigin(), pOther->GetOrigin(), (float)iHalf, NULL ) )
+			if ( !CorridorClear( pNode->GetOrigin(), pOther->GetOrigin(), (float)iHalf, (float)iHeight, NULL ) )
 				continue;
 			nOK++;
 			pNav->links[i].AddToTail( j );
@@ -319,8 +370,8 @@ static VehicleNav_t *GetVehicleNav( float flHalfWidth, const char *pszTypeName )
 		if ( pNav->links[i].Count() )
 			nNodesReach++;
 	s_Navs.AddToTail( pNav );
-	Msg( "DOD-SP vehicles: %s (%d units wide, rounded up) can drive %d of %d node links (%d of %d nodes) on %s - graded in %.2f s\n",
-		 pszTypeName, iHalf * 2, nOK, nLinks, nNodesReach, pNav->nNodes, pszMap, Plat_FloatTime() - flStart );
+	Msg( "DOD-SP vehicles: %s (%d units wide, %d high, rounded up) can drive %d of %d node links (%d of %d nodes) on %s - graded in %.2f s\n",
+		 pszTypeName, iHalf * 2, iHeight, nOK, nLinks, nNodesReach, pNav->nNodes, pszMap, Plat_FloatTime() - flStart );
 	if ( pNav->nNodes > 1 && nLinks == 0 )
 		Warning( "INVARIANT DOD-SP vehicles: %s has %d nodes but no links between them yet (graph not built, or nodes out of each other's sight)\n", pszMap, pNav->nNodes );
 	if ( nLinks > 0 && nOK == 0 )
@@ -342,6 +393,7 @@ public:
 	virtual void	Precache( void );
 	virtual void	Spawn( void );
 	virtual void	Activate( void );
+	virtual void	OnRestore( void );
 	virtual void	UpdateOnRemove( void );
 	virtual void	Blocked( CBaseEntity *pOther );
 	virtual int		DrawDebugTextOverlays( void );
@@ -363,12 +415,13 @@ private:
 	int				NearestNode( const Vector &vecPos, bool bFromHere );
 	void			SetStuck( VehicleStuck_t eWhy, CBaseEntity *pWho );
 	QAngle			BuildAngles( float flHeading, const Vector &vecPos, float *pflGroundZ );
+	void			MeasureBody( void );
 	float			HeadingFromAngles( void ) const;
 
 	string_t		m_iszVehicleType;
 	string_t		m_iszInitialGoal;
 	VehicleType_t	*m_pType;
-	float			m_flHalfWidth, m_flHalfLength;
+	float			m_flHalfWidth, m_flHalfLength, m_flBodyHeight;	// from the model (MeasureBody), not saved
 	EHANDLE			m_hTurret;
 
 	CNetworkVar( float, m_flTrackSpeed );		// signed, units/s (client: wheel spin, track scroll)
@@ -442,6 +495,7 @@ CDoDSPVehicle::CDoDSPVehicle()
 	m_flProgressHeading = 0.0f;
 	m_bInitialGoalDone = false;
 	m_flNavCheckTime = 0.0f;
+	m_flHalfWidth = m_flHalfLength = m_flBodyHeight = 0.0f;
 	m_iLastFrom = m_iLastTo = -1;
 	s_All.AddToTail( this );
 }
@@ -478,15 +532,7 @@ void CDoDSPVehicle::Spawn( void )
 	SetModel( m_pType->szModel );
 	m_flModelForwardYaw = m_pType->flForwardYaw;
 
-	// size from the model, in the vehicle's own frame (forward / sideways)
-	Vector vecMins = CollisionProp()->OBBMins(), vecMaxs = CollisionProp()->OBBMaxs();
-	float flYawRad = DEG2RAD( m_pType->flForwardYaw );
-	Vector vecFwd( cosf( flYawRad ), sinf( flYawRad ), 0.0f );
-	m_flHalfLength = 0.5f * fabs( DotProduct( vecMaxs - vecMins, vecFwd ) );
-	m_flHalfWidth = 0.5f * fabs( DotProduct( vecMaxs - vecMins, Vector( -vecFwd.y, vecFwd.x, 0.0f ) ) );
-	if ( m_flHalfWidth > m_flHalfLength * 1.05f )
-		Warning( "INVARIANT DOD-SP vehicle %s (%s): the model is %.0f long but %.0f wide along forward_yaw %.0f - a vehicle is longer than it is wide, so forward_yaw is probably wrong (90 off)\n",
-				 GetDebugName(), m_pType->szName, m_flHalfLength * 2.0f, m_flHalfWidth * 2.0f, m_pType->flForwardYaw );
+	MeasureBody();
 
 	SetSolid( SOLID_VPHYSICS );
 	SetMoveType( MOVETYPE_PUSH );
@@ -521,6 +567,30 @@ void CDoDSPVehicle::Spawn( void )
 	SetThink( &CDoDSPVehicle::DriveThink );
 	SetNextThink( gpGlobals->curtime + VEHICLE_THINK );
 	SetMoveDoneTime( 1.0f );
+}
+
+// The body's size from the model, in the vehicle's own frame (forward / sideways / up) - one owner, called on
+// Spawn AND after a save is loaded (the sizes aren't saved; before this they were 0 after a load).
+void CDoDSPVehicle::MeasureBody( void )
+{
+	Vector vecMins = CollisionProp()->OBBMins(), vecMaxs = CollisionProp()->OBBMaxs();
+	float flYawRad = DEG2RAD( m_pType->flForwardYaw );
+	Vector vecFwd( cosf( flYawRad ), sinf( flYawRad ), 0.0f );
+	m_flHalfLength = 0.5f * fabs( DotProduct( vecMaxs - vecMins, vecFwd ) );
+	m_flHalfWidth = 0.5f * fabs( DotProduct( vecMaxs - vecMins, Vector( -vecFwd.y, vecFwd.x, 0.0f ) ) );
+	m_flBodyHeight = MAX( vecMaxs.z, VEHICLE_STEP + 8.0f );		// above its origin (the ground point)
+	if ( m_flHalfWidth > m_flHalfLength * 1.05f )
+		Warning( "INVARIANT DOD-SP vehicle %s (%s): the model is %.0f long but %.0f wide along forward_yaw %.0f - a vehicle is longer than it is wide, so forward_yaw is probably wrong (90 off)\n",
+				 GetDebugName(), m_pType->szName, m_flHalfLength * 2.0f, m_flHalfWidth * 2.0f, m_pType->flForwardYaw );
+}
+
+void CDoDSPVehicle::OnRestore( void )
+{
+	BaseClass::OnRestore();
+	if ( !m_pType )
+		m_pType = FindVehicleType( STRING( m_iszVehicleType ) );
+	if ( m_pType )
+		MeasureBody();
 }
 
 void CDoDSPVehicle::Activate( void )
@@ -590,7 +660,7 @@ QAngle CDoDSPVehicle::BuildAngles( float flHeading, const Vector &vecPos, float 
 //-----------------------------------------------------------------------------
 int CDoDSPVehicle::NearestNode( const Vector &vecPos, bool bFromHere )
 {
-	VehicleNav_t *pNav = GetVehicleNav( m_flHalfWidth, m_pType->szName );
+	VehicleNav_t *pNav = GetVehicleNav( m_flHalfWidth, m_flBodyHeight, m_pType->szName );
 	if ( !pNav )
 		return -1;
 	// the nearest graded node it can drive to (or from) straight: candidates by distance, the first 16 tested
@@ -615,7 +685,7 @@ int CDoDSPVehicle::NearestNode( const Vector &vecPos, bool bFromHere )
 				iMin = m;
 		Cand_t tmp = cands[k]; cands[k] = cands[iMin]; cands[iMin] = tmp;
 		const Vector &vecNode = g_pBigAINet->GetNode( cands[k].i, false )->GetOrigin();
-		if ( CorridorClear( bFromHere ? vecPos : vecNode, bFromHere ? vecNode : vecPos, m_flHalfWidth, this ) )
+		if ( CorridorClear( bFromHere ? vecPos : vecNode, bFromHere ? vecNode : vecPos, m_flHalfWidth, m_flBodyHeight, this ) )
 			return cands[k].i;
 	}
 	return -1;
@@ -626,12 +696,17 @@ bool CDoDSPVehicle::PlanRoute( void )
 	m_Route.RemoveAll();
 	m_iRoute = 0;
 	Vector vecFrom = GetAbsOrigin();
-	if ( CorridorClear( vecFrom, m_vecGoal, m_flHalfWidth, this ) )
+	// straight there only when the goal is close (or the map has no nodes): further away the nodes are the
+	// mapper's roads and the vehicle keeps to them (V1c test: it cut across country and through trees)
+	VehicleNav_t *pNavCheck = GetVehicleNav( m_flHalfWidth, m_flBodyHeight, m_pType->szName );
+	bool bNoNodes = !pNavCheck || NearestNode( vecFrom, true ) < 0;
+	if ( ( bNoNodes || ( m_vecGoal - vecFrom ).Length2D() <= VEHICLE_DIRECT_DIST ) &&
+		 CorridorClear( vecFrom, m_vecGoal, m_flHalfWidth, m_flBodyHeight, this ) )
 	{
 		m_Route.AddToTail( m_vecGoal );		// straight there
 		return true;
 	}
-	VehicleNav_t *pNav = GetVehicleNav( m_flHalfWidth, m_pType->szName );
+	VehicleNav_t *pNav = GetVehicleNav( m_flHalfWidth, m_flBodyHeight, m_pType->szName );
 	int iStart = NearestNode( vecFrom, true );
 	int iEnd = NearestNode( m_vecGoal, false );
 	if ( !pNav || iStart < 0 || iEnd < 0 )
@@ -690,7 +765,9 @@ bool CDoDSPVehicle::PlanRoute( void )
 	CUtlVector<int> nodes;
 	for ( int i = iEnd; i >= 0; i = from[i] )
 		nodes.AddToHead( i );
-	// straighten: from each point, the furthest later point it can drive to directly
+	// straighten - but keep to the road: from each point, the furthest later point it can drive to directly
+	// AND whose shortcut passes every node it skips within VEHICLE_ROAD_SLACK (a straight road loses its
+	// zig-zag; a bend keeps its nodes). V1c test: "it seems to skip most of the nodes".
 	CUtlVector<Vector> pts;
 	pts.AddToTail( vecFrom );
 	for ( int i = 0; i < nodes.Count(); i++ )
@@ -702,7 +779,19 @@ bool CDoDSPVehicle::PlanRoute( void )
 		int iNext = iAt + 1;
 		for ( int j = pts.Count() - 1; j > iAt + 1; j-- )
 		{
-			if ( CorridorClear( pts[iAt], pts[j], m_flHalfWidth, this ) )
+			bool bOnRoad = true;
+			for ( int k = iAt + 1; k < j && bOnRoad; k++ )
+			{
+				Vector vecSeg = pts[j] - pts[iAt];
+				vecSeg.z = 0.0f;
+				Vector vecTo = pts[k] - pts[iAt];
+				vecTo.z = 0.0f;
+				float flSegLen2 = vecSeg.LengthSqr();
+				float t = flSegLen2 > 1.0f ? clamp( DotProduct( vecTo, vecSeg ) / flSegLen2, 0.0f, 1.0f ) : 0.0f;
+				if ( ( vecTo - vecSeg * t ).Length() > VEHICLE_ROAD_SLACK )
+					bOnRoad = false;
+			}
+			if ( bOnRoad && CorridorClear( pts[iAt], pts[j], m_flHalfWidth, m_flBodyHeight, this ) )
 			{
 				iNext = j;
 				break;
@@ -774,13 +863,18 @@ void CDoDSPVehicle::DriveThink( void )
 	if ( !m_pType )
 		return;
 	float dt = VEHICLE_THINK;
+	if ( m_flHalfWidth <= 0.0f || m_flBodyHeight <= 0.0f )
+	{
+		Warning( "INVARIANT DOD-SP vehicle %s: body not measured (width %.0f, height %.0f) - measuring now\n", GetDebugName(), m_flHalfWidth * 2.0f, m_flBodyHeight );
+		MeasureBody();
+	}
 	float now = gpGlobals->curtime;
 	Vector vecPos = GetAbsOrigin();
 	Vector vecFwd( cosf( DEG2RAD( m_flHeading ) ), sinf( DEG2RAD( m_flHeading ) ), 0.0f );
 	if ( m_flNavCheckTime > 0.0f && now >= m_flNavCheckTime )
 	{
 		m_flNavCheckTime = 0.0f;
-		GetVehicleNav( m_flHalfWidth, m_pType->szName );		// the load line, before the fight
+		GetVehicleNav( m_flHalfWidth, m_flBodyHeight, m_pType->szName );		// the load line, before the fight
 		if ( m_iszInitialGoal != NULL_STRING && !m_bInitialGoalDone )
 		{
 			m_bInitialGoalDone = true;		// once - not again after a save is loaded
@@ -854,37 +948,30 @@ void CDoDSPVehicle::DriveThink( void )
 		Vector vecAhead = vecFwd * ( m_flSpeed * dt * 2.0f + ( m_flSpeed > 0 ? 6.0f : -6.0f ) );
 		CTraceFilterVehicleWorld filter( this );
 		trace_t tr;
-		UTIL_TraceEntity( this, vecPos + vecLift, vecPos + vecLift + vecAhead, MASK_SOLID, &filter, &tr );
-		// ground it can drive on is climbed (BuildAngles lifts it), not a wall - VehicleDrivable, the same
-		// rule CorridorClear graded the route with. The ground may hide a wall right behind it, so look
-		// again from higher up (rising ground doesn't climb 48 more units in one step; a wall does).
-		if ( tr.fraction < 1.0f && !tr.startsolid && VehicleDrivable( tr.plane.normal.z ) )
-		{
-			Vector vecHigh( 0, 0, VEHICLE_STEP + 48.0f );
-			UTIL_TraceEntity( this, vecPos + vecHigh, vecPos + vecHigh + vecAhead, MASK_SOLID, &filter, &tr );
-		}
-		if ( tr.fraction < 1.0f && !tr.startsolid && !VehicleDrivable( tr.plane.normal.z ) )
+		// the real model, by the same rule as CorridorClear's boxes (VehicleSweepBlocked)
+		bool bWall = VehicleSweepBlocked( this, vec3_origin, vec3_origin, vecPos + vecLift, vecPos + vecLift + vecAhead, &filter, false, &tr );
+		if ( bWall )
 		{
 			float flDirSign = ( m_flSpeed >= 0.0f ) ? 1.0f : -1.0f;
 			m_flSpeed = 0.0f;
 			if ( m_eStuck != VSTUCK_WORLD && m_bHasGoal && now - m_flProgressTime > 1.0f )
 			{
 				m_eStuck = VSTUCK_WORLD;
-				float flHitUp = tr.endpos.z - vecPos.z;
+				float flHitUp = tr.endpos.z - vecPos.z;		// which pass found it: step height, or 48 higher
 				// the guard: the route was graded clear here, yet the sweep found a wall - the two tests disagree
 				Vector vecCheck = vecPos + vecFwd * flDirSign * ( m_flHalfLength + 64.0f );
 				float flZ;
 				if ( GroundAt( vecCheck, 64.0f, 128.0f, &flZ, NULL, this ) )
 				{
 					vecCheck.z = flZ;
-					if ( CorridorClear( vecPos, vecCheck, m_flHalfWidth, this ) )
-						Warning( "INVARIANT DOD-SP vehicle %s: the sweep found a wall (%s, slope normal z %.2f, %.0f units up, at %.0f %.0f %.0f) "
-								 "where CorridorClear says it can drive\n", GetDebugName(), tr.m_pEnt ? tr.m_pEnt->GetClassname() : "world",
+					if ( CorridorClear( vecPos, vecCheck, m_flHalfWidth, m_flBodyHeight, this ) )
+						Warning( "INVARIANT DOD-SP vehicle %s: the sweep found a wall (%s, normal z %.2f, swept %.0f units up, body stopped at %.0f %.0f %.0f) "
+								 "where CorridorClear says it can drive\n", GetDebugName(), VehicleHitName( tr ),
 								 tr.plane.normal.z, flHitUp, tr.endpos.x, tr.endpos.y, tr.endpos.z );
 				}
 				if ( dodsp_vehicle_debug.GetBool() )
-					Msg( "DOD-SP vehicle %s: wall ahead (%s, normal z %.2f, %.0f units up)\n", GetDebugName(),
-						 tr.m_pEnt ? tr.m_pEnt->GetClassname() : "world", tr.plane.normal.z, flHitUp );
+					Msg( "DOD-SP vehicle %s: wall ahead (%s, normal z %.2f, swept %.0f units up)\n", GetDebugName(),
+						 VehicleHitName( tr ), tr.plane.normal.z, flHitUp );
 			}
 		}
 	}
