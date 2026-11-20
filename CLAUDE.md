@@ -799,8 +799,20 @@ If you learn something like this, add it here in the same commit as the fix.
   have the bones: hatch_open_left/right = the rear door hinges at (-107.9, +-26, 65.3); CoD's own seats tag_guy01..06
   at (x, +-17.4, 40.7) facing in (guy03 -86 left, guy05 -84 right - the get-outs' owners), tag_out (-33.8, 0, 30.2)
   facing back (guy02's walk out), tag_mgguy (-18.9, 0, 30.2), tag_turret (9.4, 0, 86.8), tag_driver, tag_passenger -
-  same frame as our port, within ~2 units of the seats measured from the mesh. xmodelparts parent byte = ABSOLUTE index.
-: REFERENCE ONLY except the **SU-152, which we keep**. One model per
+  CoD units: the port is CoD's mesh x 1.0284 (PORT_SCALE, fitted: median miss 0.004 units) in the mesh frame (mesh x =
+  CoD y, mesh y = -CoD x) - multiply these tag positions by it. xmodelparts parent byte = ABSOLUTE index.
+  The owner then sent xmodelsurfs/halftrack_mg1 (the mesh, v20: per surface u8 tile, u16 verts, u16 tris, s16 bone
+  (-1 = per-vertex bones, then 2 more header bytes); vertex = normal, RGBA, uv, binormal, tangent (48 bytes), then
+  [u8 extra weights, u16 bone] if per-vertex, position in the bone's space, and per extra weight 17 bytes (u8, u16 bone,
+  vec3 position, u16 share); reader dodsp_tools/vehicle_preview/cod2_xmodel.py, parses to the last byte) and his
+  Crowbar decompile of the port. The doors are CoD surfaces on hatch_open_left/right (140 triangles each, + 4 marking
+  triangles on the left leaf); the hinges turn about the vertical. halftrack_doors.py puts the port's matching
+  triangles (by triangle middle; the leaves' seam faces share a plane, settled by which way they face) on bones
+  door_left / door_right and writes per variant body SMD + closed/open frames blended by the pose parameter "doors"
+  (0..1 = 0..100 degrees) + the port's own QC settings and collision. Crowbar names every decompile's mesh body.smd
+  (the zip kept one), so the variants are read from their compiled .mdl instead.
+
+- CoD1 set (owner's vehicles_part2.zip, 2026-11-19): REFERENCE ONLY except the **SU-152, which we keep**. One model per
   vehicle, turret/gun as BONES (tag_turret, tag_barrel, tag_flash = muzzle, tag_coaxel), faces +X (forward_yaw 0),
   CoD's rider tags tag_guy01..06 (Sherman, Elefant, SU-152: 6; Opel truck driver/passenger + 4), NO .phy (needs a
   $collisionmodel before it can drive - Claude can generate box collision SMDs + QC lines). Its tag_wheel_* markers sit
