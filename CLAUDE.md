@@ -643,6 +643,19 @@ If you learn something like this, add it here in the same commit as the fix.
   the script (fire chances, structure values, some plates, Sherman rounds, 6-pdr HE filler, 88 HE ~0.9 kg).
   Undo: the V2d server.dll (build 44677367648) + the old scripts\dodsp_vehicles.txt (V2d ignores the new keys but the
   new script has no "damage"/"radius", so V2d's guns would fall back to 600/256 - keep the old script with it).
+  FIRST V4 RUNS 2026-11-20 (build 44767081287, owner): (1) a tank knocked out while moving drove on at its speed through
+  the ground and props forever - the vehicle moves by its pusher VELOCITY (SetAbsVelocity in DriveThink) and the
+  out-of-the-fight path returned before DriveThink, so the last velocity stayed (and the fire, not parented, stayed
+  behind); (2) the crew just appeared beside the tank - "I didn't even know a tank was downed"; (3) no wreck swap, no
+  burning seen: half the knock-outs and every morale bail-out left an intact, abandoned tank (realistic, invisible).
+  V4b: SetState is the ONE writer of m_eState (lint) and leaving the fight HALTS the vehicle (HaltMotion: velocity,
+  angular velocity, speed, track speed); watchdog `INVARIANT ... but still moving` in DamageStateThink/WreckThink.
+  Every way out of the fight ends as a burning wreck: knock-out -> burning (ammo: cook-off 5-10 s; engine: wreck at
+  12-20 s, 40% cook off first), an abandoned vehicle catches fire 4-8 s later; the knock-out shows (a burst at the
+  hatches + env_fire parented to the vehicle). Crews come out ONE AT A TIME (0.6-1 s apart, m_nBailPending) on the far
+  side from the attacker and RUN from the vehicle (SCHED_FORCED_GO_RUN to a point 256 units away, ordered on the next
+  think). Owner: CoD2 has crew bail-out animations - if he converts them for the German soldier model, the crew can
+  climb out of the hatch instead (not built: no such sequence exists in DOD-SP's models).
 - CoD1 set (owner's vehicles_part2.zip, 2026-11-19): REFERENCE ONLY except the **SU-152, which we keep**. One model per
   vehicle, turret/gun as BONES (tag_turret, tag_barrel, tag_flash = muzzle, tag_coaxel), faces +X (forward_yaw 0),
   CoD's rider tags tag_guy01..06 (Sherman, Elefant, SU-152: 6; Opel truck driver/passenger + 4), NO .phy (needs a

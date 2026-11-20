@@ -322,11 +322,12 @@ def check_vehicle_types():
 
 
 # INVARIANT (V4): the damage state has one writer per fact - structure in ApplyPenetration/BlastHit, the crew in
-# KillCrew/BailOut/Wreck, the state in SetBurning/CheckMorale/BailOut/Wreck (plus the constructor and Spawn).
+# KillCrew/BailOut/Wreck, the state ONLY in SetState (it stops the vehicle dead - V4 test: a knocked-out tank drove on
+# through the ground at its last velocity), plus the constructor.
 DAMAGE_WRITERS = {
     "m_flStructure": {"ApplyPenetration", "BlastHit", "Spawn", "CDoDSPVehicle"},
     "m_iCrewAlive": {"KillCrew", "BailOut", "Wreck", "Spawn", "CDoDSPVehicle"},
-    "m_eState": {"SetBurning", "CheckMorale", "BailOut", "Wreck", "CDoDSPVehicle"},
+    "m_eState": {"SetState", "CDoDSPVehicle"},   # SetState halts the vehicle when it leaves the fight (V4b)
 }
 
 

@@ -853,6 +853,9 @@ private:
 	bool			CanHurt( CDoDSPVehicle *pOther );
 	void			DamageReport( char *psz, int n ) const;
 	void			MakeFire( float flSize, bool bEngine );
+	void			SetState( int eNew, CBaseEntity *pAttacker );
+	void			HaltMotion( void );
+	void			CheckHalted( void );
 	void			FireKnockedOut( CBaseEntity *pAttacker );
 	bool			PlanRoute( void );
 	int				NearestNode( const Vector &vecPos, bool bFromHere );
@@ -991,6 +994,13 @@ private:
 	int				m_iRounds, m_iMagLeft;
 	float			m_flPenTimes[2];
 	bool			m_bOutputKO, m_bOutOfAmmoSaid;
+	int				m_nBailPending;				// crewmen still to come out (one at a time)
+	float			m_flNextBailAt, m_flIgniteAt;
+	Vector			m_vecBailFrom;				// where the attack came from (they get out on the far side)
+	EHANDLE			m_hLastCrewman;				// not saved: the run order for the man who just got out
+	Vector			m_vecLastCrewRun;
+	float			m_flCrewRunAt;
+	bool			m_bMovingWarned;
 	COutputEvent	m_OnPenetrated;
 	COutputEvent	m_OnImmobilized;
 	COutputEvent	m_OnBailOut;
@@ -1058,6 +1068,10 @@ BEGIN_DATADESC( CDoDSPVehicle )
 	DEFINE_ARRAY( m_flPenTimes, FIELD_TIME, 2 ),
 	DEFINE_FIELD( m_bOutputKO, FIELD_BOOLEAN ),
 	DEFINE_FIELD( m_bOutOfAmmoSaid, FIELD_BOOLEAN ),
+	DEFINE_FIELD( m_nBailPending, FIELD_INTEGER ),
+	DEFINE_FIELD( m_flNextBailAt, FIELD_TIME ),
+	DEFINE_FIELD( m_flIgniteAt, FIELD_TIME ),
+	DEFINE_FIELD( m_vecBailFrom, FIELD_POSITION_VECTOR ),
 	DEFINE_OUTPUT( m_OnPenetrated, "OnPenetrated" ),
 	DEFINE_OUTPUT( m_OnImmobilized, "OnImmobilized" ),
 	DEFINE_OUTPUT( m_OnBailOut, "OnBailOut" ),
@@ -1130,6 +1144,10 @@ CDoDSPVehicle::CDoDSPVehicle()
 	m_iRounds = m_iMagLeft = 0;
 	m_flPenTimes[0] = m_flPenTimes[1] = -100.0f;
 	m_bOutputKO = m_bOutOfAmmoSaid = false;
+	m_nBailPending = 0;
+	m_flNextBailAt = m_flIgniteAt = m_flCrewRunAt = 0.0f;
+	m_vecBailFrom = m_vecLastCrewRun = vec3_origin;
+	m_bMovingWarned = false;
 	s_All.AddToTail( this );
 }
 
@@ -3321,7 +3339,43 @@ void CDoDSPVehicle::MakeFire( float flSize, bool bEngine )
 	pFire->SetAbsOrigin( vecAt );
 	DispatchSpawn( pFire );
 	pFire->Activate();
+	pFire->SetParent( this );
 	m_hFire = pFire;
+}
+
+// THE state change (one owner): leaving the fight stops it dead - the vehicle moves by its velocity (pusher), so a
+// knocked-out tank that kept its last velocity drove on through the ground forever (V4 test 2026-11-20). An
+// abandoned vehicle catches fire a few seconds later: every vehicle out of the fight ends as a burning wreck the
+// player can see (owner: "I didn't even know a tank was downed").
+void CDoDSPVehicle::SetState( int eNew, CBaseEntity *pAttacker )
+{
+	if ( m_eState == eNew )
+		return;
+	int eOld = m_eState;
+	m_eState = eNew;
+	if ( dodsp_vehicle_debug.GetBool() )
+		Msg( "DOD-SP vehicle %s: %s -> %s\n", Label(), s_pszVehicleState[eOld], s_pszVehicleState[eNew] );
+	if ( eNew == VSTATE_FIGHTING )
+		return;
+	if ( eOld == VSTATE_FIGHTING )
+	{
+		Stop();
+		StopSounds();
+	}
+	m_bImmobile = true;
+	HaltMotion();
+	FireKnockedOut( pAttacker );
+	if ( eNew == VSTATE_ABANDONED && m_flIgniteAt <= 0.0f )
+		m_flIgniteAt = gpGlobals->curtime + random->RandomFloat( 4.0f, 8.0f );
+}
+
+void CDoDSPVehicle::HaltMotion( void )
+{
+	m_flSpeed = 0.0f;
+	m_flTrackSpeed = 0.0f;
+	m_flSuspVel = 0.0f;
+	SetAbsVelocity( vec3_origin );
+	SetLocalAngularVelocity( vec3_angle );
 }
 
 void CDoDSPVehicle::SetBurning( bool bAmmo, CBaseEntity *pAttacker )
@@ -3329,27 +3383,25 @@ void CDoDSPVehicle::SetBurning( bool bAmmo, CBaseEntity *pAttacker )
 	if ( m_eState == VSTATE_BURNING || m_eState == VSTATE_WRECKED )
 		return;
 	float now = gpGlobals->curtime;
-	m_eState = VSTATE_BURNING;
-	m_bImmobile = true;
-	Stop();
-	StopSounds();
-	m_flSpeed = 0.0f;
-	m_flTrackSpeed = 0.0f;
+	SetState( VSTATE_BURNING, pAttacker );
+	m_flIgniteAt = 0.0f;
+	// the moment it's knocked out shows: a burst at the hatches, then the fire
+	ExplosionCreate( GetAbsOrigin() + Vector( 0.0f, 0.0f, m_flBodyHeight ), vec3_angle, this, 60, 0,
+					 SF_ENVEXPLOSION_NODAMAGE | SF_ENVEXPLOSION_NODECAL, 0.0f, this );
 	MakeFire( bAmmo ? 160.0f : 112.0f, !bAmmo );
-	m_flBailAt = CrewAlive() ? now + random->RandomFloat( 1.0f, 3.0f ) : 0.0f;
+	m_flBailAt = CrewAlive() ? now + random->RandomFloat( 0.8f, 2.0f ) : 0.0f;
 	if ( bAmmo )
 	{
-		m_flCookOffAt = now + random->RandomFloat( 6.0f, 15.0f );
+		m_flCookOffAt = now + random->RandomFloat( 5.0f, 10.0f );
 		m_flBurnOutAt = 0.0f;
 	}
 	else
 	{
-		m_flBurnOutAt = now + random->RandomFloat( 30.0f, 60.0f );
-		m_flCookOffAt = ( random->RandomFloat() < 0.4f ) ? now + random->RandomFloat( 12.0f, 30.0f ) : 0.0f;	// the fire reaches the ammunition
+		m_flBurnOutAt = now + random->RandomFloat( 12.0f, 20.0f );
+		m_flCookOffAt = ( random->RandomFloat() < 0.4f ) ? now + random->RandomFloat( 8.0f, 16.0f ) : 0.0f;	// the fire reaches the ammunition
 	}
 	Msg( "DOD-SP vehicle %s: BURNING - %s fire%s\n", Label(), bAmmo ? "ammunition" : "engine",
 		 m_flCookOffAt > 0.0f ? ", it will cook off" : ", it will burn out" );
-	FireKnockedOut( pAttacker );
 }
 
 // The crew decides it's had enough (reason codes): fire, too few men, can't move AND can't fight, can't move and
@@ -3361,10 +3413,7 @@ void CDoDSPVehicle::CheckMorale( CBaseEntity *pAttacker )
 	if ( CrewAlive() == 0 )
 	{
 		Msg( "DOD-SP vehicle %s: the whole crew is dead - out of the fight\n", Label() );
-		m_eState = VSTATE_ABANDONED;
-		Stop();
-		StopSounds();
-		FireKnockedOut( pAttacker );
+		SetState( VSTATE_ABANDONED, pAttacker );
 		return;
 	}
 	bool bCanFight = MainGunUsable() || ( m_pType->coax.bHas && CanAim() );
@@ -3380,45 +3429,36 @@ void CDoDSPVehicle::CheckMorale( CBaseEntity *pAttacker )
 		BailOut( eWhy, pAttacker );
 }
 
-// Everyone alive gets out (a burning vehicle costs some of them). German crews come out as soldiers with MP40s on
-// the side away from whoever hit them; DOD-SP has no Allied infantry NPC yet - an Allied crew leaves the fight.
+// Everyone alive gets out (a burning vehicle costs some of them), ONE AT A TIME (DamageStateThink lets one out every
+// 0.6-1 s and sends him running from the vehicle). German crews come out as soldiers with MP40s on the side away
+// from whoever hit them; DOD-SP has no Allied infantry NPC yet - an Allied crew leaves the fight.
 void CDoDSPVehicle::BailOut( int eWhy, CBaseEntity *pAttacker )
 {
 	const DoDSPArmour_t &ar = m_pType->armour;
-	int nOut = 0, nLost = 0, nNoRoom = 0;
+	int nOut = 0, nLost = 0;
 	bool bAxis = ( m_eFaction == DODSP_FACTION_AXIS );
-	Vector vecFrom = pAttacker ? pAttacker->GetAbsOrigin() : GetAbsOrigin() + Vector( cosf( DEG2RAD( m_flHeading ) ), sinf( DEG2RAD( m_flHeading ) ), 0.0f ) * 512.0f;
+	m_vecBailFrom = pAttacker ? pAttacker->GetAbsOrigin() : GetAbsOrigin() + Vector( cosf( DEG2RAD( m_flHeading ) ), sinf( DEG2RAD( m_flHeading ) ), 0.0f ) * 512.0f;
 	for ( int i = 0; i < ar.nCrew; i++ )
 	{
 		if ( !( m_iCrewAlive & ( 1 << i ) ) )
 			continue;
 		m_iCrewAlive &= ~( 1 << i );
 		if ( m_eState == VSTATE_BURNING && random->RandomFloat() > 0.75f )
-		{
 			nLost++;
-			continue;
-		}
-		if ( !bAxis )
-			nOut++;
-		else if ( SpawnCrewman( vecFrom ) )
-			nOut++;
+		else if ( bAxis )
+			m_nBailPending++;
 		else
-			nNoRoom++;
+			nOut++;
 	}
-	if ( nOut + nLost + nNoRoom > 0 )
+	if ( m_nBailPending + nOut + nLost > 0 )
 	{
-		Msg( "DOD-SP vehicle %s: CREW BAILS OUT (%s) - %d got out%s%s%s\n", Label(), s_pszBail[eWhy], nOut,
-			 nLost ? ", some didn't make it" : "", nNoRoom ? ", no room beside it for some" : "",
-			 bAxis ? "" : " (DOD-SP has no Allied infantry NPC yet: they leave the fight)" );
+		Msg( "DOD-SP vehicle %s: CREW BAILS OUT (%s) - %d %s%s\n", Label(), s_pszBail[eWhy], bAxis ? m_nBailPending : nOut,
+			 bAxis ? "coming out" : "got out (DOD-SP has no Allied infantry NPC yet: they leave the fight)", nLost ? ", some didn't make it" : "" );
 		m_OnBailOut.FireOutput( pAttacker ? pAttacker : this, this );
 	}
+	m_flNextBailAt = gpGlobals->curtime + 0.3f;
 	if ( m_eState == VSTATE_FIGHTING )
-	{
-		m_eState = VSTATE_ABANDONED;
-		Stop();
-		StopSounds();
-		FireKnockedOut( pAttacker );
-	}
+		SetState( VSTATE_ABANDONED, pAttacker );
 }
 
 bool CDoDSPVehicle::SpawnCrewman( const Vector &vecAwayFrom )
@@ -3458,6 +3498,11 @@ bool CDoDSPVehicle::SpawnCrewman( const Vector &vecAwayFrom )
 			pNPC->SetAbsAngles( QAngle( 0.0f, RAD2DEG( atan2f( vecAway.y, vecAway.x ) ), 0.0f ) );
 			DispatchSpawn( pNPC );
 			pNPC->Activate();
+			// he runs from the vehicle (ordered on the next think, once his AI has started): what a bail-out looks
+			// like without a climb-out animation
+			m_hLastCrewman = pNPC;
+			m_vecLastCrewRun = p + ( vecDirs[d] * 0.5f + vecAway ) * 256.0f;
+			m_flCrewRunAt = gpGlobals->curtime + 0.2f;
 			return true;
 		}
 	}
@@ -3476,12 +3521,7 @@ void CDoDSPVehicle::KnockOut( bool bCatastrophic, CBaseEntity *pAttacker, const 
 	}
 	if ( m_eState == VSTATE_BURNING )
 		return;
-	if ( random->RandomFloat() < 0.5f )
-	{
-		SetBurning( random->RandomFloat() < m_pType->armour.flAmmoFire, pAttacker );
-		return;
-	}
-	BailOut( VBAIL_KNOCKED_OUT, pAttacker );
+	SetBurning( random->RandomFloat() < m_pType->armour.flAmmoFire, pAttacker );
 }
 
 // The dead model, the fire, and whoever was still inside. A cook-off goes up like VEHICLE_COOKOFF_KG of explosive.
@@ -3490,16 +3530,11 @@ void CDoDSPVehicle::Wreck( bool bBlowUp, CBaseEntity *pAttacker )
 	if ( m_eState == VSTATE_WRECKED )
 		return;
 	float now = gpGlobals->curtime;
-	if ( CrewAlive() )
-		Msg( "DOD-SP vehicle %s: %d crew were still inside\n", Label(), CrewAlive() );
+	if ( CrewAlive() + m_nBailPending )
+		Msg( "DOD-SP vehicle %s: %d crew were still inside\n", Label(), CrewAlive() + m_nBailPending );
 	m_iCrewAlive = 0;
-	Stop();
-	StopSounds();
-	m_eState = VSTATE_WRECKED;
-	m_bImmobile = true;
-	m_flSpeed = 0.0f;
-	m_flTrackSpeed = 0.0f;
-	FireKnockedOut( pAttacker );
+	m_nBailPending = 0;
+	SetState( VSTATE_WRECKED, pAttacker );
 	if ( bBlowUp )
 		DoDSP_ShellBlast( WorldSpaceCenter() + Vector( 0.0f, 0.0f, 16.0f ), VEHICLE_COOKOFF_KG, pAttacker ? pAttacker : this, this, m_pType->szExplode );
 	if ( m_hTurret.Get() )
@@ -3507,6 +3542,7 @@ void CDoDSPVehicle::Wreck( bool bBlowUp, CBaseEntity *pAttacker )
 		UTIL_Remove( m_hTurret.Get() );
 		m_hTurret = NULL;
 	}
+	bool bSwapped = false;
 	if ( m_pType->szDeadModel[0] && modelinfo->GetModelIndex( m_pType->szDeadModel ) >= 0 )
 	{
 		VPhysicsDestroyObject();
@@ -3516,16 +3552,36 @@ void CDoDSPVehicle::Wreck( bool bBlowUp, CBaseEntity *pAttacker )
 		if ( !VPhysicsInitStatic() )
 			SetSolid( SOLID_BBOX );
 		MeasureBody();
+		bSwapped = true;
 	}
+	else
+		Warning( "INVARIANT DOD-SP vehicle %s: wrecked but its dead_model '%s' isn't loaded - it keeps the live model\n", Label(), m_pType->szDeadModel );
+	HaltMotion();
 	MakeFire( 128.0f, false );
 	m_flBurnOutAt = now + random->RandomFloat( 40.0f, 90.0f );
-	Msg( "DOD-SP vehicle %s: WRECKED%s\n", Label(), bBlowUp ? " - the ammunition went up" : " - burnt out" );
+	Msg( "DOD-SP vehicle %s: WRECKED%s%s\n", Label(), bBlowUp ? " - the ammunition went up" : " - burnt out", bSwapped ? "" : " (no wreck model)" );
 	SetThink( &CDoDSPVehicle::WreckThink );
 	SetNextThink( now + 1.0f );
 }
 
+// INVARIANT: a vehicle out of the fight doesn't move (it's a pusher: whatever velocity it has, it keeps)
+void CDoDSPVehicle::CheckHalted( void )
+{
+	if ( GetAbsVelocity().LengthSqr() > 1.0f || GetLocalAngularVelocity() != vec3_angle )
+	{
+		if ( !m_bMovingWarned )
+		{
+			m_bMovingWarned = true;
+			Warning( "INVARIANT DOD-SP vehicle %s: %s but still moving (%.0f units/s) - stopped\n", Label(), s_pszVehicleState[m_eState],
+					 GetAbsVelocity().Length() );
+		}
+		HaltMotion();
+	}
+}
+
 void CDoDSPVehicle::WreckThink( void )
 {
+	CheckHalted();
 	if ( m_flBurnOutAt > 0.0f && gpGlobals->curtime >= m_flBurnOutAt )
 	{
 		m_flBurnOutAt = 0.0f;
@@ -3537,12 +3593,33 @@ void CDoDSPVehicle::WreckThink( void )
 		SetNextThink( gpGlobals->curtime + 1.0f );
 }
 
-// burning / abandoned: no engine, no guns; the fire's clock
+// burning / abandoned: no engine, no guns; the crew coming out one by one; the fire's clock
 void CDoDSPVehicle::DamageStateThink( void )
 {
 	float now = gpGlobals->curtime;
-	m_flSpeed = 0.0f;
-	m_flTrackSpeed = 0.0f;
+	CheckHalted();
+	if ( m_hLastCrewman.Get() && m_flCrewRunAt > 0.0f && now >= m_flCrewRunAt )
+	{
+		m_flCrewRunAt = 0.0f;
+		CAI_BaseNPC *pAI = m_hLastCrewman->MyNPCPointer();
+		if ( pAI && pAI->IsAlive() )
+		{
+			pAI->m_vecLastPosition = m_vecLastCrewRun;
+			pAI->SetSchedule( SCHED_FORCED_GO_RUN );
+		}
+	}
+	if ( m_nBailPending > 0 && now >= m_flNextBailAt )
+	{
+		m_nBailPending--;
+		if ( !SpawnCrewman( m_vecBailFrom ) )
+			Msg( "DOD-SP vehicle %s: no room beside it for a crewman to get out\n", Label() );
+		m_flNextBailAt = now + random->RandomFloat( 0.6f, 1.0f );
+	}
+	if ( m_eState == VSTATE_ABANDONED && m_flIgniteAt > 0.0f && now >= m_flIgniteAt )
+	{
+		m_flIgniteAt = 0.0f;
+		SetBurning( false, m_hKiller.Get() );
+	}
 	if ( m_eState == VSTATE_BURNING )
 	{
 		if ( m_flBailAt > 0.0f && now >= m_flBailAt )
@@ -3563,7 +3640,7 @@ void CDoDSPVehicle::DamageStateThink( void )
 			return;
 		}
 	}
-	SetNextThink( now + 0.25f );
+	SetNextThink( now + 0.1f );
 }
 
 // Bullets: judged by the armour where they strike. Nothing goes into the engine's health (the base class would).
