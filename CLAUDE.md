@@ -795,6 +795,12 @@ If you learn something like this, add it here in the same commit as the fix.
   COMPILE_TIME_ASSERTs. LESSON from the search: the preview's depth check sees surfaces from above only - also check
   something is UNDER a seated man (a floating seat passes a depth-only test). Undo: riders 0 on the entities, or the
   V4j server.dll + the V4e script.
+  LANDING SPACE (owner asked before testing, 2026-11-20: "will they get stuck inside each other?"): YES on the Panzer II
+  - after the seat retune its right-side men landed 16 units apart (a man is 26 wide). Seats moved (front right -48 -55
+  56 on the low side box, rear right -86 -50 66) and two guards: lint check_vehicle_seats computes every seat's landing
+  (seat + its get-out's path end, turned by the yaw) and fails under RIDER_LAND_GAP 30; at runtime RideGetOut returns
+  -1 when anyone (NPC / player, not the vehicle's seated riders) stands where he'd land, and RidersThink retries every
+  VEHICLE_RIDER_WAIT 0.25 s for up to VEHICLE_RIDER_WAIT_MAX 3 s, then sends him anyway (out of the fight: at once).
   HALFTRACK: the owner's CoD2 originals (everything_halftrack.zip: xmodel + xmodelparts, no xmodelsurfs mesh, no xanim)
   have the bones: hatch_open_left/right = the rear door hinges at (-107.9, +-26, 65.3); CoD's own seats tag_guy01..06
   at (x, +-17.4, 40.7) facing in (guy03 -86 left, guy05 -84 right - the get-outs' owners), tag_out (-33.8, 0, 30.2)

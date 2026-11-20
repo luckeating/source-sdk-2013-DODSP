@@ -230,12 +230,14 @@ COMPILE_TIME_ASSERT( ARRAYSIZE( s_pszBail ) == NUM_VBAILS );
 extern bool GermanSoldier_BailOut( CBaseEntity *pEnt, const Vector &vecHatch, const Vector &vecGround, const Vector &vecRun, float flYaw );
 // V3 riders (npc_german_soldier.cpp owns how a man rides and gets off; the vehicle owns when)
 extern bool GermanSoldier_BeginRide( CBaseEntity *pEnt, CBaseEntity *pVehicle, const Vector &vecSeat, float flYaw, const char *pszIdle, const char *pszGetout );
-extern bool GermanSoldier_RideGetOut( CBaseEntity *pEnt );
+extern int GermanSoldier_RideGetOut( CBaseEntity *pEnt, bool bForce );	// 1 going, 0 can't, -1 his landing spot is taken
 extern void GermanSoldier_RideAbort( CBaseEntity *pEnt );
 extern int GermanSoldier_RideState( CBaseEntity *pEnt );		// 0 off, 1 seated, 2 getting off
 #define VEHICLE_MAX_SEATS		8
 #define VEHICLE_RIDERS_CONTACT	1200.0f		// riders get off when an enemy it knows of is this close (dismount "contact")
 #define VEHICLE_RIDERS_SPAWN	0.2f		// riders are put aboard this long after the vehicle activates
+#define VEHICLE_RIDER_WAIT		0.25f		// a rider whose landing spot is taken tries again this often ...
+#define VEHICLE_RIDER_WAIT_MAX	3.0f		// ... for this long, then goes anyway (out of the fight: at once)
 enum VehicleRiders_t { VRIDERS_NONE, VRIDERS_ABOARD, VRIDERS_STOPPING, VRIDERS_GETTING_OFF, VRIDERS_OFF, NUM_VRIDERS };
 static const char *s_pszRiders[] = { "none", "aboard", "stopping to let them off", "getting off", "off" };
 COMPILE_TIME_ASSERT( ARRAYSIZE( s_pszRiders ) == NUM_VRIDERS );
@@ -1023,6 +1025,7 @@ private:
 	EHANDLE			m_hRider[VEHICLE_MAX_SEATS];
 	float			m_flRiderGo[VEHICLE_MAX_SEATS];	// when each gets off (0 = not ordered / gone)
 	bool			m_bDismountOrder;
+	float			m_flRidersOffAt;			// when they started getting off (a rider waits for his landing spot at most VEHICLE_RIDER_WAIT_MAX)
 	COutputEvent	m_OnRidersOff;
 	void			RidersThink( void );
 	void			SpawnRiders( void );
@@ -1163,6 +1166,7 @@ BEGIN_DATADESC( CDoDSPVehicle )
 	DEFINE_AUTO_ARRAY( m_hRider, FIELD_EHANDLE ),
 	DEFINE_AUTO_ARRAY( m_flRiderGo, FIELD_TIME ),
 	DEFINE_FIELD( m_bDismountOrder, FIELD_BOOLEAN ),
+	DEFINE_FIELD( m_flRidersOffAt, FIELD_TIME ),
 	DEFINE_OUTPUT( m_OnRidersOff, "OnRidersOff" ),
 	DEFINE_INPUTFUNC( FIELD_VOID, "Dismount", InputDismount ),
 	DEFINE_KEYFIELD( m_iszInitialGoal, FIELD_STRING, "goal" ),
@@ -1313,7 +1317,7 @@ CDoDSPVehicle::CDoDSPVehicle()
 	m_eDismount = VDISMOUNT_CONTACT;
 	m_eRiders = VRIDERS_NONE;
 	m_bRidersSpawned = m_bDismountOrder = false;
-	m_flRidersSpawnAt = 0.0f;
+	m_flRidersSpawnAt = m_flRidersOffAt = 0.0f;
 	for ( int i = 0; i < VEHICLE_MAX_SEATS; i++ )
 		m_flRiderGo[i] = 0.0f;
 	s_All.AddToTail( this );
@@ -3775,6 +3779,7 @@ void CDoDSPVehicle::RidersThink( void )
 			return;
 		for ( int i = 0; i < VEHICLE_MAX_SEATS; i++ )
 			m_flRiderGo[i] = m_hRider[i].Get() ? now + ( i < m_pType->seats.Count() ? m_pType->seats[i].flDelay : 0.0f ) : 0.0f;
+		m_flRidersOffAt = now;
 		m_eRiders = VRIDERS_GETTING_OFF;
 	}
 	if ( m_eRiders == VRIDERS_GETTING_OFF )
@@ -3788,9 +3793,20 @@ void CDoDSPVehicle::RidersThink( void )
 			int eState = GermanSoldier_RideState( pRider );
 			if ( eState == 1 && m_flRiderGo[i] > 0.0f && now >= m_flRiderGo[i] )
 			{
-				m_flRiderGo[i] = 0.0f;
-				if ( !GermanSoldier_RideGetOut( pRider ) )
-					Warning( "INVARIANT DOD-SP vehicle %s: its rider on seat %d couldn't get off - he was put down where he sat\n", Label(), i + 1 );
+				bool bForce = m_eState != VSTATE_FIGHTING || now - m_flRidersOffAt > VEHICLE_RIDER_WAIT_MAX;
+				int r = GermanSoldier_RideGetOut( pRider, bForce );
+				if ( r < 0 )
+				{
+					m_flRiderGo[i] = now + VEHICLE_RIDER_WAIT;		// someone's where he'd land: in a moment
+					if ( dodsp_vehicle_debug.GetBool() )
+						Msg( "DOD-SP vehicle %s: rider on seat %d waits - someone is where he'd land\n", Label(), i + 1 );
+				}
+				else
+				{
+					m_flRiderGo[i] = 0.0f;
+					if ( r == 0 )
+						Warning( "INVARIANT DOD-SP vehicle %s: its rider on seat %d couldn't get off - he was put down where he sat\n", Label(), i + 1 );
+				}
 			}
 			if ( GermanSoldier_RideState( pRider ) != 0 )
 				bWaiting = true;

@@ -104,6 +104,7 @@ void DoDSP_SetWeaponDeployed( CBaseCombatWeapon *pWeapon, bool bDeployed );		// 
 enum GermanRide_t { GERMAN_RIDE_NONE, GERMAN_RIDE_SEATED, GERMAN_RIDE_GETOUT };
 #define GERMAN_RIDE_PATHS		"scripts/dodsp_ride_paths.txt"
 #define GERMAN_RIDE_RUN			200.0f		// once down, he runs on this far the way he jumped
+#define GERMAN_RIDE_LAND_CLEAR	14.0f		// his own half-width (+1): anyone whose box reaches into this would overlap him on landing
 struct GermanRidePath_t
 {
 	int nFrames, iTake, iLand;
@@ -300,7 +301,7 @@ public:
 	// V3 riders (one owner of where a rider is: RidePosition)
 public:
 	bool		BeginRide( CBaseEntity *pVehicle, const Vector &vecSeat, float flYaw, const char *pszIdle, const char *pszGetout );
-	bool		RideGetOut( void );
+	int			RideGetOut( bool bForce );		// 1 off he goes, 0 can't, -1 someone stands where he'd land
 	void		EndRide( bool bLanded );
 	int			RideState( void ) const { return m_eRide; }
 	bool		RidePosition( float flNow, Vector *pvecPos, float *pflFrame ) const;
@@ -7484,22 +7485,36 @@ bool CNPC_GermanSoldier::BeginRide( CBaseEntity *pVehicle, const Vector &vecSeat
 
 // Off the vehicle: the seat in the world now is where the get-out starts; the real ground under where it lands
 // (vs the ground the animation was made for) is added over the fall, with the path's own s.
-bool CNPC_GermanSoldier::RideGetOut( void )
+int CNPC_GermanSoldier::RideGetOut( bool bForce )
 {
 	if ( m_eRide != GERMAN_RIDE_SEATED || !IsAlive() )
-		return false;
+		return 0;
 	const GermanRidePath_t *pPath = GermanRidePath( STRING( m_iszRideGetout ) );
 	int iSeq = LookupSequence( STRING( m_iszRideGetout ) );
 	CBaseEntity *pVehicle = m_hRideVehicle.Get();
 	if ( !pPath || iSeq < 0 || !pVehicle )
 	{
 		EndRide( false );
-		return false;
+		return 0;
 	}
 	Vector vecTag;
 	VectorTransform( m_vecRideSeat, pVehicle->EntityToWorldTransform(), vecTag );
 	Vector vecFwdLocal( cosf( DEG2RAD( m_flRideYaw ) ), sinf( DEG2RAD( m_flRideYaw ) ), 0.0f ), vecFwd;
 	VectorRotate( vecFwdLocal, pVehicle->EntityToWorldTransform(), vecFwd );
+	// someone standing where he'd land (a rider down before him, a soldier, the player): he waits rather than
+	// landing inside them (RIDER_LAND_GAP in the lint keeps the seats' own landings apart)
+	if ( !bForce )
+	{
+		const Vector4D &e = pPath->pts[pPath->nFrames - 1];
+		float flYaw = atan2f( vecFwd.y, vecFwd.x ), c = cosf( flYaw ), sn = sinf( flYaw );
+		Vector vecLandXY = vecTag + Vector( c * e.x - sn * e.y, sn * e.x + c * e.y, 0.0f );
+		CBaseEntity *pList[16];
+		int n = UTIL_EntitiesInBox( pList, ARRAYSIZE( pList ), vecLandXY - Vector( GERMAN_RIDE_LAND_CLEAR, GERMAN_RIDE_LAND_CLEAR, 400.0f ),
+									vecLandXY + Vector( GERMAN_RIDE_LAND_CLEAR, GERMAN_RIDE_LAND_CLEAR, 100.0f ), FL_NPC | FL_CLIENT );
+		for ( int i = 0; i < n; i++ )
+			if ( pList[i] != this && pList[i]->IsAlive() && pList[i]->GetMoveParent() != pVehicle )
+				return -1;
+	}
 	m_vecRideTag = vecTag;
 	m_flRideTagYaw = RAD2DEG( atan2f( vecFwd.y, vecFwd.x ) );
 	m_flRideStart = gpGlobals->curtime;
@@ -7523,7 +7538,7 @@ bool CNPC_GermanSoldier::RideGetOut( void )
 	SetSequenceById( iSeq );
 	SetCycle( 0.0f );
 	UpdatePlaybackRate();
-	return true;
+	return 1;
 }
 
 // THE owner of where a rider getting off is (a time past the end = where he ends up). Returns true when it's over.
@@ -7572,10 +7587,10 @@ bool GermanSoldier_BeginRide( CBaseEntity *pEnt, CBaseEntity *pVehicle, const Ve
 	CNPC_GermanSoldier *pG = dynamic_cast<CNPC_GermanSoldier *>( pEnt );
 	return pG && pG->BeginRide( pVehicle, vecSeat, flYaw, pszIdle, pszGetout );
 }
-bool GermanSoldier_RideGetOut( CBaseEntity *pEnt )
+int GermanSoldier_RideGetOut( CBaseEntity *pEnt, bool bForce )
 {
 	CNPC_GermanSoldier *pG = dynamic_cast<CNPC_GermanSoldier *>( pEnt );
-	return pG && pG->RideGetOut();
+	return pG ? pG->RideGetOut( bForce ) : 0;
 }
 void GermanSoldier_RideAbort( CBaseEntity *pEnt )
 {

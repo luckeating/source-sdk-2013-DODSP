@@ -29,6 +29,7 @@ world-only trace (TRACE_WORLD_ONLY skips static props, i.e. every tree), the tur
 and forth between two spots with no shot. So dodsp_vehicle.cpp has no CTraceFilterWorldOnly, and every other
 UTIL_TraceLine in it is tagged 'dodsp-lint: not a sight line (<what it is>)'.
 """
+import math
 import os
 import re
 import sys
@@ -380,6 +381,7 @@ DAMAGE_WRITERS = {
 
 RIDE_PATHS = os.path.join(ROOT, "..", "..", "dodsp_tools", "content", "scripts", "dodsp_ride_paths.txt")
 SOLDIER_CPP = os.path.join(ROOT, "game", "server", "dodsp", "npc_german_soldier.cpp")
+RIDER_LAND_GAP = 30
 
 
 def check_vehicle_seats():
@@ -410,10 +412,31 @@ def check_vehicle_seats():
                 if n and abs(float(d[str(0)].split()[0])) + abs(float(d[str(0)].split()[1])) + abs(float(d[str(0)].split()[2])) > 0.05:
                     bad.append("ride path %s doesn't start on the seat (frame 0 is %s)" % (seq, d["0"]))
             paths[seq] = n
+    pathend = {}
+    with open(RIDE_PATHS, encoding="utf-8") as f:
+        for seq, blk in (kv_get(parse_kv(f.read()), "RidePaths") or []):
+            if isinstance(blk, list):
+                d = dict(blk)
+                last = d.get(str(int(d.get("frames", "0")) - 1), "0 0").split()
+                pathend[seq] = (float(last[0]), float(last[1]))
     for name, t in types.items():
         seats = kv_get(t, "seats")
         if not isinstance(seats, list):
             continue
+        # where each man lands (seat + his get-out's end, turned by the seat's yaw): two closer than a man is wide
+        # (26) + a margin would land inside each other (V3: the Panzer II's right side had them 16 apart)
+        lands = []
+        for k, (key, blk) in enumerate(seats):
+            d = dict(blk) if isinstance(blk, list) else {}
+            if d.get("getout") in pathend and len(d.get("origin", "").split()) == 3:
+                ox, oy, _ = (float(v) for v in d["origin"].split())
+                a = math.radians(float(d.get("yaw", "0"))); ex, ey = pathend[d["getout"]]
+                lands.append((k + 1, ox + math.cos(a) * ex - math.sin(a) * ey, oy + math.sin(a) * ex + math.cos(a) * ey))
+        for i in range(len(lands)):
+            for j in range(i + 1, len(lands)):
+                gap = math.hypot(lands[i][1] - lands[j][1], lands[i][2] - lands[j][2])
+                if gap < RIDER_LAND_GAP:
+                    bad.append("%s: seats %d and %d land %.0f units apart - riders are 26 wide, keep them %d apart" % (name, lands[i][0], lands[j][0], gap, RIDER_LAND_GAP))
         if len(seats) > 8:
             bad.append("%s: %d seats - VEHICLE_MAX_SEATS is 8" % (name, len(seats)))
         for k, (key, blk) in enumerate(seats):

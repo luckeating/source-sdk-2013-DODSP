@@ -118,8 +118,8 @@
 		{
 			"seat"	{ "origin" "-50 50 68"	"yaw" "90"	"idle" "ww2_ride1_idle"	"getout" "ww2_jump_ride1"	"delay" "0.00" }	// front left
 			"seat"	{ "origin" "-90 50 68"	"yaw" "90"	"idle" "ww2_ride6_idle"	"getout" "ww2_jump_ride6"	"delay" "0.25" }	// rear left
-			"seat"	{ "origin" "-64 -50 62"	"yaw" "-90"	"idle" "ww2_ride1_idle"	"getout" "ww2_jump_ride1"	"delay" "0.10" }	// front right
-			"seat"	{ "origin" "-82 -50 66"	"yaw" "-90"	"idle" "ww2_ride6_idle"	"getout" "ww2_jump_ride6"	"delay" "0.35" }	// rear right
+			"seat"	{ "origin" "-48 -55 56"	"yaw" "-90"	"idle" "ww2_ride1_idle"	"getout" "ww2_jump_ride1"	"delay" "0.10" }	// front right
+			"seat"	{ "origin" "-86 -50 66"	"yaw" "-90"	"idle" "ww2_ride6_idle"	"getout" "ww2_jump_ride6"	"delay" "0.35" }	// rear right
 		}
 	}
 	"panzer2_winter"
