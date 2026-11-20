@@ -599,6 +599,8 @@ If you learn something like this, add it here in the same commit as the fix.
   LESSON: TRACE_WORLD_ONLY / CTraceFilterWorldOnly never sees static props - a forest map is all static props.
   Known gaps: a pivoting tracked vehicle's swing isn't checked against vehicles; two head-on on a one-lane road with no
   way round end with the tactical one dropping its goal. Undo: the V2c server.dll (build 44673825456).
+  TESTED 2026-11-20 (build 44677367648): owner "v2d worked fine" - KNOWN-GOOD for V2d (vehicle space + one sight test).
+  Owner expects more corrections once scenes and map orders get complex; re-test there before building on it.
 - CoD1 set (owner's vehicles_part2.zip, 2026-11-19): REFERENCE ONLY except the **SU-152, which we keep**. One model per
   vehicle, turret/gun as BONES (tag_turret, tag_barrel, tag_flash = muzzle, tag_coaxel), faces +X (forward_yaw 0),
   CoD's rider tags tag_guy01..06 (Sherman, Elefant, SU-152: 6; Opel truck driver/passenger + 4), NO .phy (needs a
