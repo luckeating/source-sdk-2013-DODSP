@@ -575,6 +575,30 @@ If you learn something like this, add it here in the same commit as the fix.
   plus a recoil kick from the main gun (by turret yaw); type keys susp_accel / susp_freq / susp_damp / recoil.
   Files: dodsp_vehicle.cpp, dodsp_vehicles.fgd/.txt. Undo: `behavior scripted` on the entity (V2 behaviour), or the
   V2 server.dll (build 44669320376).
+  TESTED 2026-11-19 (build 44673825456, 2 Panzer II + a Sherman): owner: "the lurching is actually extremely well done".
+  Faults: (1) two tanks took the same path and drove into each other; (2) `INVARIANT ... 6 new firing spots in 21 s` -
+  both tanks re-picked the spot each stood on every 4 s; (3) five shells into the same static prop; (4) the log named
+  every vehicle "dodsp_vehicle". Causes: pushers overlap (MOVETYPE_PUSH doesn't block MOVETYPE_PUSH) and CorridorClear
+  sees only the world; the spot search's trace was TRACE_WORLD_ONLY, which SKIPS STATIC PROPS (every tree), while the
+  turret's sight hit them, and nothing tested the line from the muzzle.
+- **V2d BUILT 2026-11-19 (vehicle space, one sight test).** VehicleInTheWay (one owner): a body of half-width w going
+  a->b vs another vehicle's capsule (its length, its half-width) + VEHICLE_SPACE_MARGIN 24; a body already touching may
+  always move away. Driving: every think, the stretch it covers before it could stop, toward where it WANTS to go
+  (brakes, no turning). Planning (PathClear = CorridorClear + VehicleInTheWay): every leg and A* link avoids PARKED
+  vehicles and the one it gives way to (10 s). GiveWay (right of way, VehicleGiveWay_t): parked -> plan round it after
+  1 s (or "arrived" if it sits on the goal); head-on -> the higher entity index plans round; one ahead that stalled ->
+  after 4 s; one driving on -> follow. No way round: a map order waits, a tactical goal is dropped. SpotTakenBy: a
+  spot within both half-lengths + 48 of another vehicle's goal (or where it's parked) is taken - firing spots and patrol
+  nodes skip it, DriveTo stops short of it on its own side. Waiting for a vehicle resets the stuck watchdog (it would
+  mark road links bad). SIGHT: LineOfFire (CTraceFilterVehicleSight: world, brush entities, static props, vehicles; not
+  people) is THE test for spots (from turret height), the turret's sight (aims at the point it sees: middle or eyes) and
+  firing (from the MUZZLE: the shell must land within half its blast radius of the target, the coax must reach it;
+  else `holding fire - no line from the muzzle ...`). A spot it reached without a shot isn't picked again for 20 s
+  (BadSpot), and never the spot it stands on. Log names: `Label()` = targetname#entindex. Lint check_vehicle_sight: no
+  CTraceFilterWorldOnly in dodsp_vehicle.cpp, every other UTIL_TraceLine tagged `dodsp-lint: not a sight line (...)`.
+  LESSON: TRACE_WORLD_ONLY / CTraceFilterWorldOnly never sees static props - a forest map is all static props.
+  Known gaps: a pivoting tracked vehicle's swing isn't checked against vehicles; two head-on on a one-lane road with no
+  way round end with the tactical one dropping its goal. Undo: the V2c server.dll (build 44673825456).
 - CoD1 set (owner's vehicles_part2.zip, 2026-11-19): REFERENCE ONLY except the **SU-152, which we keep**. One model per
   vehicle, turret/gun as BONES (tag_turret, tag_barrel, tag_flash = muzzle, tag_coaxel), faces +X (forward_yaw 0),
   CoD's rider tags tag_guy01..06 (Sherman, Elefant, SU-152: 6; Opel truck driver/passenger + 4), NO .phy (needs a

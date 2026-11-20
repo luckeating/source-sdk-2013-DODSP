@@ -139,6 +139,30 @@ COMPILE_TIME_ASSERT( ARRAYSIZE( s_pszTacticWhy ) == NUM_VWHYS );
 #define VEHICLE_ROAM_RADIUS		3000.0f
 #define VEHICLE_FIRE_NODE_SEARCH 4000.0f	// firing spots considered within this of the vehicle
 #define VEHICLE_SETTLE_TIME		4.0f		// a new firing spot is kept at least this long
+#define VEHICLE_BADSPOT_TIME	20.0f		// a firing spot that gave no shot once it got there isn't picked again this long
+// V2d: vehicle space (VehicleInTheWay / SpotTakenBy / GiveWay)
+#define VEHICLE_SPACE_MARGIN	24.0f		// clearance kept between two bodies while driving
+#define VEHICLE_SPOT_MARGIN		48.0f		// between two vehicles' spots (parked, or the goals they drive to)
+#define VEHICLE_YIELD_TIME		1.0f		// waiting for a parked / head-on vehicle this long, it plans round it
+#define VEHICLE_STALL_TIME		4.0f		// waiting behind one that doesn't move this long, it plans round it
+#define VEHICLE_AVOID_TIME		10.0f		// the vehicle it gave way to counts as an obstacle in its plans this long
+
+enum VehicleSpaceWho_t
+{
+	VSPACE_DRIVING,			// every vehicle (the body ahead, each think)
+	VSPACE_PLANNING,		// parked vehicles and the one it is giving way to (moving ones will have moved)
+};
+
+enum VehicleGiveWay_t
+{
+	VGIVE_NONE,
+	VGIVE_PARKED,			// it doesn't move: plan round it
+	VGIVE_HEAD_ON,			// both wait for each other: the higher entity index gives way
+	VGIVE_STALLED,			// the one ahead stopped (it's waiting itself, or stuck)
+	NUM_VEHICLE_GIVEWAY
+};
+static const char *s_pszGiveWay[] = { "", "it is parked", "head-on, this one gives way", "it isn't moving" };
+COMPILE_TIME_ASSERT( ARRAYSIZE( s_pszGiveWay ) == NUM_VEHICLE_GIVEWAY );
 
 //-----------------------------------------------------------------------------
 // Vehicle types (scripts/dodsp_vehicles.txt)
@@ -340,7 +364,7 @@ static bool GroundAt( const Vector &vecPos, float flUp, float flDown, float *pfl
 {
 	CTraceFilterVehicleWorld filter( pSelf );
 	trace_t tr;
-	UTIL_TraceLine( vecPos + Vector( 0, 0, flUp ), vecPos - Vector( 0, 0, flDown ), MASK_SOLID, &filter, &tr );
+	UTIL_TraceLine( vecPos + Vector( 0, 0, flUp ), vecPos - Vector( 0, 0, flDown ), MASK_SOLID, &filter, &tr );	// dodsp-lint: not a sight line (ground below a point)
 	if ( tr.fraction >= 1.0f || tr.startsolid )
 		return false;
 	*pflZ = tr.endpos.z;
@@ -694,6 +718,7 @@ public:
 	void			Stop( void );
 	void			Report( void );
 	void			SetTurretOffset( const Vector &vecOffset );
+	const char		*Label( void );			// the log's name: targetname (or dodsp_vehicle) # entity index
 
 	void			InputDriveTo( inputdata_t &inputdata );
 	void			InputStop( inputdata_t &inputdata );
@@ -714,6 +739,12 @@ private:
 	QAngle			BuildAngles( float flHeading, const Vector &vecPos, float *pflGroundZ );
 	void			MeasureBody( void );
 	float			HeadingFromAngles( void ) const;
+	// V2d vehicle space
+	bool			PathClear( const Vector &a, const Vector &b );
+	CDoDSPVehicle	*VehicleInTheWay( const Vector &a, const Vector &b, float flHalfWidth, int eWho );
+	CDoDSPVehicle	*SpotTakenBy( const Vector &vecSpot );
+	void			GiveWay( CDoDSPVehicle *pOther );
+	bool			BadSpot( int iNode );
 	// V2c tactics
 	void			TacticsThink( void );
 	void			UpdateQuarry( void );
@@ -725,7 +756,9 @@ private:
 	bool			CalibrateTurret( void );
 	CBaseEntity		*FindTarget( void );
 	bool			TargetValid( CBaseEntity *pTarget, float flRange, bool bNeedSight );
-	bool			CanSee( CBaseEntity *pTarget );
+	bool			CanSee( CBaseEntity *pTarget, Vector *pvecPoint = NULL );
+	bool			LineOfFire( const Vector &vecFrom, const Vector &vecTo, CBaseEntity *pTarget, float flNear, trace_t *pTr = NULL );
+	float			TurretHeight( void ) { return AimPivot().z - GetAbsOrigin().z; }
 	Vector			AimPivot( void );
 	Vector			BarrelDir( void );
 	Vector			MuzzlePos( const Vector &vecDir );
@@ -784,6 +817,17 @@ private:
 	float			m_flSuspPitch, m_flSuspVel, m_flPrevSpeed;	// the hull's rock on its suspension (degrees, nose up +)
 	bool			m_bPreferReverse;			// keep the front to the enemy: back away rather than turn round
 	bool			m_bReversing;
+	struct BadSpot_t { int iNode; float flUntil; };
+	BadSpot_t		m_BadSpots[8];				// firing spots that gave no shot (ring), not saved
+	int				m_iBadSpot;
+
+	// V2d: other vehicles (not saved: re-found within a think after a load)
+	EHANDLE			m_hWaitFor;					// the vehicle it's braking for
+	float			m_flWaitSince, m_flWaitSeen;
+	float			m_flNextGiveWay;
+	EHANDLE			m_hAvoid;					// the vehicle it gave way to: an obstacle in its plans till m_flAvoidUntil
+	float			m_flAvoidUntil;
+	float			m_flNextHoldMsg;
 
 	// V2: side, target, turret
 	string_t		m_iszFaction;				// Hammer key "faction" (empty = the type's)
@@ -909,6 +953,13 @@ CDoDSPVehicle::CDoDSPVehicle()
 	m_pEngineIdle = m_pEngineMove = m_pTurretTurn = NULL;
 	m_bTurretTurning = false;
 	m_iLastFrom = m_iLastTo = -1;
+	for ( int i = 0; i < ARRAYSIZE( m_BadSpots ); i++ )
+	{
+		m_BadSpots[i].iNode = -1;
+		m_BadSpots[i].flUntil = 0.0f;
+	}
+	m_iBadSpot = 0;
+	m_flWaitSince = m_flWaitSeen = m_flNextGiveWay = m_flAvoidUntil = m_flNextHoldMsg = 0.0f;
 	s_All.AddToTail( this );
 }
 
@@ -944,7 +995,7 @@ void CDoDSPVehicle::Spawn( void )
 	Precache();
 	if ( !m_pType )
 	{
-		Warning( "INVARIANT DOD-SP vehicle %s: vehicletype '%s' is not in %s - removed\n", GetDebugName(), STRING( m_iszVehicleType ), DODSP_VEHICLE_SCRIPT );
+		Warning( "INVARIANT DOD-SP vehicle %s: vehicletype '%s' is not in %s - removed\n", Label(), STRING( m_iszVehicleType ), DODSP_VEHICLE_SCRIPT );
 		UTIL_Remove( this );
 		return;
 	}
@@ -961,12 +1012,12 @@ void CDoDSPVehicle::Spawn( void )
 		if ( e >= 0 )
 			m_eFaction = e;
 		else
-			Warning( "INVARIANT DOD-SP vehicle %s: faction '%s' is not a side (axis / allies) - kept %s\n", GetDebugName(), STRING( m_iszFaction ), DoDSP_FactionName( m_eFaction ) );
+			Warning( "INVARIANT DOD-SP vehicle %s: faction '%s' is not a side (axis / allies) - kept %s\n", Label(), STRING( m_iszFaction ), DoDSP_FactionName( m_eFaction ) );
 	}
 	// guard: what it answers to Classify must map back to its side (dodsp_factions is the one owner)
 	if ( DoDSP_FactionOf( this ) != m_eFaction )
 		Warning( "INVARIANT DOD-SP vehicle %s: side %s but its class counts as %s (dodsp_factions.cpp tables disagree)\n",
-				 GetDebugName(), DoDSP_FactionName( m_eFaction ), DoDSP_FactionName( DoDSP_FactionOf( this ) ) );
+				 Label(), DoDSP_FactionName( m_eFaction ), DoDSP_FactionName( DoDSP_FactionOf( this ) ) );
 
 	// how it fights (V2c): offensive unless the map says otherwise
 	m_eBehavior = VBEHAVE_OFFENSIVE;
@@ -976,7 +1027,7 @@ void CDoDSPVehicle::Spawn( void )
 		if ( e >= 0 )
 			m_eBehavior = e;
 		else
-			Warning( "INVARIANT DOD-SP vehicle %s: behavior '%s' is not offensive / defensive / hold / scripted - offensive\n", GetDebugName(), STRING( m_iszBehavior ) );
+			Warning( "INVARIANT DOD-SP vehicle %s: behavior '%s' is not offensive / defensive / hold / scripted - offensive\n", Label(), STRING( m_iszBehavior ) );
 	}
 	if ( m_flLeash <= 0.0f && m_eBehavior == VBEHAVE_DEFENSIVE )
 		m_flLeash = 2000.0f;
@@ -987,7 +1038,7 @@ void CDoDSPVehicle::Spawn( void )
 	m_takedamage = DAMAGE_NO;	// V4
 	if ( !VPhysicsInitShadow( false, false ) )
 	{
-		Warning( "INVARIANT DOD-SP vehicle %s: %s has no physics model (.phy) - it can't push or be hit\n", GetDebugName(), m_pType->szModel );
+		Warning( "INVARIANT DOD-SP vehicle %s: %s has no physics model (.phy) - it can't push or be hit\n", Label(), m_pType->szModel );
 		SetSolid( SOLID_BBOX );
 	}
 
@@ -1029,7 +1080,7 @@ void CDoDSPVehicle::MeasureBody( void )
 	m_flBodyHeight = MAX( vecMaxs.z, VEHICLE_STEP + 8.0f );		// above its origin (the ground point)
 	if ( m_flHalfWidth > m_flHalfLength * 1.05f )
 		Warning( "INVARIANT DOD-SP vehicle %s (%s): the model is %.0f long but %.0f wide along forward_yaw %.0f - a vehicle is longer than it is wide, so forward_yaw is probably wrong (90 off)\n",
-				 GetDebugName(), m_pType->szName, m_flHalfLength * 2.0f, m_flHalfWidth * 2.0f, m_pType->flForwardYaw );
+				 Label(), m_pType->szName, m_flHalfLength * 2.0f, m_flHalfWidth * 2.0f, m_pType->flForwardYaw );
 }
 
 void CDoDSPVehicle::OnRestore( void )
@@ -1136,7 +1187,7 @@ int CDoDSPVehicle::NodeCandidates( const Vector &vecPos, bool bFromHere, int nMa
 				iMin = m;
 		Cand_t tmp = cands[k]; cands[k] = cands[iMin]; cands[iMin] = tmp;
 		const Vector &vecNode = g_pBigAINet->GetNode( cands[k].i, false )->GetOrigin();
-		if ( CorridorClear( bFromHere ? vecPos : vecNode, bFromHere ? vecNode : vecPos, m_flHalfWidth, m_flBodyHeight, this ) )
+		if ( PathClear( bFromHere ? vecPos : vecNode, bFromHere ? vecNode : vecPos ) )
 			out.AddToTail( cands[k].i );
 	}
 	return out.Count();
@@ -1181,7 +1232,7 @@ bool CDoDSPVehicle::PlanRoute( void )
 	NodeCandidates( vecFrom, true, VEHICLE_JOIN_NODES, starts );
 	bool bNoNodes = !starts.Count();
 	if ( ( bNoNodes || ( m_vecGoal - vecFrom ).Length2D() <= VEHICLE_DIRECT_DIST ) &&
-		 CorridorClear( vecFrom, m_vecGoal, m_flHalfWidth, m_flBodyHeight, this ) )
+		 PathClear( vecFrom, m_vecGoal ) )
 	{
 		m_Route.AddToTail( m_vecGoal );		// straight there
 		return true;
@@ -1240,7 +1291,9 @@ bool CDoDSPVehicle::PlanRoute( void )
 			for ( int b = 0; b < m_BadLinks.Count(); b++ )
 				if ( m_BadLinks[b].flUntil > now && ( ( m_BadLinks[b].a == cur && m_BadLinks[b].b == nb ) || ( m_BadLinks[b].a == nb && m_BadLinks[b].b == cur ) ) )
 					bBad = true;
-			if ( bBad )
+			// a parked vehicle (or the one it is giving way to) on the link: it isn't graded for that - the graph
+			// grading is the world only, per map
+			if ( bBad || VehicleInTheWay( vecCur, g_pBigAINet->GetNode( nb, false )->GetOrigin(), m_flHalfWidth, VSPACE_PLANNING ) )
 				continue;
 			float flG = g[cur] + ( g_pBigAINet->GetNode( nb, false )->GetOrigin() - vecCur ).Length();
 			if ( flG < g[nb] )
@@ -1284,7 +1337,7 @@ bool CDoDSPVehicle::PlanRoute( void )
 				if ( ( vecTo - vecSeg * t ).Length() > dodsp_vehicle_road_slack.GetFloat() )
 					bOnRoad = false;
 			}
-			if ( bOnRoad && CorridorClear( pts[iAt], pts[j], m_flHalfWidth, m_flBodyHeight, this ) )
+			if ( bOnRoad && PathClear( pts[iAt], pts[j] ) )
 			{
 				iNext = j;
 				break;
@@ -1306,6 +1359,23 @@ bool CDoDSPVehicle::DriveTo( const Vector &vecGoal, bool bScripted )
 		m_vecGoal = Vector( vecGoal.x, vecGoal.y, flZ );
 	else
 		m_vecGoal = vecGoal;
+	// another vehicle's spot (where it's parked, or where it's driving to): stop short of it, on this side
+	// (V2c test: two tanks picked the same spot and drove into each other)
+	if ( CDoDSPVehicle *pTaken = SpotTakenBy( m_vecGoal ) )
+	{
+		Vector vecClaim = pTaken->m_bHasGoal ? pTaken->m_vecGoal : pTaken->GetAbsOrigin();
+		Vector vecAway = GetAbsOrigin() - vecClaim;
+		vecAway.z = 0.0f;
+		if ( VectorNormalize( vecAway ) < 1.0f )
+			vecAway = Vector( 1, 0, 0 );
+		Vector vecShort = vecClaim + vecAway * ( m_flHalfLength + pTaken->m_flHalfLength + VEHICLE_SPOT_MARGIN );
+		if ( GroundAt( vecShort, 64.0f, 256.0f, &flZ, NULL, this ) )
+			vecShort.z = flZ;
+		if ( dodsp_vehicle_debug.GetBool() )
+			Msg( "DOD-SP vehicle %s: %.0f %.0f %.0f is %s's spot - stopping short at %.0f %.0f %.0f\n", Label(),
+				 m_vecGoal.x, m_vecGoal.y, m_vecGoal.z, pTaken->Label(), vecShort.x, vecShort.y, vecShort.z );
+		m_vecGoal = vecShort;
+	}
 	m_bHasGoal = true;
 	m_eStuck = VSTUCK_NONE;
 	m_vecProgressPos = GetAbsOrigin();
@@ -1320,7 +1390,7 @@ bool CDoDSPVehicle::DriveTo( const Vector &vecGoal, bool bScripted )
 		return false;
 	}
 	if ( dodsp_vehicle_debug.GetBool() )
-		Msg( "DOD-SP vehicle %s (%s): driving to %.0f %.0f %.0f, %d route points\n", GetDebugName(), m_pType->szName,
+		Msg( "DOD-SP vehicle %s (%s): driving to %.0f %.0f %.0f, %d route points\n", Label(), m_pType->szName,
 			 m_vecGoal.x, m_vecGoal.y, m_vecGoal.z, m_Route.Count() );
 	return true;
 }
@@ -1336,7 +1406,7 @@ void CDoDSPVehicle::SetStuck( VehicleStuck_t eWhy, CBaseEntity *pWho )
 {
 	m_eStuck = eWhy;
 	Vector p = GetAbsOrigin();
-	Warning( "INVARIANT DOD-SP vehicle %s (%s): stuck at %.0f %.0f %.0f - %s%s%s\n", GetDebugName(), m_pType->szName, p.x, p.y, p.z,
+	Warning( "INVARIANT DOD-SP vehicle %s (%s): stuck at %.0f %.0f %.0f - %s%s%s\n", Label(), m_pType->szName, p.x, p.y, p.z,
 			 s_pszStuck[eWhy], pWho ? ": " : "", pWho ? pWho->GetDebugName() : "" );
 	if ( eWhy != VSTUCK_NOROUTE )
 		m_OnStuck.FireOutput( pWho ? pWho : this, this );
@@ -1352,6 +1422,191 @@ void CDoDSPVehicle::Blocked( CBaseEntity *pOther )
 }
 
 //-----------------------------------------------------------------------------
+// V2d: vehicle space. Pushers drive through each other (MOVETYPE_PUSH bodies just overlap) and CorridorClear
+// sees only the world, so nothing kept two vehicles apart (V2c test: two Panzer IIs picked the same path and
+// drove into each other). One owner each:
+//   VehicleInTheWay - would a body of half-width flHalfWidth going from a to b come within VEHICLE_SPACE_MARGIN
+//     of another vehicle's body (a capsule: its length, its half-width)? Driving asks it every think for the
+//     stretch it covers before it could stop (every vehicle); planning asks it for each leg (parked vehicles and
+//     the one it is giving way to - moving ones will have moved). A body already touching another may always
+//     move AWAY from it (else two that met could never part).
+//   SpotTakenBy - is a spot another vehicle's (where it's parked, or the goal it's driving to)? Firing spots,
+//     patrol nodes and hunt goals skip taken spots; DriveTo stops short of one.
+//   GiveWay - the right of way when one brakes for another: a parked one is planned round (after
+//     VEHICLE_YIELD_TIME), head-on the higher entity index gives way, one ahead that stalled is planned round
+//     after VEHICLE_STALL_TIME; one ahead that drives on is simply followed.
+//-----------------------------------------------------------------------------
+static float SegSegDist2D( const Vector &a0, const Vector &a1, const Vector &b0, const Vector &b1 )
+{
+	Vector2D p1( a0.x, a0.y ), p2( b0.x, b0.y );
+	Vector2D d1( a1.x - a0.x, a1.y - a0.y ), d2( b1.x - b0.x, b1.y - b0.y ), r = p1 - p2;
+	float a = d1.LengthSqr(), e = d2.LengthSqr(), f = DotProduct2D( d2, r );
+	float s = 0.0f, t = 0.0f;
+	if ( a <= 1e-4f && e <= 1e-4f )
+		return r.Length();
+	if ( a <= 1e-4f )
+		t = clamp( f / e, 0.0f, 1.0f );
+	else
+	{
+		float c = DotProduct2D( d1, r );
+		if ( e <= 1e-4f )
+			s = clamp( -c / a, 0.0f, 1.0f );
+		else
+		{
+			float b = DotProduct2D( d1, d2 ), flDenom = a * e - b * b;
+			s = ( flDenom > 1e-4f ) ? clamp( ( b * f - c * e ) / flDenom, 0.0f, 1.0f ) : 0.0f;
+			t = ( b * s + f ) / e;
+			if ( t < 0.0f )
+			{
+				t = 0.0f;
+				s = clamp( -c / a, 0.0f, 1.0f );
+			}
+			else if ( t > 1.0f )
+			{
+				t = 1.0f;
+				s = clamp( ( b - c ) / a, 0.0f, 1.0f );
+			}
+		}
+	}
+	Vector2D c1 = p1 + d1 * s, c2 = p2 + d2 * t;
+	return ( c1 - c2 ).Length();
+}
+
+// the log's name for a vehicle: every vehicle placed without a name was "dodsp_vehicle" (V2c log: three
+// vehicles, one name - which one dithered couldn't be told)
+const char *CDoDSPVehicle::Label( void )
+{
+	static char s_szBuf[4][64];
+	static int s_iBuf = 0;
+	s_iBuf = ( s_iBuf + 1 ) & 3;
+	Q_snprintf( s_szBuf[s_iBuf], sizeof( s_szBuf[0] ), "%s#%d", GetEntityName() != NULL_STRING ? STRING( GetEntityName() ) : "dodsp_vehicle",
+				entindex() );
+	return s_szBuf[s_iBuf];
+}
+
+static const char *VehicleWho( CBaseEntity *pEnt )
+{
+	CDoDSPVehicle *pV = dynamic_cast<CDoDSPVehicle *>( pEnt );
+	return pV ? pV->Label() : ( pEnt ? pEnt->GetClassname() : "?" );
+}
+
+// THE planning test for a leg: the world (CorridorClear) and the vehicles that will still be there
+bool CDoDSPVehicle::PathClear( const Vector &a, const Vector &b )
+{
+	return CorridorClear( a, b, m_flHalfWidth, m_flBodyHeight, this ) && !VehicleInTheWay( a, b, m_flHalfWidth, VSPACE_PLANNING );
+}
+
+CDoDSPVehicle *CDoDSPVehicle::VehicleInTheWay( const Vector &a, const Vector &b, float flHalfWidth, int eWho )
+{
+	float now = gpGlobals->curtime;
+	for ( int i = 0; i < s_All.Count(); i++ )
+	{
+		CDoDSPVehicle *pV = s_All[i];
+		if ( pV == this || pV->m_flHalfWidth <= 0.0f )
+			continue;
+		if ( eWho == VSPACE_PLANNING && pV->m_bHasGoal && !( m_hAvoid.Get() == pV && now < m_flAvoidUntil ) )
+			continue;
+		const Vector &c = pV->GetAbsOrigin();
+		if ( fabs( c.z - 0.5f * ( a.z + b.z ) ) > 256.0f )
+			continue;		// a bridge above / below
+		Vector f( cosf( DEG2RAD( pV->m_flHeading ) ), sinf( DEG2RAD( pV->m_flHeading ) ), 0.0f );
+		float flSeg = MAX( pV->m_flHalfLength - pV->m_flHalfWidth, 0.0f );
+		Vector c0 = c - f * flSeg, c1 = c + f * flSeg;
+		float flReach = flHalfWidth + pV->m_flHalfWidth + VEHICLE_SPACE_MARGIN;
+		float flDist = SegSegDist2D( a, b, c0, c1 );
+		if ( flDist >= flReach )
+			continue;
+		// already touching at the start and moving away (the closest point is where it stands): let it go
+		float flStart = SegSegDist2D( a, a, c0, c1 );
+		if ( flStart < flReach && flDist >= flStart - 1.0f )
+			continue;
+		return pV;
+	}
+	return NULL;
+}
+
+CDoDSPVehicle *CDoDSPVehicle::SpotTakenBy( const Vector &vecSpot )
+{
+	for ( int i = 0; i < s_All.Count(); i++ )
+	{
+		CDoDSPVehicle *pV = s_All[i];
+		if ( pV == this )
+			continue;
+		Vector vecClaim = pV->m_bHasGoal ? pV->m_vecGoal : pV->GetAbsOrigin();
+		if ( ( vecClaim - vecSpot ).Length2D() < m_flHalfLength + pV->m_flHalfLength + VEHICLE_SPOT_MARGIN )
+			return pV;
+	}
+	return NULL;
+}
+
+void CDoDSPVehicle::GiveWay( CDoDSPVehicle *pV )
+{
+	float now = gpGlobals->curtime;
+	if ( m_hWaitFor.Get() != pV )
+	{
+		m_hWaitFor = pV;
+		m_flWaitSince = now;
+		if ( dodsp_vehicle_debug.GetBool() )
+			Msg( "DOD-SP vehicle %s: waiting for %s (%s)\n", Label(), pV->Label(), pV->m_bHasGoal ? "driving" : "parked" );
+	}
+	m_flWaitSeen = now;
+	m_flProgressTime = now;		// waiting for a vehicle isn't stuck: the stuck watchdog would blame the road (bad links)
+	if ( now < m_flNextGiveWay )
+		return;
+	float flWaited = now - m_flWaitSince;
+	bool bHeadOn = pV->m_hWaitFor.Get() == this && now - pV->m_flWaitSeen < 0.5f;
+	int eWhy = VGIVE_NONE;
+	if ( !pV->m_bHasGoal && flWaited > VEHICLE_YIELD_TIME )
+		eWhy = VGIVE_PARKED;
+	else if ( bHeadOn && entindex() > pV->entindex() && flWaited > VEHICLE_YIELD_TIME )
+		eWhy = VGIVE_HEAD_ON;
+	else if ( !bHeadOn && fabs( pV->m_flSpeed ) < 5.0f && flWaited > VEHICLE_STALL_TIME )
+		eWhy = VGIVE_STALLED;
+	if ( eWhy == VGIVE_NONE )
+		return;
+	m_flNextGiveWay = now + 3.0f;
+	// its goal is where that one stands: that's as close as it gets
+	if ( !pV->m_bHasGoal && ( m_vecGoal - pV->GetAbsOrigin() ).Length2D() < m_flHalfLength + pV->m_flHalfLength + VEHICLE_SPOT_MARGIN * 2.0f )
+	{
+		if ( dodsp_vehicle_debug.GetBool() )
+			Msg( "DOD-SP vehicle %s: arrived - %s is parked at its goal\n", Label(), pV->Label() );
+		Stop();
+		m_OnArrived.FireOutput( this, this );
+		return;
+	}
+	m_hAvoid = pV;
+	m_flAvoidUntil = now + VEHICLE_AVOID_TIME;
+	if ( PlanRoute() )
+	{
+		if ( dodsp_vehicle_debug.GetBool() )
+			Msg( "DOD-SP vehicle %s: giving way to %s (%s) - new route, %d points\n", Label(), pV->Label(), s_pszGiveWay[eWhy], m_Route.Count() );
+		return;
+	}
+	// no way round it
+	if ( m_bScriptedGoal )
+	{
+		m_hAvoid = NULL;			// a map order is kept: it waits on its old route
+		PlanRoute();
+		if ( dodsp_vehicle_debug.GetBool() )
+			Msg( "DOD-SP vehicle %s: no way round %s (%s) - waiting (map order)\n", Label(), pV->Label(), s_pszGiveWay[eWhy] );
+	}
+	else
+	{
+		if ( dodsp_vehicle_debug.GetBool() )
+			Msg( "DOD-SP vehicle %s: no way round %s (%s) - gives up this spot\n", Label(), pV->Label(), s_pszGiveWay[eWhy] );
+		Stop();
+	}
+}
+
+bool CDoDSPVehicle::BadSpot( int iNode )
+{
+	for ( int i = 0; i < ARRAYSIZE( m_BadSpots ); i++ )
+		if ( m_BadSpots[i].iNode == iNode && m_BadSpots[i].flUntil > gpGlobals->curtime )
+			return true;
+	return false;
+}
+
+//-----------------------------------------------------------------------------
 // Driving
 //-----------------------------------------------------------------------------
 void CDoDSPVehicle::DriveThink( void )
@@ -1363,7 +1618,7 @@ void CDoDSPVehicle::DriveThink( void )
 	float dt = VEHICLE_THINK;
 	if ( m_flHalfWidth <= 0.0f || m_flBodyHeight <= 0.0f )
 	{
-		Warning( "INVARIANT DOD-SP vehicle %s: body not measured (width %.0f, height %.0f) - measuring now\n", GetDebugName(), m_flHalfWidth * 2.0f, m_flBodyHeight );
+		Warning( "INVARIANT DOD-SP vehicle %s: body not measured (width %.0f, height %.0f) - measuring now\n", Label(), m_flHalfWidth * 2.0f, m_flBodyHeight );
 		MeasureBody();
 	}
 	float now = gpGlobals->curtime;
@@ -1380,7 +1635,7 @@ void CDoDSPVehicle::DriveThink( void )
 			if ( pGoal )
 				DriveTo( pGoal->GetAbsOrigin() );
 			else
-				Warning( "DOD-SP vehicle %s: goal '%s' not found\n", GetDebugName(), STRING( m_iszInitialGoal ) );
+				Warning( "DOD-SP vehicle %s: goal '%s' not found\n", Label(), STRING( m_iszInitialGoal ) );
 		}
 	}
 	if ( m_bHasGoal && !m_Route.Count() && !PlanRoute() )		// the route isn't saved: plan again after a load
@@ -1402,7 +1657,7 @@ void CDoDSPVehicle::DriveThink( void )
 			Stop();
 			m_OnArrived.FireOutput( this, this );
 			if ( dodsp_vehicle_debug.GetBool() )
-				Msg( "DOD-SP vehicle %s: arrived\n", GetDebugName() );
+				Msg( "DOD-SP vehicle %s: arrived\n", Label() );
 		}
 		else
 		{
@@ -1446,6 +1701,27 @@ void CDoDSPVehicle::DriveThink( void )
 	else
 		m_bReversing = false;
 
+	// other vehicles (V2d): it brakes for any vehicle its body would reach before it could stop, and gives way
+	// by the right of way (GiveWay). Checked in the direction it WANTS to go, so it never sets off into one.
+	if ( fabs( flTargetSpeed ) > 1.0f )
+	{
+		float flSign = ( flTargetSpeed > 0.0f ) ? 1.0f : -1.0f;
+		float flStopDist = m_flSpeed * m_flSpeed / ( 2.0f * MAX( m_pType->flBrake, 1.0f ) );
+		Vector vecEnd = vecPos + vecFwd * flSign * ( m_flHalfLength + flStopDist + 32.0f );
+		if ( CDoDSPVehicle *pInWay = VehicleInTheWay( vecPos, vecEnd, m_flHalfWidth, VSPACE_DRIVING ) )
+		{
+			flTargetSpeed = 0.0f;
+			flYawRate = 0.0f;
+			GiveWay( pInWay );
+		}
+	}
+	if ( m_hWaitFor.Get() && now - m_flWaitSeen > 0.5f )
+	{
+		if ( dodsp_vehicle_debug.GetBool() )
+			Msg( "DOD-SP vehicle %s: %s is out of the way\n", Label(), VehicleWho( m_hWaitFor.Get() ) );
+		m_hWaitFor = NULL;
+	}
+
 	// waiting for someone it can't push
 	if ( m_hBlocker.Get() && now - m_flBlockedTime < 1.0f )
 		flTargetSpeed = 0.0f;
@@ -1470,7 +1746,7 @@ void CDoDSPVehicle::DriveThink( void )
 			{
 				m_eStuck = VSTUCK_WORLD;
 				if ( dodsp_vehicle_debug.GetBool() )
-					Msg( "DOD-SP vehicle %s: can't go on - %s%s%s at %.0f %.0f %.0f\n", GetDebugName(), s_pszCorridorFail[why.eFail],
+					Msg( "DOD-SP vehicle %s: can't go on - %s%s%s at %.0f %.0f %.0f\n", Label(), s_pszCorridorFail[why.eFail],
 						 why.szWhat[0] ? ", " : "", why.szWhat, why.vecAt.x, why.vecAt.y, why.vecAt.z );
 			}
 		}
@@ -1600,7 +1876,7 @@ void CDoDSPVehicle::SetTactic( int eTactic, int eWhy )
 	m_eTactic = eTactic;
 	m_eTacticWhy = eWhy;
 	if ( dodsp_vehicle_debug.GetBool() )
-		Msg( "DOD-SP vehicle %s (%s): %s%s%s\n", GetDebugName(), s_pszBehaviors[m_eBehavior], s_pszTactics[eTactic],
+		Msg( "DOD-SP vehicle %s (%s): %s%s%s\n", Label(), s_pszBehaviors[m_eBehavior], s_pszTactics[eTactic],
 			 s_pszTacticWhy[eWhy][0] ? " - " : "", s_pszTacticWhy[eWhy] );
 }
 
@@ -1662,7 +1938,7 @@ void CDoDSPVehicle::UpdateQuarry( void )
 		m_vecQuarryPos = vecBest;
 		m_flQuarryTime = now;
 		if ( bNews && dodsp_vehicle_debug.GetBool() )
-			Msg( "DOD-SP vehicle %s: %s reported at %.0f %.0f %.0f\n", GetDebugName(), pBest->GetClassname(), vecBest.x, vecBest.y, vecBest.z );
+			Msg( "DOD-SP vehicle %s: %s reported at %.0f %.0f %.0f\n", Label(), VehicleWho( pBest ), vecBest.x, vecBest.y, vecBest.z );
 		return;
 	}
 	// forget a stale one
@@ -1692,11 +1968,17 @@ int CDoDSPVehicle::ChooseFirePosition( const Vector &vecTarget, float flMin, flo
 			continue;
 		if ( m_flLeash > 0.0f && ( vecNode - m_vecHome ).Length2D() > m_flLeash )
 			continue;
+		// not where it stands (it's choosing because it has no shot from here), not a spot that gave no shot,
+		// not another vehicle's spot
+		if ( flToMe < m_flHalfLength * 1.5f || BadSpot( i ) || SpotTakenBy( vecNode ) )
+			continue;
 		Cand_t c = { flToMe + 0.5f * fabs( flToTarget - flMid ), i };
 		cands.AddToTail( c );
 	}
-	// the best few by score get the (costlier) line-of-fire test
-	CTraceFilterWorldOnly filter;
+	// the best few by score get the (costlier) line-of-fire test - THE sight test the turret uses (LineOfFire),
+	// from turret height. V2c test: a world-only trace here passed through the forest's trees (TRACE_WORLD_ONLY
+	// skips static props), the turret's own test didn't, so it re-picked the same spot every 4 s.
+	float flEyeZ = TurretHeight();
 	for ( int k = 0; k < cands.Count() && k < 24; k++ )
 	{
 		int iMin = k;
@@ -1704,10 +1986,8 @@ int CDoDSPVehicle::ChooseFirePosition( const Vector &vecTarget, float flMin, flo
 			if ( cands[m].flScore < cands[iMin].flScore )
 				iMin = m;
 		Cand_t tmp = cands[k]; cands[k] = cands[iMin]; cands[iMin] = tmp;
-		Vector vecEye = g_pBigAINet->GetNode( cands[k].i, false )->GetOrigin() + Vector( 0, 0, m_flBodyHeight );
-		trace_t tr;
-		UTIL_TraceLine( vecEye, vecTarget, MASK_SOLID, &filter, &tr );
-		if ( tr.fraction >= 0.98f )
+		Vector vecEye = g_pBigAINet->GetNode( cands[k].i, false )->GetOrigin() + Vector( 0, 0, flEyeZ );
+		if ( LineOfFire( vecEye, vecTarget, m_hQuarry.Get(), 0.0f ) )
 			return cands[k].i;
 	}
 	return -1;
@@ -1768,6 +2048,8 @@ void CDoDSPVehicle::TacticsThink( void )
 						continue;
 					if ( m_flLeash > 0.0f && ( vecNode - m_vecHome ).Length2D() > m_flLeash )
 						continue;
+					if ( SpotTakenBy( vecNode ) )
+						continue;
 					if ( DriveTo( vecNode, false ) )
 						break;
 				}
@@ -1805,6 +2087,18 @@ void CDoDSPVehicle::TacticsThink( void )
 		SetTactic( m_iFireNode >= 0 ? VTACTIC_REPOSITION : VTACTIC_FIGHT, m_bHasGoal ? eWhy : VWHY_SETTLING );
 		return;
 	}
+	// it got to the spot it chose and still has no shot from there: don't pick it again for a while (else it
+	// goes back and forth between two spots that pass the planning test but give no shot)
+	if ( m_iFireNode >= 0 && !m_bHasGoal && !bSees &&
+		 ( g_pBigAINet->GetNode( m_iFireNode, false )->GetOrigin() - vecMe ).Length2D() < m_flHalfLength * 1.5f )
+	{
+		m_BadSpots[m_iBadSpot].iNode = m_iFireNode;
+		m_BadSpots[m_iBadSpot].flUntil = now + VEHICLE_BADSPOT_TIME;
+		m_iBadSpot = ( m_iBadSpot + 1 ) % ARRAYSIZE( m_BadSpots );
+		if ( dodsp_vehicle_debug.GetBool() )
+			Msg( "DOD-SP vehicle %s: no shot from the spot it chose (node %d) - not picking it again for %.0f s\n", Label(), m_iFireNode,
+				 VEHICLE_BADSPOT_TIME );
+	}
 	int iNode = ChooseFirePosition( m_vecQuarryPos, flMin, flMax );
 	if ( iNode >= 0 && DriveTo( g_pBigAINet->GetNode( iNode, false )->GetOrigin(), false ) )
 	{
@@ -1815,7 +2109,7 @@ void CDoDSPVehicle::TacticsThink( void )
 		m_iReposition = ( m_iReposition + 1 ) % ARRAYSIZE( m_flRepositions );
 		if ( now - m_flRepositions[m_iReposition] < 30.0f )
 			Warning( "INVARIANT DOD-SP vehicle %s: %d new firing spots in %.0f s - it can't settle (enemy at %.0f %.0f %.0f, %s)\n",
-					 GetDebugName(), ARRAYSIZE( m_flRepositions ), now - m_flRepositions[m_iReposition],
+					 Label(), ARRAYSIZE( m_flRepositions ), now - m_flRepositions[m_iReposition],
 					 m_vecQuarryPos.x, m_vecQuarryPos.y, m_vecQuarryPos.z, s_pszTacticWhy[eWhy] );
 		SetTactic( VTACTIC_REPOSITION, eWhy );
 		return;
@@ -1873,18 +2167,18 @@ bool CDoDSPVehicle::CalibrateTurret( void )
 	pT->SetLocalAngles( angSave );
 	m_flPitchSign = ( vecHigh.z >= vecLow.z ) ? 1.0f : -1.0f;
 	Msg( "DOD-SP vehicle %s (%s, %s): turret barrel faces %.0f deg in its model, barrel_pitch %s%.0f..%.0f (%s = up), muzzle %s; "
-		 "main gun %s, coax %s\n", GetDebugName(), m_pType->szName, DoDSP_FactionName( m_eFaction ), m_flTurretFwdOffset,
+		 "main gun %s, coax %s\n", Label(), m_pType->szName, DoDSP_FactionName( m_eFaction ), m_flTurretFwdOffset,
 		 m_iPitchPose >= 0 ? "" : "MISSING ", m_flPoseMin, m_flPoseMax, m_flPitchSign > 0 ? "+" : "-",
 		 m_iMuzzleAttach > 0 ? "found" : "MISSING", m_pType->gun.bHas ? "yes" : "no", m_pType->coax.bHas ? "yes" : "no" );
 	if ( m_iMuzzleAttach <= 0 )
 		Warning( "INVARIANT DOD-SP vehicle %s: turret model %s has no \"muzzle\" attachment - shots start at the turret's middle\n",
-				 GetDebugName(), m_pType->szTurretModel );
+				 Label(), m_pType->szTurretModel );
 	if ( m_iPitchPose < 0 )
 		Warning( "INVARIANT DOD-SP vehicle %s: turret model %s has no \"barrel_pitch\" pose - the barrel can't elevate\n",
-				 GetDebugName(), m_pType->szTurretModel );
+				 Label(), m_pType->szTurretModel );
 	else if ( fabs( vecHigh.z - vecLow.z ) < 1.0f )
 		Warning( "INVARIANT DOD-SP vehicle %s: barrel_pitch %.0f..%.0f doesn't move the muzzle (%.1f units) - the barrel can't elevate\n",
-				 GetDebugName(), m_flPoseMin, m_flPoseMax, fabs( vecHigh.z - vecLow.z ) );
+				 Label(), m_flPoseMin, m_flPoseMax, fabs( vecHigh.z - vecLow.z ) );
 	return true;
 }
 
@@ -1915,18 +2209,59 @@ Vector CDoDSPVehicle::MuzzlePos( const Vector &vecDir )
 	return AimPivot() + vecDir * 64.0f;
 }
 
-bool CDoDSPVehicle::CanSee( CBaseEntity *pTarget )
+// What blocks a vehicle's sight and its shells (one owner, LineOfFire): the world, brush entities, static props
+// (trees, rocks, houses - TRACE_WORLD_ONLY skips them), and vehicles. Not people or loose props: an enemy behind
+// a soldier is still seen (FriendlyInTheWay keeps friends out of the line).
+class CTraceFilterVehicleSight : public CTraceFilter
 {
+public:
+	CTraceFilterVehicleSight( CBaseEntity *pSelf ) : m_pSelf( pSelf ) {}
+	virtual bool ShouldHitEntity( IHandleEntity *pHandleEntity, int contentsMask )
+	{
+		if ( staticpropmgr->IsStaticProp( pHandleEntity ) )
+			return true;
+		CBaseEntity *pEnt = EntityFromEntityHandle( pHandleEntity );
+		if ( !pEnt || pEnt == m_pSelf || pEnt->GetRootMoveParent() == m_pSelf )
+			return false;
+		return pEnt->IsWorld() || pEnt->IsBSPModel() || dynamic_cast<CDoDSPVehicle *>( pEnt->GetRootMoveParent() ) != NULL;
+	}
+	virtual TraceType_t GetTraceType() const { return TRACE_EVERYTHING; }
+private:
+	CBaseEntity *m_pSelf;
+};
+
+// THE sight / line-of-fire test (V2d): firing spots are chosen with it, the turret sees with it, the guns fire
+// only when it passes from the muzzle. Clear = nothing in the way, or it reaches pTarget, or it ends within
+// flNear of vecTo (a shell landing that close still does its work). V2c test: three different tests (a
+// world-only trace for spots, MASK_SHOT for sight, none from the muzzle) disagreed - a tank went back and forth
+// between spots with no shot, and fired five shells into the same static prop.
+bool CDoDSPVehicle::LineOfFire( const Vector &vecFrom, const Vector &vecTo, CBaseEntity *pTarget, float flNear, trace_t *pTr )
+{
+	CTraceFilterVehicleSight filter( this );
 	trace_t tr;
-	CTraceFilterSkipTwoEntities filter( this, m_hTurret.Get(), COLLISION_GROUP_NONE );
+	UTIL_TraceLine( vecFrom, vecTo, MASK_SHOT, &filter, &tr );
+	if ( pTr )
+		*pTr = tr;
+	if ( tr.fraction >= 0.99f && !tr.startsolid )
+		return true;
+	if ( pTarget && tr.m_pEnt && ( tr.m_pEnt == pTarget || tr.m_pEnt->GetRootMoveParent() == pTarget ) )
+		return true;
+	return flNear > 0.0f && !tr.startsolid && ( tr.endpos - vecTo ).Length() <= flNear;
+}
+
+bool CDoDSPVehicle::CanSee( CBaseEntity *pTarget, Vector *pvecPoint )
+{
 	Vector vecFrom = AimPivot();
-	// the target's middle or its eyes
+	// the target's middle or its eyes: the point it sees is the point it aims at
 	Vector vecPoints[2] = { pTarget->WorldSpaceCenter(), pTarget->EyePosition() };
 	for ( int i = 0; i < 2; i++ )
 	{
-		UTIL_TraceLine( vecFrom, vecPoints[i], MASK_SHOT, &filter, &tr );
-		if ( tr.fraction >= 1.0f || ( tr.m_pEnt && ( tr.m_pEnt == pTarget || tr.m_pEnt->GetRootMoveParent() == pTarget ) ) )
+		if ( LineOfFire( vecFrom, vecPoints[i], pTarget, 0.0f ) )
+		{
+			if ( pvecPoint )
+				*pvecPoint = vecPoints[i];
 			return true;
+		}
 	}
 	return false;
 }
@@ -1983,7 +2318,7 @@ bool CDoDSPVehicle::FriendlyInTheWay( const Vector &vecFrom, const Vector &vecDi
 {
 	trace_t tr;
 	CTraceFilterSkipTwoEntities filter( this, m_hTurret.Get(), COLLISION_GROUP_NONE );
-	UTIL_TraceLine( vecFrom, vecFrom + vecDir * flRange, MASK_SHOT, &filter, &tr );
+	UTIL_TraceLine( vecFrom, vecFrom + vecDir * flRange, MASK_SHOT, &filter, &tr );	// dodsp-lint: not a sight line (friends on the line: hits people on purpose)
 	if ( tr.m_pEnt && !tr.m_pEnt->IsWorld() && DoDSP_FactionOf( tr.m_pEnt ) == m_eFaction )
 	{
 		*ppWho = tr.m_pEnt;
@@ -2015,7 +2350,7 @@ void CDoDSPVehicle::FireMainGun( const Vector &vecAim )
 	Vector vecMuzzle = MuzzlePos( vecDir );
 	trace_t tr;
 	CTraceFilterSkipTwoEntities filter( this, m_hTurret.Get(), COLLISION_GROUP_NONE );
-	UTIL_TraceLine( vecMuzzle, vecMuzzle + vecDir * m_pType->gun.flRange, MASK_SHOT, &filter, &tr );
+	UTIL_TraceLine( vecMuzzle, vecMuzzle + vecDir * m_pType->gun.flRange, MASK_SHOT, &filter, &tr );	// dodsp-lint: not a sight line (the shell's own flight)
 	QAngle angDir;
 	VectorAngles( vecDir, angDir );
 	g_pEffects->MuzzleFlash( vecMuzzle, angDir, 6.0f, MUZZLEFLASH_TYPE_DEFAULT );
@@ -2040,8 +2375,8 @@ void CDoDSPVehicle::FireMainGun( const Vector &vecAim )
 	m_bReloadSoundDone = false;
 	m_OnFire.FireOutput( m_hTarget.Get(), this );
 	if ( dodsp_vehicle_debug.GetBool() )
-		Msg( "DOD-SP vehicle %s: main gun fired at %s - hit %s %.0f units out\n", GetDebugName(),
-			 m_hTarget.Get() ? m_hTarget->GetClassname() : "?", tr.fraction < 1.0f ? VehicleHitName( tr ) : "nothing",
+		Msg( "DOD-SP vehicle %s: main gun fired at %s - hit %s %.0f units out\n", Label(),
+			 VehicleWho( m_hTarget.Get() ), tr.fraction < 1.0f ? VehicleHitName( tr ) : "nothing",
 			 ( tr.endpos - vecMuzzle ).Length() );
 }
 
@@ -2082,8 +2417,8 @@ void CDoDSPVehicle::WeaponThink( float dt )
 		{
 			m_OnTargetSeen.FireOutput( m_hTarget.Get(), this );
 			if ( dodsp_vehicle_debug.GetBool() )
-				Msg( "DOD-SP vehicle %s (%s): target %s (%s) at %.0f units\n", GetDebugName(), DoDSP_FactionName( m_eFaction ),
-					 m_hTarget->GetClassname(), DoDSP_FactionName( DoDSP_FactionOf( m_hTarget.Get() ) ),
+				Msg( "DOD-SP vehicle %s (%s): target %s (%s) at %.0f units\n", Label(), DoDSP_FactionName( m_eFaction ),
+					 VehicleWho( m_hTarget.Get() ), DoDSP_FactionName( DoDSP_FactionOf( m_hTarget.Get() ) ),
 					 ( m_hTarget->WorldSpaceCenter() - AimPivot() ).Length() );
 		}
 	}
@@ -2091,12 +2426,13 @@ void CDoDSPVehicle::WeaponThink( float dt )
 
 	// turn the turret and raise the barrel toward it (in the hull's frame), else back to the front
 	float flWantYaw = 0.0f, flWantPitch = 0.0f;
-	Vector vecAimPoint = vec3_origin;
+	Vector vecAimPoint = vec3_origin, vecSeenPoint = vec3_origin;
+	bool bSeen = pTarget && CanSee( pTarget, &vecSeenPoint );
 	bool bAimAtQuarry = !pTarget && m_hQuarry.Get() && gpGlobals->curtime - m_flQuarryTime < VEHICLE_FORGET_TIME;
 	if ( pTarget || bAimAtQuarry )
 	{
-		// a target in sight; else where its enemy was last known (the turret is ready when he shows)
-		vecAimPoint = pTarget ? pTarget->WorldSpaceCenter() : m_vecQuarryPos;
+		// a target in sight (at the point it sees); else where its enemy was last known (ready when he shows)
+		vecAimPoint = pTarget ? ( bSeen ? vecSeenPoint : pTarget->WorldSpaceCenter() ) : m_vecQuarryPos;
 		Vector vecLocal;
 		VectorIRotate( vecAimPoint - AimPivot(), EntityToWorldTransform(), vecLocal );
 		flWantYaw = RAD2DEG( atan2f( vecLocal.y, vecLocal.x ) ) - m_flTurretFwdOffset;
@@ -2132,9 +2468,14 @@ void CDoDSPVehicle::WeaponThink( float dt )
 	Vector vecToTarget = vecAimPoint - MuzzlePos( vecBarrel );
 	float flDist = VectorNormalize( vecToTarget );
 	float flErr = RAD2DEG( acosf( clamp( DotProduct( vecBarrel, vecToTarget ), -1.0f, 1.0f ) ) );
-	bool bSeen = CanSee( pTarget );
 	if ( !bSeen )
 		return;
+	// the line from the MUZZLE (it sits forward of and below the pivot the turret sees from): the shell must
+	// reach the target or land within half its blast radius of it; the coax must reach it
+	Vector vecMuzzleNow = MuzzlePos( vecBarrel );
+	trace_t trShot;
+	bool bShellClear = LineOfFire( vecMuzzleNow, vecAimPoint, pTarget, m_pType->gun.flRadius * 0.5f, &trShot );
+	bool bBulletClear = bShellClear && LineOfFire( vecMuzzleNow, vecAimPoint, pTarget, 0.0f );
 	CBaseEntity *pFriend = NULL;
 	// main gun: at anything hostile, when the barrel is on it. A defensive vehicle stops to shoot; an offensive
 	// one shoots on the move too (FireMainGun spreads moving shots wider)
@@ -2142,10 +2483,20 @@ void CDoDSPVehicle::WeaponThink( float dt )
 	if ( m_pType->gun.bHas && now >= m_flNextGun && flErr <= VEHICLE_GUN_CONE && flDist <= m_pType->gun.flRange &&
 		 ( bStill || m_eBehavior != VBEHAVE_DEFENSIVE ) )
 	{
-		if ( FriendlyInTheWay( MuzzlePos( vecBarrel ), vecBarrel, flDist + 64.0f, m_pType->gun.flRadius, &pFriend ) )
+		if ( !bShellClear )
+		{
+			if ( dodsp_vehicle_debug.GetBool() && now >= m_flNextHoldMsg )
+			{
+				m_flNextHoldMsg = now + 3.0f;
+				Msg( "DOD-SP vehicle %s: holding fire - no line from the muzzle to %s (%s %.0f units out, %.0f short)\n", Label(),
+					 VehicleWho( pTarget ), VehicleHitName( trShot ), ( trShot.endpos - vecMuzzleNow ).Length(), ( vecAimPoint - trShot.endpos ).Length() );
+			}
+			m_flNextGun = now + 0.5f;		// look again shortly (the turret or the target moves)
+		}
+		else if ( FriendlyInTheWay( MuzzlePos( vecBarrel ), vecBarrel, flDist + 64.0f, m_pType->gun.flRadius, &pFriend ) )
 		{
 			if ( dodsp_vehicle_debug.GetBool() )
-				Msg( "DOD-SP vehicle %s: holding fire - %s in the way\n", GetDebugName(), pFriend->GetClassname() );
+				Msg( "DOD-SP vehicle %s: holding fire - %s in the way\n", Label(), VehicleWho( pFriend ) );
 			m_flNextGun = now + 1.0f;		// look again in a second
 		}
 		else
@@ -2163,7 +2514,7 @@ void CDoDSPVehicle::WeaponThink( float dt )
 		if ( now < m_flCoaxBurstEnd && now >= m_flNextCoaxShot )
 		{
 			m_flNextCoaxShot = now + 1.0f / MAX( m_pType->coax.flRate, 1.0f );
-			if ( !FriendlyInTheWay( MuzzlePos( vecBarrel ), vecBarrel, flDist + 64.0f, 0.0f, &pFriend ) )
+			if ( bBulletClear && !FriendlyInTheWay( MuzzlePos( vecBarrel ), vecBarrel, flDist + 64.0f, 0.0f, &pFriend ) )
 				FireCoax( vecBarrel );
 		}
 	}
@@ -2234,7 +2585,7 @@ void CDoDSPVehicle::InputSetTarget( inputdata_t &inputdata )
 {
 	m_hForcedTarget = gEntList.FindEntityByName( NULL, inputdata.value.String(), this, inputdata.pActivator, inputdata.pCaller );
 	if ( !m_hForcedTarget.Get() )
-		Warning( "DOD-SP vehicle %s: SetTarget '%s' - no such entity\n", GetDebugName(), inputdata.value.String() );
+		Warning( "DOD-SP vehicle %s: SetTarget '%s' - no such entity\n", Label(), inputdata.value.String() );
 	m_flNextScan = 0.0f;
 }
 
@@ -2269,16 +2620,18 @@ int CDoDSPVehicle::DrawDebugTextOverlays( void )
 void CDoDSPVehicle::Report( void )
 {
 	Vector p = GetAbsOrigin();
-	Msg( "DOD-SP vehicle %s (%s, %.0f x %.0f): at %.0f %.0f %.0f, heading %.0f, speed %.0f, %s%s, route %d/%d\n", GetDebugName(),
+	Msg( "DOD-SP vehicle %s (%s, %.0f x %.0f): at %.0f %.0f %.0f, heading %.0f, speed %.0f, %s%s, route %d/%d\n", Label(),
 		 m_pType ? m_pType->szName : "?", m_flHalfLength * 2.0f, m_flHalfWidth * 2.0f, p.x, p.y, p.z, m_flHeading, m_flSpeed,
 		 m_bHasGoal ? "driving" : "parked", m_eStuck != VSTUCK_NONE ? ( m_eStuck == VSTUCK_WORLD ? ", wall ahead" : ", was stuck" ) : "",
 		 m_iRoute, m_Route.Count() );
 	Msg( "    %s: %s%s%s, enemy known: %s (%.0f s ago)%s\n", s_pszBehaviors[m_eBehavior], s_pszTactics[m_eTactic],
 		 s_pszTacticWhy[m_eTacticWhy][0] ? " - " : "", s_pszTacticWhy[m_eTacticWhy],
-		 m_hQuarry.Get() ? m_hQuarry->GetClassname() : "none", m_hQuarry.Get() ? gpGlobals->curtime - m_flQuarryTime : 0.0f,
+		 m_hQuarry.Get() ? VehicleWho( m_hQuarry.Get() ) : "none", m_hQuarry.Get() ? gpGlobals->curtime - m_flQuarryTime : 0.0f,
 		 m_bReversing ? ", reversing" : "" );
+	if ( m_hWaitFor.Get() )
+		Msg( "    waiting for %s (%.0f s)\n", VehicleWho( m_hWaitFor.Get() ), gpGlobals->curtime - m_flWaitSince );
 	Msg( "    side %s, target %s%s, turret %.0f deg / barrel %.0f deg, main gun %s\n", DoDSP_FactionName( m_eFaction ),
-		 m_hTarget.Get() ? m_hTarget->GetClassname() : "none", m_bHoldFire ? " (holding fire)" : "", m_flTurretYaw, m_flTurretPitch,
+		 m_hTarget.Get() ? VehicleWho( m_hTarget.Get() ) : "none", m_bHoldFire ? " (holding fire)" : "", m_flTurretYaw, m_flTurretPitch,
 		 !m_pType || !m_pType->gun.bHas ? "none" : ( gpGlobals->curtime >= m_flNextGun ? "loaded" : "reloading" ) );
 }
 
@@ -2287,12 +2640,12 @@ void CDoDSPVehicle::SetTurretOffset( const Vector &vecOffset )
 {
 	if ( !m_hTurret.Get() )
 	{
-		Msg( "DOD-SP vehicle %s (%s) has no turret\n", GetDebugName(), m_pType ? m_pType->szName : "?" );
+		Msg( "DOD-SP vehicle %s (%s) has no turret\n", Label(), m_pType ? m_pType->szName : "?" );
 		return;
 	}
 	m_hTurret->SetLocalOrigin( vecOffset );
 	Msg( "DOD-SP vehicle %s: turret at %g %g %g - for scripts/dodsp_vehicles.txt, under \"%s\":\n\t\t\"turret_offset\"\t\t\"%g %g %g\"\n",
-		 GetDebugName(), vecOffset.x, vecOffset.y, vecOffset.z, m_pType->szName, vecOffset.x, vecOffset.y, vecOffset.z );
+		 Label(), vecOffset.x, vecOffset.y, vecOffset.z, m_pType->szName, vecOffset.x, vecOffset.y, vecOffset.z );
 }
 
 void CDoDSPVehicle::InputDriveTo( inputdata_t &inputdata )
@@ -2301,7 +2654,7 @@ void CDoDSPVehicle::InputDriveTo( inputdata_t &inputdata )
 	if ( pGoal )
 		DriveTo( pGoal->GetAbsOrigin() );
 	else
-		Warning( "DOD-SP vehicle %s: DriveTo - no entity named '%s'\n", GetDebugName(), inputdata.value.String() );
+		Warning( "DOD-SP vehicle %s: DriveTo - no entity named '%s'\n", Label(), inputdata.value.String() );
 }
 
 void CDoDSPVehicle::InputStop( inputdata_t &inputdata )
@@ -2325,7 +2678,7 @@ CON_COMMAND( dodsp_vehicle_goto, "Send the nearest DOD-SP vehicle (or all with '
 	Vector vecFwd;
 	pPlayer->EyeVectors( &vecFwd );
 	trace_t tr;
-	UTIL_TraceLine( pPlayer->EyePosition(), pPlayer->EyePosition() + vecFwd * 8192.0f, MASK_SOLID, pPlayer, COLLISION_GROUP_NONE, &tr );
+	UTIL_TraceLine( pPlayer->EyePosition(), pPlayer->EyePosition() + vecFwd * 8192.0f, MASK_SOLID, pPlayer, COLLISION_GROUP_NONE, &tr );	// dodsp-lint: not a sight line (the player's aim (console))
 	bool bAll = args.ArgC() > 1 && !Q_stricmp( args[1], "all" );
 	CDoDSPVehicle *pBest = NULL;
 	float flBest = FLT_MAX;

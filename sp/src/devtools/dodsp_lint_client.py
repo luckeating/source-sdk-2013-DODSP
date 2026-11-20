@@ -22,6 +22,12 @@ categories, order_cover_<every landmark>) has a sound entry for EVERY voice in s
 nation in the generated script (dodsp_tools/generated/game_sounds_german_chatter.txt, the copy the owner
 gets), plus the six pain/death cries. Voice 1 was silent for months because the old generator dropped its
 files and nothing compared the code with the script.
+
+INVARIANT (vehicles, V2d): a vehicle's sight has ONE test, CDoDSPVehicle::LineOfFire - firing spots are chosen
+with it, the turret sees with it, the guns fire only when it passes from the muzzle. V2c: the spot search used a
+world-only trace (TRACE_WORLD_ONLY skips static props, i.e. every tree), the turret didn't, and a tank went back
+and forth between two spots with no shot. So dodsp_vehicle.cpp has no CTraceFilterWorldOnly, and every other
+UTIL_TraceLine in it is tagged 'dodsp-lint: not a sight line (<what it is>)'.
 """
 import os
 import re
@@ -198,8 +204,33 @@ def check_vehicle_sounds():
     return bad
 
 
+VEHICLE_CPP = os.path.join(ROOT, "game", "server", "dodsp", "dodsp_vehicle.cpp")
+
+
+def check_vehicle_sight():
+    bad = []
+    func = ""
+    with open(VEHICLE_CPP, encoding="latin-1") as f:
+        for n, line in enumerate(f, 1):
+            m = re.match(r"^[A-Za-z].*\b(\w+)::(\w+)\s*\(", line)
+            if m:
+                func = m.group(2)
+            code = line.split("//")[0]
+            if "CTraceFilterWorldOnly" in code:
+                bad.append("dodsp_vehicle.cpp:%d: CTraceFilterWorldOnly (it skips static props) - use LineOfFire" % n)
+            if "UTIL_TraceLine" in code and func != "LineOfFire" and "dodsp-lint: not a sight line" not in line:
+                bad.append("dodsp_vehicle.cpp:%d (%s): %s  (a sight test? use LineOfFire; else tag it)" % (n, func, line.strip()))
+    return bad
+
+
 def main():
     bad = []
+    sight_bad = check_vehicle_sight()
+    if sight_bad:
+        print("dodsp_lint_client: a vehicle sight line around LineOfFire (V2d):")
+        for b in sight_bad:
+            print("  " + b)
+        return 1
     vsound_bad = check_vehicle_sounds()
     if vsound_bad:
         print("dodsp_lint_client: a vehicle type names a sound the vehicle sound script doesn't have:")
