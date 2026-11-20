@@ -448,7 +448,8 @@ static int VehicleSoundCheck( const char *pszName, char *pszWave, int nWave )
 	const SoundFile *pFiles = pParams->GetSoundNames();
 	for ( int w = 0; w < pParams->NumSoundNames(); w++ )
 	{
-		const char *pszW = soundemitterbase->GetWaveName( pFiles[w].symbol );
+		CUtlSymbol sym = pFiles[w].symbol;		// GetWaveName takes a non-const reference (C2664 on the const member)
+		const char *pszW = soundemitterbase->GetWaveName( sym );
 		if ( !pszW || !pszW[0] )
 			continue;
 		char szPath[MAX_PATH];

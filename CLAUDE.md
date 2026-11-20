@@ -145,6 +145,7 @@ If you learn something like this, add it here in the same commit as the fix.
 - A name table for an enum (`s_pszNames[]` next to `enum Invariant_t`) gets `COMPILE_TIME_ASSERT( ARRAYSIZE( names )
   == NUM_... )`: the soldier's INVARIANT names were two short, so INV_PINNED_STUCK / INV_MG_MOVING printed whatever
   memory followed (found 2026-11-18, C1).
+- `ISoundEmitterSystemBase::GetWaveName` takes a NON-const `CUtlSymbol&`: copy `SoundFile::symbol` into a local first (C2664, 44667501038).
 - `IMaterialSystemHardwareConfig` has no GetShadowSlopeScaleDepthBias/GetShadowDepthBias in this SDK (only in env_projectedtexture's
   dead non-ASW branch): read Mapbase's `mat_slopescaledepthbias_shadowmap` / `mat_depthbias_shadowmap` (C2039, 44341665956).
 - GitHub warns "This repository moved" on push. That's harmless. A workflow that fails in 0 s is a
