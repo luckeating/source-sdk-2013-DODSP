@@ -200,17 +200,20 @@ enum VehicleBail_t
 	VBAIL_HELPLESS,			// can't move and can't fight
 	VBAIL_UNDER_FIRE,		// can't move and keeps getting penetrated
 	VBAIL_KNOCKED_OUT,
+	VBAIL_IMMOBILE_HIT,		// V4d: a round got in and left it unable to move - a sitting target
+	VBAIL_WRECKED_INSIDE,	// V4d: what got in wrecked most of the inside (structure <= VEHICLE_BAIL_STRUCTURE)
 	NUM_VBAILS
 };
 static const char *s_pszBail[] = { "", "it's burning", "too few crew left to fight it", "it can't move and can't fight",
-	"it can't move and keeps getting penetrated", "knocked out" };
+	"it can't move and keeps getting penetrated", "knocked out", "a round got in and it can't move", "the inside is wrecked" };
 COMPILE_TIME_ASSERT( ARRAYSIZE( s_pszBail ) == NUM_VBAILS );
 
 // V4b: the German soldier's bail-out (npc_german_soldier.cpp - one owner for how a man climbs out and jumps off)
 extern bool GermanSoldier_BailOut( CBaseEntity *pEnt, const Vector &vecHatch, const Vector &vecGround, const Vector &vecRun, float flYaw );
 
 #define VEHICLE_COOKOFF_KG		2.0f		// an ammunition cook-off goes up like this much explosive (game value)
-#define VEHICLE_PEN_MEMORY		15.0f		// two penetrations this close together on an immobile vehicle: the crew gets out
+#define VEHICLE_PEN_MEMORY		15.0f
+#define VEHICLE_BAIL_STRUCTURE	0.3f		// V4d: a crew gets out once what's got in leaves this fraction of the structure		// two penetrations this close together on an immobile vehicle: the crew gets out
 
 // where an armour box was hit (one owner: CDoDSPVehicle::ShellHitBox)
 struct VehicleHit_t
@@ -3425,11 +3428,19 @@ void CDoDSPVehicle::CheckMorale( CBaseEntity *pAttacker )
 	}
 	bool bCanFight = MainGunUsable() || ( m_pType->coax.bHas && CanAim() );
 	bool bTwoPens = gpGlobals->curtime - m_flPenTimes[1] < VEHICLE_PEN_MEMORY;
+	bool bJustPenetrated = gpGlobals->curtime - m_flPenTimes[0] < 0.5f;
+	// V4d (first V4c runs, 2026-11-20): a Panzer II hit by a Sherman was immobilised, lost its driver and was left at
+	// 7 of 120 - and the crew sat in it until the next round blew it up (no bail-out ever seen). Real crews got out of
+	// a tank that was badly holed or couldn't move under fire.
 	int eWhy = VBAIL_NONE;
 	if ( CrewAlive() <= 1 && m_pType->armour.nCrew > 2 )
 		eWhy = VBAIL_CREW;
 	else if ( m_bImmobile && !bCanFight )
 		eWhy = VBAIL_HELPLESS;
+	else if ( m_bImmobile && bJustPenetrated )
+		eWhy = VBAIL_IMMOBILE_HIT;
+	else if ( m_flStructure <= VEHICLE_BAIL_STRUCTURE * m_pType->armour.flStructure )
+		eWhy = VBAIL_WRECKED_INSIDE;
 	else if ( m_bImmobile && bTwoPens )
 		eWhy = VBAIL_UNDER_FIRE;
 	if ( eWhy != VBAIL_NONE )

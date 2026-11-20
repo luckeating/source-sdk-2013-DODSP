@@ -673,6 +673,13 @@ If you learn something like this, add it here in the same commit as the fix.
   ride1-6_idle, jump_ride1-6, germantruck guy1-8 jumpout + driver climbout, halftrack driver/guy jumpouts, bren carrier
   driver/passenger/back dismounts, kubelwagen, carchase get-outs; the CoD1 wehrmacht/driver2 models have truck_drive /
   truck_driver_out / truck_guy1-4 - all need a Crowbar decompile (SMDs) before the retarget.
+  FIRST V4c RUNS 2026-11-20 (build 44773102155): wreck swap WORKS (owner screenshot: burnt Panzer II on the _dead model,
+  smoke). No bail-out seen - the log says why: a Sherman 75 mm round into a Panzer II's side (effect 110 vs structure 120)
+  immobilised it, killed the driver and left it at 7-8 of 120, but the morale rule wanted TWO penetrations before an
+  immobile crew got out; the next round (-78 / -99) blew it up with them inside. The guards printed every step - the
+  data showed the rule, not a bug. V4d: CheckMorale also bails out when a penetration leaves it immobile
+  (VBAIL_IMMOBILE_HIT) or the structure at <= 30% (VBAIL_WRECKED_INSIDE). Out of the fight = CLASS_NONE, so the attacker
+  stops shooting and the crew gets out before it burns.
 - CoD1 set (owner's vehicles_part2.zip, 2026-11-19): REFERENCE ONLY except the **SU-152, which we keep**. One model per
   vehicle, turret/gun as BONES (tag_turret, tag_barrel, tag_flash = muzzle, tag_coaxel), faces +X (forward_yaw 0),
   CoD's rider tags tag_guy01..06 (Sherman, Elefant, SU-152: 6; Opel truck driver/passenger + 4), NO .phy (needs a
