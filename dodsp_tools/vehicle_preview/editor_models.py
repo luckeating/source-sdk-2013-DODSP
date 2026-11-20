@@ -3,6 +3,9 @@ what the game spawns (Hammer draws one model per entity; the game puts the turre
 
 usage: editor_models.py <dodsp_vehicles.txt> <folder with the compiled vehicle .mdl/.vvd/.dx90.vtx> <out folder>
 
+SMD conventions checked against Crowbar's own decompile of a compiled model (german_normandy_officer):
+v = 1 - the compiled v, and the triangle winding is the reverse of the .vtx order.
+
 Writes <out>/<type>/<type>.smd + .qc for every type with a turret_model (types without one show their own model in
 Hammer). The owner compiles the folder with Crowbar -> models/dodsp/editor/<type>.mdl. Vertices are written in the
 compiled meshes' own frame (CoD2 meshes face -Y, like every Source SMD); studiomdl's default rotation turns the result
@@ -87,7 +90,8 @@ def write(out, name, tris):
         f.write('version 1\nnodes\n0 "root" -1\nend\nskeleton\ntime 0\n0 0 0 0 0 0 0\nend\ntriangles\n')
         for mat, vs in tris:
             f.write(mat + '\n')
-            for (p, n, uv) in vs:
+            for (p, n, uv) in ( vs[0], vs[2], vs[1] ):     # the compiled mesh winds the other way round (checked
+                                                             # against Crowbar's decompile of the CoD2 officer)
                 f.write('0 %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f 1 0 1\n' % (p[0], p[1], p[2], n[0], n[1], n[2], uv[0], 1.0 - uv[1]))
         f.write('end\n')
 

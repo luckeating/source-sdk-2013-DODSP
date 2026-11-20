@@ -765,6 +765,11 @@ If you learn something like this, add it here in the same commit as the fix.
   then faces it +X like the originals) - the owner compiles the pack with Crowbar; types without a turret use their own
   model. The FGD ships in the game artifact (DOD-SP\dodsp_vehicles.fgd). `riders` key (0/1, "full riding complement")
   in the shared base class: stored, the spawn line says riders arrive with V3 (none spawned yet).
+  FIRST LOOK 2026-11-20 (owner, Hammer++): the Sherman preview drew INSIDE OUT (looked like flipped UVs). The .vtx
+  triangle order winds the other way from an SMD's; v is already right (SMD v = 1 - compiled v). Both now checked
+  against Crowbar's own decompile of a compiled model (CoD2 officer: same positions, v, and winding 0-2-1) - LESSON:
+  verify a file-format writer against a known-good converter's output BEFORE handing it over. Existing entities stay
+  dodsp_vehicle until switched (Class box -> dodsp_vehicle_<type>; other keys carry over).
 - CoD1 set (owner's vehicles_part2.zip, 2026-11-19): REFERENCE ONLY except the **SU-152, which we keep**. One model per
   vehicle, turret/gun as BONES (tag_turret, tag_barrel, tag_flash = muzzle, tag_coaxel), faces +X (forward_yaw 0),
   CoD's rider tags tag_guy01..06 (Sherman, Elefant, SU-152: 6; Opel truck driver/passenger + 4), NO .phy (needs a
