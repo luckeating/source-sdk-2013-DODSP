@@ -3606,6 +3606,9 @@ bool CDoDSPVehicle::SpawnCrewman( const Vector &vecAwayFrom, int eRole )
 			Q_snprintf( szSquad, sizeof( szSquad ), "tankcrew%d", entindex() );
 			pNPC->KeyValue( "additionalequipment", "weapon_mp40" );
 			pNPC->KeyValue( "squadname", szSquad );
+			// V4g: no snap to the floor at his first think - a bailing man is put in the hatch, inside the hull, and the
+			// snap printed "NPC npc_german_soldier stuck in wall--level design error" (he's on the ground here anyway)
+			pNPC->AddSpawnFlags( SF_NPC_FALL_TO_GROUND );
 			pNPC->SetAbsOrigin( p );
 			pNPC->SetAbsAngles( QAngle( 0.0f, RAD2DEG( atan2f( vecAway.y, vecAway.x ) ), 0.0f ) );
 			DispatchSpawn( pNPC );

@@ -75,11 +75,19 @@ void DoDSP_SetWeaponDeployed( CBaseCombatWeapon *pWeapon, bool bDeployed );		// 
 // then fast). A different animation in that slot needs these frames measured again (BeginBailOut checks the length).
 // V4f: c1_tank_climb_out (41 frames) is made relative to the ROOF: head 35 units over it at frame 0, feet on it from
 // frame 11. In CoD he starts out of sight, so the code starts him BAILCLIMB_HIDE under the hatch (head + helmet below
-// the roof) and lifts him to the roof by frame BAILCLIMB_UP - the animation's own rise plays on top of that (V4e left
+// the roof) and lifts him to the roof by frame BAILCLIMB_UPFRAME - the animation's own rise plays on top of that (V4e left
 // his head and shoulders above the roof from the first frame: "floating above the tank"). Hidden (EF_NODRAW) for the
 // sequence's 0.2 s blend-in, so the pose he had before never shows.
+// V4g (owner's screenshots: both men already STANDING on the roof when first seen, arms up): the animation's rise is
+// frames 0..11 = 0.37 s, and 0.25 s of it was hidden, so he popped out. Now the code owns the climb's clock: frames
+// 0..BAILCLIMB_UPFRAME play over BAILCLIMB_RISE seconds (the cycle is set every tick, playback rate 0), the lift runs
+// over the same time, and the climb is cut at BAILCLIMB_ENDFRAME - after it CoD's man stands holding the hatch lid
+// up for a second (frames 14..34), which on our lid-less tanks is arms waving in the air.
 #define BAILCLIMB_LAST		40.0f
-#define BAILCLIMB_UP		( 12.0f / BAILCLIMB_LAST )
+#define BAILCLIMB_UPFRAME	12.0f
+#define BAILCLIMB_ENDFRAME	14.0f
+#define BAILCLIMB_RISE		1.2f
+#define BAILCLIMB_HOLD		( ( BAILCLIMB_ENDFRAME - BAILCLIMB_UPFRAME ) / 30.0f )
 #define BAILCLIMB_HIDE		42.0f
 #define BAILCLIMB_SHOW		0.25f
 #define BAILJUMP_LAST		39.0f
@@ -4905,6 +4913,11 @@ void CNPC_GermanSoldier::UpdateCoverTransition( void )
 // plays at normal speed. (Death animations set their own speed in TASK_DIE, after this.)
 void CNPC_GermanSoldier::UpdatePlaybackRate( void )
 {
+	if ( m_bBailOut )
+	{
+		SetPlaybackRate( m_iBailPhase == 0 ? 0.0f : 1.0f );	// V4g: the climb's frame is set every tick (PhysicsSimulate)
+		return;
+	}
 	if ( m_bDeathAnim || !GetModelPtr() || GetSequence() < 0 )
 		return;
 	Activity actSeq = GetSequenceActivity( GetSequence() );
@@ -5211,8 +5224,9 @@ void CNPC_GermanSoldier::StartTask( const Task_t *pTask )
 			SetSequenceById( iClimb );
 			SetCycle( 0.0f );
 			m_iBailPhase = 0;
-			m_flBailPhaseDur = MAX( SequenceDuration( iClimb ), 0.1f );
+			m_flBailPhaseDur = BAILCLIMB_RISE + BAILCLIMB_HOLD;		// V4g: the code's clock, not the sequence's
 			m_flBailPhaseEnd = gpGlobals->curtime + m_flBailPhaseDur;
+			UpdatePlaybackRate();
 		}
 		break;
 	case TASK_RANGE_ATTACK1:
@@ -5485,6 +5499,7 @@ void CNPC_GermanSoldier::RunTask( const Task_t *pTask )
 			m_iBailPhase = 1;
 			m_flBailPhaseDur = MAX( SequenceDuration( iJump ), 0.1f );
 			m_flBailPhaseEnd = now + m_flBailPhaseDur;
+			UpdatePlaybackRate();
 			return;
 		}
 		EndBailOut( true );
@@ -7148,8 +7163,8 @@ Vector CNPC_GermanSoldier::BailPosition( float flNow ) const
 {
 	if ( m_iBailPhase == 0 )
 	{
-		float c0 = clamp( 1.0f - ( m_flBailPhaseEnd - flNow ) / m_flBailPhaseDur, 0.0f, 1.0f );
-		float s = clamp( c0 / BAILCLIMB_UP, 0.0f, 1.0f );
+		float t = flNow - ( m_flBailPhaseEnd - m_flBailPhaseDur );
+		float s = clamp( t / BAILCLIMB_RISE, 0.0f, 1.0f );
 		s = s * s * ( 3.0f - 2.0f * s );
 		return m_vecBailHatch - Vector( 0.0f, 0.0f, BAILCLIMB_HIDE * ( 1.0f - s ) );
 	}
@@ -7167,6 +7182,14 @@ void CNPC_GermanSoldier::PhysicsSimulate( void )
 	if ( m_bBailOut && m_flBailPhaseDur > 0.0f && GetMoveType() == MOVETYPE_NONE && IsAlive() )
 	{
 		SetAbsOrigin( BailPosition( gpGlobals->curtime ) );
+		if ( m_iBailPhase == 0 )
+		{
+			// the climb's frame from the same clock as its lift (UpdatePlaybackRate holds the rate at 0 meanwhile)
+			float t = gpGlobals->curtime - ( m_flBailPhaseEnd - m_flBailPhaseDur );
+			float flFrame = ( t < BAILCLIMB_RISE ) ? BAILCLIMB_UPFRAME * MAX( t, 0.0f ) / BAILCLIMB_RISE
+												  : MIN( BAILCLIMB_UPFRAME + ( t - BAILCLIMB_RISE ) * 30.0f, BAILCLIMB_ENDFRAME );
+			SetCycle( flFrame / BAILCLIMB_LAST );
+		}
 		if ( IsEffectActive( EF_NODRAW ) && ( m_iBailPhase > 0 || gpGlobals->curtime >= m_flBailPhaseEnd - m_flBailPhaseDur + BAILCLIMB_SHOW ) )
 			RemoveEffects( EF_NODRAW );
 	}

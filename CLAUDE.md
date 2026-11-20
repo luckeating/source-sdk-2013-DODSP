@@ -718,6 +718,16 @@ If you learn something like this, add it here in the same commit as the fix.
   INVARIANT if c1_tank_climb_out isn't 41 frames. dodsp_vehicle_debug prints each crewman's hatch, its height over the
   ground and the jump length. LESSON: listen to what the owner says looks wrong before reading the animation for
   another cause.
+  V4f RUN 2026-11-20 (build 44785761799, owner's screenshots, Panzer II): the man first seen STANDING on the cupola, arms
+  up (climb frame ~10), another on the hull deck; then standing with one arm raised (the lid-holding part), then the
+  jump. Positions matched the design - the TIMING was the fault: the animation's rise is frames 0..11 = 0.37 s and
+  0.25 s of it was hidden, so he popped out; then a second of holding a lid our tanks don't have. Also red
+  `NPC npc_german_soldier stuck in wall` (the base StartNPC snaps a new NPC to the floor from inside the hull).
+  V4g: the code owns the climb's clock - frames 0..12 over BAILCLIMB_RISE (1.2 s), cycle set every tick with the
+  playback rate 0 (UpdatePlaybackRate stays the one owner of the rate), the lift on the same clock, the climb cut at
+  frame 14 (the lid hold dropped), then the jump. Crewmen spawn with SF_NPC_FALL_TO_GROUND (no floor snap).
+  LESSON: ask for a screenshot of the first wrong frame before the second blind fix - it showed position was right
+  and timing wrong in one look.
 - CoD1 set (owner's vehicles_part2.zip, 2026-11-19): REFERENCE ONLY except the **SU-152, which we keep**. One model per
   vehicle, turret/gun as BONES (tag_turret, tag_barrel, tag_flash = muzzle, tag_coaxel), faces +X (forward_yaw 0),
   CoD's rider tags tag_guy01..06 (Sherman, Elefant, SU-152: 6; Opel truck driver/passenger + 4), NO .phy (needs a
