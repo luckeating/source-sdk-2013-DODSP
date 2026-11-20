@@ -878,8 +878,10 @@ If you learn something like this, add it here in the same commit as the fix.
   CoD y, mesh y = -CoD x) - multiply these tag positions by it. xmodelparts parent byte = ABSOLUTE index.
   The owner then sent xmodelsurfs/halftrack_mg1 (the mesh, v20: per surface u8 tile, u16 verts, u16 tris, s16 bone
   (-1 = per-vertex bones, then 2 more header bytes); vertex = normal, RGBA, uv, binormal, tangent (48 bytes), then
-  [u8 extra weights, u16 bone] if per-vertex, position in the bone's space, and per extra weight 17 bytes (u8, u16 bone,
-  vec3 position, u16 share); reader dodsp_tools/vehicle_preview/cod2_xmodel.py, parses to the last byte) and his
+  [u8 extra weights, u16 bone] if per-vertex, position in the bone's space, then if any extra weights ONE u8 + per
+  extra weight 16 bytes (u16 bone, vec3 position, u16 share) - corrected 2026-11-20: the first reading "17 bytes per
+  weight" only held for one extra weight and failed on the Tiger; checked on all 2654 xmodelsurfs of the owner's
+  cod2models.zip, every one parses to the last byte; reader dodsp_tools/vehicle_preview/cod2_xmodel.py) and his
   Crowbar decompile of the port. The doors are CoD surfaces on hatch_open_left/right (140 triangles each, + 4 marking
   triangles on the left leaf); the hinges turn about the vertical. halftrack_doors.py puts the port's matching
   triangles (by triangle middle; the leaves' seam faces share a plane, settled by which way they face) on bones
@@ -887,6 +889,23 @@ If you learn something like this, add it here in the same commit as the fix.
   (0..1 = 0..100 degrees) + the port's own QC settings and collision. Crowbar names every decompile's mesh body.smd
   (the zip kept one), so the variants are read from their compiled .mdl instead.
 
+- **CoD2 original vehicles (owner's cod2models.zip, 2026-11-20: xmodel / xmodelparts / xmodelsurfs / 3669 xanim).**
+  The ports are CoD2's meshes x 1.028 in the GAME frame (x front, y left = CoD's axes): fitted per vehicle, median
+  miss 0.03-0.05; every port turret model's origin = CoD's tag_turret x 1.028 (miss <= 0.04). So CoD's tags are EXACT
+  positions: dodsp_tools/vehicle_preview/cod2_tags.py writes them all to dodsp_tools/generated/cod2_vehicle_tags.txt
+  (one owner for "where is X on the vehicle"; turret-frame coordinates for turret/barrel tags). Findings: our ESTIMATED
+  turret_offsets are off on panzer2 (ours 20 0 97, CoD 19.8 6.0 95.4 - the real turret sits left), sherman (15 0 116
+  vs 9.1 0 112.3), crusader (18 0 109 vs 24.2 0 102.4), armoredcar (7 0 82 vs -4.8 0 61.4); tiger was right. MG
+  mounts (CoD attaches separate MG models weapon_machinegun_* at them): panzer2 tag_turret2 = coax in the turret,
+  21.6 right of the main gun; tiger tag_turret2 = BOW MG on the hull (front right); sherman tag_turret2 on tag_barrel =
+  coax that elevates with the gun; crusader tag_turret2 = hull mini-turret (front left), tag_turret3 = coax; halftrack
+  tag_turret = the front MG42; buffalo tag_ai_30cal. Today every coax fires from the main gun's muzzle. Moving parts
+  that carry mesh (rig like the halftrack doors): hatch lids panzer2/tiger (1), sherman/crusader (2), armoredcar
+  grenade screens (2), barrel_recoil on every tank gun, crusader/carrier antennas, Opel Blitz cab doors + tailgate
+  flaps + canopy, Kubelwagen 4 doors + steering wheel + windshield, Buffalo rear ramp + 30cal with belt bones. Also:
+  tag_guy0..10 (CoD's own rider seats, matching the tankride_guyN animations), tag_walker0..5 (escort infantry spots),
+  tag_engine_left/right, tag_firefx, tag_climbnode (Blitz rear), wreck pieces (prop_tiger_part_1..3,
+  prop_german_panzer_part_1..3, crusader parts 1-4, armored car pieces + tire, carrier blow pieces 1-13, thrown treads).
 - CoD1 set (owner's vehicles_part2.zip, 2026-11-19): REFERENCE ONLY except the **SU-152, which we keep**. One model per
   vehicle, turret/gun as BONES (tag_turret, tag_barrel, tag_flash = muzzle, tag_coaxel), faces +X (forward_yaw 0),
   CoD's rider tags tag_guy01..06 (Sherman, Elefant, SU-152: 6; Opel truck driver/passenger + 4), NO .phy (needs a

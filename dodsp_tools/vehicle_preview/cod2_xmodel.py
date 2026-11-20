@@ -34,10 +34,13 @@ def surfs(path):
             pos=struct.unpack_from('<3f',d,o); o+=12
             w=[]
             if nw:
-                # each further weight: u8 (the first bone's share, /255), u16 bone, vec3 position in THAT bone, u16 share
+                # one u8, then per further weight: u16 bone, vec3 position in THAT bone, u16 share (16 bytes). Checked
+                # against the owner's whole CoD2 pack (cod2models.zip): all 2654 xmodelsurfs parse to the last byte
+                # (the old "17 bytes per weight" read only the meshes with at most one extra weight - Tiger failed)
+                o+=1
                 for k in range(nw):
-                    b=struct.unpack_from('<H',d,o+1)[0]; p2=struct.unpack_from('<3f',d,o+3); inf=struct.unpack_from('<H',d,o+15)[0]
-                    o+=17; w.append((b,inf/65536.0,np.array(p2)))
+                    b=struct.unpack_from('<H',d,o)[0]; p2=struct.unpack_from('<3f',d,o+2); inf=struct.unpack_from('<H',d,o+14)[0]
+                    o+=16; w.append((b,inf/65536.0,np.array(p2)))
             V.append(dict(n=np.array(n),uv=uv,bone=b0,pos=np.array(pos),w=w))
         T=[struct.unpack_from('<3H',d,o+6*k) for k in range(nt)]; o+=6*nt
         out.append(dict(tile=tile,dbone=dbone,verts=V,tris=T))
