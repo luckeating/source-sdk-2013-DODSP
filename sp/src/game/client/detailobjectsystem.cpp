@@ -10,6 +10,7 @@
 #include "gamebspfile.h"
 #include "tier1/utlbuffer.h"
 #include "tier1/utlmap.h"
+#include "dodsp_detailprops.h"
 #include "view.h"
 #include "clientmode.h"
 #include "iviewrender.h"
@@ -81,8 +82,8 @@ struct DetailModelAdvInfo_t
 
 class CDetailObjectSystemPerLeafData
 {
-	unsigned short	m_FirstDetailProp;
-	unsigned short	m_DetailPropCount;
+	int				m_FirstDetailProp;		// DOD-SP: int, was unsigned short (dodsp_detailprops.h)
+	int				m_DetailPropCount;
 	int				m_DetailPropRenderFrame;
 
 	CDetailObjectSystemPerLeafData( void )
@@ -245,7 +246,9 @@ protected:
 
 	unsigned char	m_Alpha;
 
-	static CUtlMap<CDetailModel *, LightStyleInfo_t> gm_LightStylesMap;
+	// DOD-SP: int index (CUtlMap's default is unsigned short = 65535 entries; every prop lit by a light
+	// style takes one - with -dodsp_sunstyle every sunlit prop). dodsp_detailprops.h
+	static CUtlMap<CDetailModel *, LightStyleInfo_t, int> gm_LightStylesMap;
 
 #pragma warning( disable : 4201 ) //warning C4201: nonstandard extension used : nameless struct/union
 	union
@@ -468,6 +471,7 @@ private:
 
 	CUtlVector<DetailModelDict_t>			m_DetailObjectDict;
 	CUtlVector<CDetailModel>				m_DetailObjects;
+	int										m_nDoDSPLumpDetailProps;	// DOD-SP: how many the map's lump holds (load line)
 	CUtlVector<DetailPropSpriteDict_t>		m_DetailSpriteDict;
 	CUtlVector<DetailPropSpriteDict_t>		m_DetailSpriteDictFlipped;
 	CUtlVector<DetailPropLightstylesLump_t>	m_DetailLighting;
@@ -514,7 +518,8 @@ IDetailObjectSystem* DetailObjectSystem()
 // Initialization
 //-----------------------------------------------------------------------------
 
-CUtlMap<CDetailModel *, CDetailModel::LightStyleInfo_t> CDetailModel::gm_LightStylesMap( DefLessFunc( CDetailModel * ) );
+CUtlMap<CDetailModel *, CDetailModel::LightStyleInfo_t, int> CDetailModel::gm_LightStylesMap( DefLessFunc( CDetailModel * ) );
+COMPILE_TIME_ASSERT( sizeof( CUtlMap<CDetailModel *, CDetailModel::LightStyleInfo_t, int>::IndexType_t ) >= sizeof( int ) );
 
 bool CDetailModel::InitCommon( int index, const Vector& org, const QAngle& angles )
 {
@@ -1402,6 +1407,7 @@ CDetailObjectSystem::CDetailObjectSystem() : m_DetailSpriteDict( 0, 32 ), m_Deta
 	m_pSortInfo = NULL;
 	m_pFastSortInfo = NULL;
 	m_pBuildoutBuffer = NULL;
+	m_nDoDSPLumpDetailProps = 0;
 }
 
 void CDetailObjectSystem::FreeSortBuffers( void )
@@ -1444,6 +1450,8 @@ void CDetailObjectSystem::LevelInitPreEntity()
 	m_DetailSpriteMaterial.Init( "detail/detailsprites", TEXTURE_GROUP_OTHER );
 	m_DetailWireframeMaterial.Init( "debug/debugspritewireframe", TEXTURE_GROUP_OTHER );
 
+	m_nDoDSPLumpDetailProps = 0;
+
 	// Version check
 	if (engine->GameLumpVersion( GAMELUMP_DETAIL_PROPS ) < 4)
 	{
@@ -1469,6 +1477,17 @@ void CDetailObjectSystem::LevelInitPreEntity()
 			UnserializeModels( buf );
 			break;
 		}
+	}
+
+	// DOD-SP: one line per map with detail props, and the INVARIANT if the map holds more than the client's
+	// limit (dodsp_detailprops.h). The lump's own count is what VBSP placed.
+	if ( m_nDoDSPLumpDetailProps > 0 )
+	{
+		if ( m_nDoDSPLumpDetailProps > DODSP_MAX_DETAIL_PROPS )
+			Warning( "INVARIANT DOD-SP detail props: the map has %d, DOD-SP's limit is %d - recompile with DOD-SP's vbsp\n",
+				m_nDoDSPLumpDetailProps, DODSP_MAX_DETAIL_PROPS );
+		else
+			Msg( "DOD-SP detail props: %d (limit %d, stock %d)\n", m_nDoDSPLumpDetailProps, DODSP_MAX_DETAIL_PROPS, DODSP_STOCK_DETAIL_PROPS );
 	}
 
 #ifndef MAPBASE
@@ -1793,6 +1812,7 @@ void CDetailObjectSystem::UnserializeModels( CUtlBuffer& buf )
 	m_DetailObjects.EnsureCapacity( nNumOldStyleObjects  );
 
 	int count = buf.GetInt();
+	m_nDoDSPLumpDetailProps = count;
 	
 	int nCurFastObject = 0;
 	int nNumFastObjectsInCurLeaf = 0;

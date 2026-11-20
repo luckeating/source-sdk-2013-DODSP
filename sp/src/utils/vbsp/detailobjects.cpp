@@ -28,6 +28,7 @@
 #include "UtlLinkedList.h"
 #include "byteswap.h"
 #include "writebsp.h"
+#include "dodsp_detailprops.h"
 
 //-----------------------------------------------------------------------------
 // Information about particular detail object types
@@ -465,7 +466,8 @@ static void AddDetailToLump( const char* pModelName, const Vector& pt, const QAn
 	if (!IsModelValid(pModelName))
 		return;
 
-	if (s_DetailObjectLump.Count() == 65535)
+	// DOD-SP: the limit has one owner (dodsp_detailprops.h; stock was 65535)
+	if (s_DetailObjectLump.Count() >= DODSP_MAX_DETAIL_PROPS)
 	{
 		++s_nDetailOverflow;
 		return;
@@ -497,13 +499,16 @@ static void AddDetailSpriteToLump( const Vector &vecOrigin, const QAngle &vecAng
 								  const Vector2D *pPos, const Vector2D *pTex, float flScale, int iType,
 									int iShapeAngle = 0, int iShapeSize = 0, int iSwayAmount = 0 )
 {
+	// DOD-SP: same limit and same handling as detail models (stock: a fatal Error at 65535 for sprites but
+	// a warning for models). Over the limit the rest are skipped and EmitDetailObjects says how many.
+	if (s_DetailObjectLump.Count() >= DODSP_MAX_DETAIL_PROPS)
+	{
+		++s_nDetailOverflow;
+		return;
+	}
+
 	// Insert an element into the object dictionary if it aint there...
 	int i = s_DetailObjectLump.AddToTail( );
-
-	if (i >= 65535)
-	{
-		Error( "Error! Too many detail props emitted on this map! (64K max!)n" );
-	}
 
 	DetailObjectLump_t& objectLump = s_DetailObjectLump[i];
 	objectLump.m_DetailModel = AddDetailSpriteDictLump( pPos, pTex ); 
@@ -959,8 +964,11 @@ void EmitDetailObjects()
 	// Done! Now lets add the lumps (destroy previous ones)
 	SetLumpData( );
 
+	// DOD-SP: one line with the count, so the mapper sees how close to the limit the map is
+	Msg( "DOD-SP detail props: %d placed (limit %d, stock %d)%s\n", s_DetailObjectLump.Count(), DODSP_MAX_DETAIL_PROPS,
+		DODSP_STOCK_DETAIL_PROPS, s_DetailObjectLump.Count() > DODSP_STOCK_DETAIL_PROPS ? " - needs DOD-SP's client.dll to draw" : "" );
 	if ( s_nDetailOverflow != 0 )
 	{
-		Warning( "Error! Too many detail props on this map. %d were not emitted!\n", s_nDetailOverflow );
+		Warning( "Error! Too many detail props on this map. %d were not emitted (limit %d)!\n", s_nDetailOverflow, DODSP_MAX_DETAIL_PROPS );
 	}
 }

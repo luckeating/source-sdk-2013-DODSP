@@ -186,6 +186,16 @@ If you learn something like this, add it here in the same commit as the fix.
   -textureshadows $path\$file` (Hammer's $light_exe is our Mapbase vrad in the SDK 2013 SP bin).
   Still to check in HDR: sun brightness vs the baked sun, fog, cubemaps (build them in HDR), exposure
   (env_tonemap_controller).
+- **Detail props: limit 512K (was 64K), 2026-11-19.** One owner: `DODSP_MAX_DETAIL_PROPS` (public/dodsp_detailprops.h),
+  used by VBSP and the client. The BSP format never had a 16-bit limit (the lump count is an int, each prop stores only
+  its 16-bit LEAF); the 64K was the CLIENT's: `CClientLeafSystem::ClientLeaf_t::m_FirstDetailProp/m_DetailPropCount`
+  were unsigned short, and `CDetailModel::gm_LightStylesMap` used CUtlMap's default unsigned short index (one entry per
+  prop lit by a light style = every sunlit prop with `-dodsp_sunstyle`). Both are int now, with COMPILE_TIME_ASSERTs.
+  Lesson: CUtlMap/CUtlRBTree default to an unsigned short index - give any map that can hold one entry per world
+  object an explicit `int`. VBSP now skips (warns) over the limit for sprites too (stock: fatal Error for sprites,
+  warning for models) and prints `DOD-SP detail props: N placed (limit ..)`; the client prints `DOD-SP detail props: N`
+  at map load, INVARIANT if over the limit. A map over 65535 needs DOD-SP's vbsp AND client.dll (a stock client draws
+  the wrong leaves' props). Lump version unchanged (4): VRAD needed no change.
 - Hammer expert compile: every `-option` goes BEFORE `$path\$file` in a tool's parameters. An
   option after the map name is read as the map name, the tool prints usage and the compile fails.
 - The engine writes no crash logs. Ours (c_dodsp_crashlog.cpp) writes `DOD-SP\dodsp_crash.txt` and

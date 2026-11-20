@@ -263,8 +263,8 @@ private:
 		unsigned short	m_FirstElement;
 		unsigned short	m_FirstShadow;
 
-		unsigned short	m_FirstDetailProp;
-		unsigned short	m_DetailPropCount;
+		int				m_FirstDetailProp;		// DOD-SP: int, was unsigned short (the 64K detail prop limit, dodsp_detailprops.h)
+		int				m_DetailPropCount;
 		int				m_DetailPropRenderFrame;
 		CClientLeafSubSystemData *m_pSubSystemData[N_CLSUBSYSTEMS];
 
@@ -883,6 +883,8 @@ CClientLeafSubSystemData *CClientLeafSystem::GetSubSystemDataInLeaf( int leaf, i
 void CClientLeafSystem::SetDetailObjectsInLeaf( int leaf, int firstDetailObject,
 											    int detailObjectCount )
 {
+	// DOD-SP: the per-leaf range must hold every index (dodsp_detailprops.h)
+	COMPILE_TIME_ASSERT( sizeof( m_Leaf[0].m_FirstDetailProp ) >= sizeof( int ) && sizeof( m_Leaf[0].m_DetailPropCount ) >= sizeof( int ) );
 	m_Leaf[leaf].m_FirstDetailProp = firstDetailObject;
 	m_Leaf[leaf].m_DetailPropCount = detailObjectCount;
 }
