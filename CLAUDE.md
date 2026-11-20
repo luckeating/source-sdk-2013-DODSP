@@ -203,7 +203,8 @@ If you learn something like this, add it here in the same commit as the fix.
   `DOD-SP detail props: N placed (H hand-placed; the surfaces wanted W; limit ..)`. Density is props per million
   square units (VBSP: area x density x 1e-6), so a huge map x a dense detail.vbsp = millions. Raising the limit
   further costs ~52 bytes/prop in the .bsp, ~55 in client memory (32-bit process) and VRAD time (detail prop lighting
-  runs on ONE thread, ComputeDetailPropLighting).
+  runs on ONE thread, ComputeDetailPropLighting). OWNER 2026-11-19: 512K is plenty - his own maps won't need more (the
+  32K-unit map is a vehicle test bed only). Don't raise it further unless he asks.
 - Hammer expert compile: every `-option` goes BEFORE `$path\$file` in a tool's parameters. An
   option after the map name is read as the map name, the tool prints usage and the compile fails.
 - The engine writes no crash logs. Ours (c_dodsp_crashlog.cpp) writes `DOD-SP\dodsp_crash.txt` and
