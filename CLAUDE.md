@@ -503,6 +503,16 @@ If you learn something like this, add it here in the same commit as the fix.
   a shortcut may skip a node only if it passes it within VEHICLE_ROAD_SLACK (48). Hits on static props print
   "static prop". Also fixed: the body sizes weren't saved, so after a save load they were 0 - MeasureBody() runs on
   Spawn AND OnRestore (INVARIANT in DriveThink if a body is ever unmeasured).
+  V1d TEST 2026-11-19 (build 44651972586): routes follow the road. Fault: off-road start, the leg onto the road crossed a
+  small terrain berm; the drive sweep of the RIGID model hit it (`normal z 0.00, swept 24 units up` x4 -> stuck/world)
+  although the plan had passed it. Lesson: hull/model traces against DISPLACEMENTS return flat normals (0.00) at edges,
+  so "is this hit climbable ground?" can't be read from a sweep's normal; and a rigid 230-unit body lifted 24 units
+  catches a berm its tracks would climb. V1e: ONE test for planning AND driving - every think, CorridorClear runs over
+  the stretch the front of the body covers next (half-length + 2 thinks + 16 units, along the heading, reversing too);
+  the model sweep and the disagreement INVARIANT are gone (they can't disagree by construction). CorridorClear says
+  WHY with reason codes (CorridorFail_t: no ground / too steep / step too high / blocked + what), printed with
+  dodsp_vehicle_debug: `can't go on - <reason>, <what> at x y z`. The first sample never fails (the vehicle or node is
+  standing there). Known gap: a pivoting tracked vehicle's rear isn't checked (pushers clip through it).
 - CoD1 set (owner's vehicles_part2.zip, 2026-11-19): REFERENCE ONLY except the **SU-152, which we keep**. One model per
   vehicle, turret/gun as BONES (tag_turret, tag_barrel, tag_flash = muzzle, tag_coaxel), faces +X (forward_yaw 0),
   CoD's rider tags tag_guy01..06 (Sherman, Elefant, SU-152: 6; Opel truck driver/passenger + 4), NO .phy (needs a
