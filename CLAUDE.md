@@ -814,7 +814,18 @@ If you learn something like this, add it here in the same commit as the fix.
   while the origin moved per tick. V3b: rides AND bail-outs run their animation at a RATE (UpdatePlaybackRate: ride
   1.0 = RidePosition's 30 fps clock; the bail climb BAILCLIMB_UPFRAME / (30 x BAILCLIMB_RISE) during the rise, then 1)
   and the code moves only the origin per tick, with SetSimulationTime( curtime ) so the client interpolates per tick.
-  LESSON: never drive an NPC's cycle per tick - give it a rate on the same clock as the origin. (2) Landing on raised
+  (V3b's lesson was WRONG - see V3c.)
+  V3b RUN (owner, build 44818944872, install confirmed): still stutters on the way down, still sinks into the ground;
+  seated idles clean. Real cause (engine code, c_baseentity.cpp GetInterpolationAmount): a MOVETYPE_NONE entity is
+  "simulated every tick" but NOT "animated every tick", so in SP the client draws its POSITION one tick late and its
+  POSE (cycle) cl_interp = 0.1 s late. Simulated from the path table + pack: in the 0.2 s fall the late pose bobs and
+  the feet are drawn 10-13 units under the landing ground, then pop up = both symptoms. The rate-vs-cycle change
+  never touched it. V3c: ScriptedMoveTick is THE one way a get-out / bail-out moves him per tick - SetAnimatedEveryTick
+  (true), StudioFrameAdvance (anim time = now), the get-out's frame from RidePosition's clock (bail: its rate), then
+  origin + simulation time; SetMoveType at the end resets the flags. INVARIANT if it runs with a movetype or parent
+  the engine would also move. Lint check_scripted_moves: PhysicsSimulate never sets origin/cycle itself, only
+  ScriptedMoveTick sets the every-tick flags. LESSON: anything the code moves per tick must also ANIMATE per tick -
+  position and pose on one interpolation window. The preview draws pose and path on one clock, so it can't show this. (2) Landing on raised
   ground they "get stuck in the ground": the ground trace started 72 units above where the ANIMATION lands, i.e.
   inside any bank higher than that. V3b: the trace starts above the seat, and on landing his whole hull is dropped
   from 48 units up onto what's there (INVARIANT once per map if it can't fit).

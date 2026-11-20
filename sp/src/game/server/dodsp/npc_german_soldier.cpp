@@ -306,6 +306,7 @@ public:
 	int			RideState( void ) const { return m_eRide; }
 	bool		RidePosition( float flNow, Vector *pvecPos, float *pflFrame ) const;
 	virtual void PhysicsSimulate( void );
+	void		ScriptedMoveTick( const Vector &vecPos, float flCycle );	// THE one way a get-out / bail-out moves him (V3c)
 	bool		BecomeRagdoll( const CTakeDamageInfo &info, const Vector &forceVector );
 	bool		CanBecomeRagdoll( void );
 	Activity	GetDeathActivity( void );
@@ -7335,21 +7336,44 @@ void CNPC_GermanSoldier::PhysicsSimulate( void )
 		Vector p;
 		float flFrame;
 		bool bDone = RidePosition( gpGlobals->curtime, &p, &flFrame );
-		SetAbsOrigin( p );
-		SetSimulationTime( gpGlobals->curtime );		// the client interpolates his moves per tick, not per think
-		UpdatePlaybackRate();
+		const GermanRidePath_t *pPath = GermanRidePath( STRING( m_iszRideGetout ) );
+		ScriptedMoveTick( p, ( pPath && pPath->nFrames > 1 ) ? flFrame / (float)( pPath->nFrames - 1 ) : -1.0f );
 		if ( bDone )
 			EndRide( true );
 	}
 	if ( m_bBailOut && m_flBailPhaseDur > 0.0f && GetMoveType() == MOVETYPE_NONE && IsAlive() )
 	{
-		SetAbsOrigin( BailPosition( gpGlobals->curtime ) );
-		SetSimulationTime( gpGlobals->curtime );
-		UpdatePlaybackRate();			// the climb's slow rise, then real time (V3b: a rate, not a cycle per tick)
+		ScriptedMoveTick( BailPosition( gpGlobals->curtime ), -1.0f );	// the climb's slow rise, then real time (its rate)
 		if ( IsEffectActive( EF_NODRAW ) && ( m_iBailPhase > 0 || gpGlobals->curtime >= m_flBailPhaseEnd - m_flBailPhaseDur + BAILCLIMB_SHOW ) )
 			RemoveEffects( EF_NODRAW );
 	}
 	BaseClass::PhysicsSimulate();
+}
+
+// V3c: THE one way a scripted move (a rider's get-out, a crewman's bail-out) moves him, every tick. His position and
+// his pose must reach the client on ONE clock. A frozen NPC (MOVETYPE_NONE) is "simulated every tick" but not
+// "animated every tick", so the client draws his position one tick late and his pose 0.1 s late (cl_interp): in a
+// 0.2 s fall the late pose bobbed ("stutter on the way down") and his feet were drawn 10-13 units under the ground
+// before he landed ("stuck in the ground"). So: animated every tick, the animation advanced on this tick, and the
+// frame (when the caller owns it) taken from the same clock as the position. flCycle < 0 = the playback rate runs it.
+void CNPC_GermanSoldier::ScriptedMoveTick( const Vector &vecPos, float flCycle )
+{
+	if ( GetMoveType() != MOVETYPE_NONE || GetMoveParent() )
+	{
+		static float s_flWarned = -1.0f;
+		if ( s_flWarned != gpGlobals->curtime )
+			Warning( "INVARIANT npc_german_soldier %d: a scripted move with movetype %d%s - the engine would move him too\n",
+					 entindex(), (int)GetMoveType(), GetMoveParent() ? " and a parent" : "" );
+		s_flWarned = gpGlobals->curtime;
+	}
+	SetAnimatedEveryTick( true );		// the client's pose window = one tick, like his position's (MOVETYPE_NONE has that)
+	SetSimulatedEveryTick( true );
+	UpdatePlaybackRate();
+	StudioFrameAdvance();				// anim time = now; the AI think's own advance this tick then does nothing
+	if ( flCycle >= 0.0f )
+		SetCycle( clamp( flCycle, 0.0f, 1.0f ) );
+	SetAbsOrigin( vecPos );
+	SetSimulationTime( gpGlobals->curtime );
 }
 
 bool CNPC_GermanSoldier::BeginBailOut( const Vector &vecHatch, const Vector &vecGround, const Vector &vecRun, float flYaw )

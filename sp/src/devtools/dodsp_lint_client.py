@@ -474,6 +474,28 @@ def check_vehicle_damage():
     return bad
 
 
+def check_scripted_moves():
+    """V3c: a rider's get-out and a crewman's bail-out move him every tick, and the client must get his position AND his
+    pose on that one clock (otherwise the pose is drawn 0.1 s late: mid-air stutter, feet in the ground). ScriptedMoveTick
+    is the one way: PhysicsSimulate moves him only through it, and only it tells the engine he animates every tick."""
+    bad = []
+    with open(SOLDIER_CPP, encoding="utf-8") as f:
+        lines = f.read().split("\n")
+    func = None
+    for n, line in enumerate(lines, 1):
+        m = re.match(r"^[A-Za-z].*\bCNPC_GermanSoldier::(\w+)\s*\(", line)
+        if m:
+            func = m.group(1)
+        code = line.split("//")[0]
+        if func == "PhysicsSimulate" and re.search(r"\b(SetAbsOrigin|SetLocalOrigin|SetCycle|SetSimulationTime)\s*\(", code):
+            bad.append("npc_german_soldier.cpp:%d: PhysicsSimulate moves or animates him itself - go through ScriptedMoveTick" % n)
+        if re.search(r"\bSet(Animated|Simulated)EveryTick\s*\(", code) and func != "ScriptedMoveTick":
+            bad.append("npc_german_soldier.cpp:%d (%s) sets the every-tick flags - only ScriptedMoveTick may" % (n, func))
+    if not any("CNPC_GermanSoldier::ScriptedMoveTick" in l for l in lines):
+        bad.append("npc_german_soldier.cpp has no ScriptedMoveTick")
+    return bad
+
+
 def main():
     bad = []
     sight_bad = check_vehicle_sight()
@@ -485,7 +507,8 @@ def main():
     for what, fn in (("a vehicle type is missing V4's armour / wreck / real ammunition", check_vehicle_types),
                      ("the vehicle damage state is written outside its owner (V4)", check_vehicle_damage),
                      ("the Hammer FGD doesn't match the vehicle types (V4j)", check_vehicle_fgd),
-                     ("a rider seat or ride path is broken (V3)", check_vehicle_seats)):
+                     ("a rider seat or ride path is broken (V3)", check_vehicle_seats),
+                     ("a get-out / bail-out moves the soldier outside ScriptedMoveTick (V3c)", check_scripted_moves)):
         vbad = fn()
         if vbad:
             print("dodsp_lint_client: %s:" % what)
