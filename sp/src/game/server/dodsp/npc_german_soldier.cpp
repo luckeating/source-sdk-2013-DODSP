@@ -104,6 +104,8 @@ void DoDSP_SetWeaponDeployed( CBaseCombatWeapon *pWeapon, bool bDeployed );		// 
 enum GermanRide_t { GERMAN_RIDE_NONE, GERMAN_RIDE_SEATED, GERMAN_RIDE_GETOUT };
 #define GERMAN_RIDE_PATHS		"scripts/dodsp_ride_paths.txt"
 #define GERMAN_RIDE_RUN			200.0f		// once down, he runs on this far the way he jumped
+#define GERMAN_RIDE_JUMP_LIFT	18.0f		// V3d: the landing is reached from the seat at this height above it (a step: what he clears on the way out)
+#define GERMAN_RIDE_GROUND_DOWN	512.0f		// V3d: how far below the seat the landing's ground may be
 #define GERMAN_RIDE_LAND_CLEAR	14.0f		// his own half-width (+1): anyone whose box reaches into this would overlap him on landing
 struct GermanRidePath_t
 {
@@ -842,7 +844,10 @@ private:
 	float				m_flRideYaw;			// the seat's yaw on the vehicle
 	string_t			m_iszRideIdle, m_iszRideGetout;
 	Vector				m_vecRideTag;			// getting out: the seat in the world when he started
-	float				m_flRideTagYaw, m_flRideStart, m_flRideDz;
+	float				m_flRideTagYaw, m_flRideStart;
+	Vector				m_vecRideFix;			// V3d: where he really lands minus where the animation lands (added over the fall)
+	Vector				m_vecRideLand;			// V3d: where he really lands (RideLandingSpot) - EndRide checks he's there
+	bool		RideLandingSpot( CBaseEntity *pVehicle, const Vector &vecTag, const Vector &vecWant, Vector *pvecSpot, const char **ppszWhy );
 
 	// Networked to the client for the procedural hit kick
 	CNetworkVector( m_vecHitDir );			// horizontal direction the bullet travelled
@@ -879,7 +884,8 @@ BEGIN_DATADESC( CNPC_GermanSoldier )
 	DEFINE_FIELD( m_vecRideTag, FIELD_POSITION_VECTOR ),
 	DEFINE_FIELD( m_flRideTagYaw, FIELD_FLOAT ),
 	DEFINE_FIELD( m_flRideStart, FIELD_TIME ),
-	DEFINE_FIELD( m_flRideDz, FIELD_FLOAT ),
+	DEFINE_FIELD( m_vecRideFix, FIELD_VECTOR ),
+	DEFINE_FIELD( m_vecRideLand, FIELD_POSITION_VECTOR ),
 END_DATADESC()
 
 CNPC_GermanSoldier::CNPC_GermanSoldier() : m_AnimMap( DefLessFunc( int ) )
@@ -890,7 +896,8 @@ CNPC_GermanSoldier::CNPC_GermanSoldier() : m_AnimMap( DefLessFunc( int ) )
 	m_flBailYaw = 0.0f;
 	m_eRide = GERMAN_RIDE_NONE;
 	m_vecRideSeat = m_vecRideTag = vec3_origin;
-	m_flRideYaw = m_flRideTagYaw = m_flRideStart = m_flRideDz = 0.0f;
+	m_flRideYaw = m_flRideTagYaw = m_flRideStart = 0.0f;
+	m_vecRideFix = m_vecRideLand = vec3_origin;
 	m_iszRideIdle = m_iszRideGetout = NULL_STRING;
 	m_iBailPhase = 0;
 	m_flBailPhaseEnd = m_flBailPhaseDur = 0.0f;
@@ -7521,47 +7528,79 @@ int CNPC_GermanSoldier::RideGetOut( bool bForce )
 	VectorTransform( m_vecRideSeat, pVehicle->EntityToWorldTransform(), vecTag );
 	Vector vecFwdLocal( cosf( DEG2RAD( m_flRideYaw ) ), sinf( DEG2RAD( m_flRideYaw ) ), 0.0f ), vecFwd;
 	VectorRotate( vecFwdLocal, pVehicle->EntityToWorldTransform(), vecFwd );
+	// where the animation lands, and where he really can (V3d: RideLandingSpot, reached from the seat through open air)
+	float flTagYaw = atan2f( vecFwd.y, vecFwd.x ), c = cosf( flTagYaw ), sn = sinf( flTagYaw );
+	const Vector4D &e = pPath->pts[pPath->nFrames - 1];
+	Vector vecWant = vecTag + Vector( c * e.x - sn * e.y, sn * e.x + c * e.y, e.z );
+	Vector vecLand;
+	const char *pszWhy = NULL;
+	bool bGround = RideLandingSpot( pVehicle, vecTag, vecWant, &vecLand, &pszWhy );
 	// someone standing where he'd land (a rider down before him, a soldier, the player): he waits rather than
 	// landing inside them (RIDER_LAND_GAP in the lint keeps the seats' own landings apart)
 	if ( !bForce )
 	{
-		const Vector4D &e = pPath->pts[pPath->nFrames - 1];
-		float flYaw = atan2f( vecFwd.y, vecFwd.x ), c = cosf( flYaw ), sn = sinf( flYaw );
-		Vector vecLandXY = vecTag + Vector( c * e.x - sn * e.y, sn * e.x + c * e.y, 0.0f );
 		CBaseEntity *pList[16];
-		int n = UTIL_EntitiesInBox( pList, ARRAYSIZE( pList ), vecLandXY - Vector( GERMAN_RIDE_LAND_CLEAR, GERMAN_RIDE_LAND_CLEAR, 400.0f ),
-									vecLandXY + Vector( GERMAN_RIDE_LAND_CLEAR, GERMAN_RIDE_LAND_CLEAR, 100.0f ), FL_NPC | FL_CLIENT );
+		int n = UTIL_EntitiesInBox( pList, ARRAYSIZE( pList ), vecLand - Vector( GERMAN_RIDE_LAND_CLEAR, GERMAN_RIDE_LAND_CLEAR, 72.0f ),
+									vecLand + Vector( GERMAN_RIDE_LAND_CLEAR, GERMAN_RIDE_LAND_CLEAR, 72.0f ), FL_NPC | FL_CLIENT );
 		for ( int i = 0; i < n; i++ )
 			if ( pList[i] != this && pList[i]->IsAlive() && pList[i]->GetMoveParent() != pVehicle )
 				return -1;
 	}
+	if ( !bGround )
+		RideWarnOnce( "a rider's landing has no ground under it - he lands where the animation ends and falls from there", pszWhy );
 	m_vecRideTag = vecTag;
-	m_flRideTagYaw = RAD2DEG( atan2f( vecFwd.y, vecFwd.x ) );
+	m_flRideTagYaw = RAD2DEG( flTagYaw );
 	m_flRideStart = gpGlobals->curtime;
-	m_flRideDz = 0.0f;
+	m_vecRideLand = vecLand;
+	m_vecRideFix = vecLand - vecWant;
 	m_eRide = GERMAN_RIDE_GETOUT;
 	SetParent( NULL );
 	SetAbsOrigin( vecTag );
 	SetAbsAngles( QAngle( 0.0f, m_flRideTagYaw, 0.0f ) );
-	// where it lands, and the ground there (the vehicle, its riders and other people don't count as ground)
-	Vector vecLand;
-	float flFrame;
-	RidePosition( FLT_MAX, &vecLand, &flFrame );
-	trace_t tr;
-	CTraceFilterSkipTwoEntities filter( this, pVehicle, COLLISION_GROUP_NPC );
-	// V3b: from above the SEAT, not above where the animation lands - a bank higher than that (the owner's riders "get
-	// stuck in the ground" landing on raised ground) started the trace inside it
-	float flTop = MAX( vecTag.z, vecLand.z ) + 72.0f;
-	UTIL_TraceLine( Vector( vecLand.x, vecLand.y, flTop ), vecLand - Vector( 0, 0, 256 ), MASK_NPCSOLID_BRUSHONLY, &filter, &tr );
-	if ( tr.fraction < 1.0f && !tr.startsolid )
-		m_flRideDz = tr.endpos.z - vecLand.z;
-	else
-		RideWarnOnce( "a rider's landing point has no ground within 256 units below - he lands at the animation's own height", STRING( m_iszRideGetout ) );
 	SetIdealActivity( ACT_DO_NOT_DISTURB );
 	SetSequenceById( iSeq );
 	SetCycle( 0.0f );
 	UpdatePlaybackRate();
 	return 1;
+}
+
+// V3d: THE owner of where a rider getting off can land. His body box goes the way he would: up from his seat by a
+// step (he sits in open air, so this starts free), out toward where the animation lands at that height (a bank or a
+// wall in the way: he lands short, against it), then down onto what's there. So the spot is always ground his body
+// fits on and always joined to the seat through open air - never inside a hill. (V3b traced a line down from 72
+// units over the seat at the landing spot: on a steep slope that start was INSIDE the hill, terrain has no inside,
+// the trace went on through and he was put down under the ground.) People don't count (the landing wait handles them).
+bool CNPC_GermanSoldier::RideLandingSpot( CBaseEntity *pVehicle, const Vector &vecTag, const Vector &vecWant, Vector *pvecSpot, const char **ppszWhy )
+{
+	CTraceFilterSkipTwoEntities filter( this, pVehicle, COLLISION_GROUP_NPC );
+	// his body box first; if it doesn't fit even at the seat (the vehicle parked against a wall), a thin line the same way
+	for ( int iTry = 0; iTry < 2; iTry++ )
+	{
+		const Vector mins = iTry ? vec3_origin : GetHullMins(), maxs = iTry ? vec3_origin : GetHullMaxs();
+		trace_t tr;
+		UTIL_TraceHull( vecTag + Vector( 0, 0, 1 ), vecTag + Vector( 0, 0, GERMAN_RIDE_JUMP_LIFT ), mins, maxs, MASK_NPCSOLID_BRUSHONLY, &filter, &tr );
+		if ( tr.startsolid )
+			continue;
+		Vector vecUp = tr.endpos;
+		UTIL_TraceHull( vecUp, Vector( vecWant.x, vecWant.y, vecUp.z ), mins, maxs, MASK_NPCSOLID_BRUSHONLY, &filter, &tr );
+		Vector vecOut = tr.startsolid ? vecUp : tr.endpos;
+		UTIL_TraceHull( vecOut, Vector( vecOut.x, vecOut.y, vecTag.z - GERMAN_RIDE_GROUND_DOWN ), mins, maxs, MASK_NPCSOLID_BRUSHONLY, &filter, &tr );
+		if ( tr.startsolid || tr.fraction >= 1.0f )
+		{
+			*pvecSpot = Vector( vecOut.x, vecOut.y, vecWant.z );
+			*ppszWhy = "nothing within 512 units below the way out";
+			return false;
+		}
+		*pvecSpot = tr.endpos;
+		static ConVarRef s_VehicleDebug( "dodsp_vehicle_debug" );
+		if ( s_VehicleDebug.IsValid() && s_VehicleDebug.GetBool() )
+			Msg( "DOD-SP rider %d: lands %.0f units from where the animation lands (%.0f higher)%s\n", entindex(),
+				 ( *pvecSpot - vecWant ).Length2D(), pvecSpot->z - vecWant.z, iTry ? " - his body didn't fit at the seat, found by a line" : "" );
+		return true;
+	}
+	*pvecSpot = vecWant;
+	*ppszWhy = "his seat is inside something solid";
+	return false;
 }
 
 // THE owner of where a rider getting off is (a time past the end = where he ends up). Returns true when it's over.
@@ -7581,7 +7620,7 @@ bool CNPC_GermanSoldier::RidePosition( float flNow, Vector *pvecPos, float *pflF
 	Vector4D v;
 	Vector4DLerp( pPath->pts[i0], pPath->pts[i1], t, v );
 	float c = cosf( DEG2RAD( m_flRideTagYaw ) ), sn = sinf( DEG2RAD( m_flRideTagYaw ) );
-	*pvecPos = m_vecRideTag + Vector( c * v.x - sn * v.y, sn * v.x + c * v.y, v.z + m_flRideDz * v.w );
+	*pvecPos = m_vecRideTag + Vector( c * v.x - sn * v.y, sn * v.x + c * v.y, v.z ) + m_vecRideFix * v.w;
 	*pflFrame = f;
 	return f >= flLast;
 }
@@ -7597,17 +7636,16 @@ void CNPC_GermanSoldier::EndRide( bool bLanded )
 	SetMoveType( MOVETYPE_STEP );
 	if ( bLanded )
 	{
-		// V3b: standing ON what's under him - his whole body box, dropped from a little above (a slope or a bank under one
-		// foot left part of the box in the ground: stuck)
+		// V3d: RideLandingSpot already put the end of the path on ground his body fits on, reached from the seat
+		// through open air; check he really is there and free (the old fix dropped his box from 48 units over
+		// wherever he ended - under a steep bank that start was inside the hill and left him buried, silently)
 		trace_t tr;
 		CTraceFilterSkipTwoEntities filter( this, m_hRideVehicle.Get(), COLLISION_GROUP_NPC );
 		Vector p = GetAbsOrigin();
-		UTIL_TraceHull( p + Vector( 0, 0, 48 ), p - Vector( 0, 0, 48 ), GetHullMins(), GetHullMaxs(), MASK_NPCSOLID, &filter, &tr );
-		if ( !tr.startsolid && tr.fraction < 1.0f )
-			SetAbsOrigin( tr.endpos );
-		else if ( tr.startsolid )
-			RideWarnOnce( "a rider landed where his body doesn't fit (48 units up and down) - left where the animation put him",
-						  STRING( m_iszRideGetout ) );
+		UTIL_TraceHull( p, p, GetHullMins(), GetHullMaxs(), MASK_NPCSOLID_BRUSHONLY, &filter, &tr );
+		if ( ( p - m_vecRideLand ).Length() > 1.0f || tr.startsolid )
+			Warning( "INVARIANT npc_german_soldier %d: a rider got off at %.0f %.0f %.0f, %s (landing spot %.0f %.0f %.0f)\n", entindex(),
+					 p.x, p.y, p.z, tr.startsolid ? "inside something solid" : "not where RideLandingSpot put him", m_vecRideLand.x, m_vecRideLand.y, m_vecRideLand.z );
 		// the get-outs end running: he keeps going the way he jumped, then his own AI decides
 		Vector vecFwd( cosf( DEG2RAD( m_flRideTagYaw ) ), sinf( DEG2RAD( m_flRideTagYaw ) ), 0.0f );
 		m_vecBailRun = GetAbsOrigin() + vecFwd * GERMAN_RIDE_RUN;

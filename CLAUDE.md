@@ -829,6 +829,18 @@ If you learn something like this, add it here in the same commit as the fix.
   ground they "get stuck in the ground": the ground trace started 72 units above where the ANIMATION lands, i.e.
   inside any bank higher than that. V3b: the trace starts above the seat, and on landing his whole hull is dropped
   from 48 units up onto what's there (INVARIANT once per map if it can't fit).
+  V3d (owner 2026-11-20: still "stuck under the ground" twice, both when the tank stopped on a steep slope): the V3b
+  fix was a band-aid. The ground under the landing was found by a LINE down from 72 units over the seat at the
+  landing spot - on a steep uphill bank that start is INSIDE the hill, terrain has no inside, the line went through and
+  found whatever was below; the 48-unit settle then started inside the hill too and left him buried with no warning.
+  RideLandingSpot is now THE owner of where a rider lands: his BODY BOX goes the way he would - up from the seat by
+  GERMAN_RIDE_JUMP_LIFT (18; he sits in open air, so it starts free), out toward the animation's landing at that height
+  (a bank or wall in the way = he lands short, against it), down onto what's there (512 max). So the spot is always
+  joined to the seat through open air. A thin line the same way if his box doesn't fit at the seat (parked against a
+  wall). RidePosition adds (spot - animation's landing) x s, xy too (m_vecRideFix, saved, with m_vecRideLand); the
+  landing-taken wait checks the REAL spot. EndRide: INVARIANT if he isn't on m_vecRideLand or his box is in solid.
+  dodsp_vehicle_debug prints each landing's offset. LESSON: never start a ground search from a height you picked -
+  start from a point you KNOW is open (where he is) and move his box the way he moves.
   HALFTRACK: the owner's CoD2 originals (everything_halftrack.zip: xmodel + xmodelparts, no xmodelsurfs mesh, no xanim)
   have the bones: hatch_open_left/right = the rear door hinges at (-107.9, +-26, 65.3); CoD's own seats tag_guy01..06
   at (x, +-17.4, 40.7) facing in (guy03 -86 left, guy05 -84 right - the get-outs' owners), tag_out (-33.8, 0, 30.2)
