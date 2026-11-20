@@ -96,8 +96,29 @@ jobs:
 
       # --------------------------------------------------------------------
 
+    # DOD-SP game build: laid out like the DOD-SP folder - bin\client.dll + server.dll AND the scripts that server.dll
+    # reads (vehicle types, vehicle and chatter sounds), so the code and its data always come from ONE build (V4e:
+    # an old dodsp_vehicles.txt next to a new server.dll silently dropped the crews' hatches). Unzip into DOD-SP.
+    - name: Lay out DOD-SP game files
+      if: inputs.project-group == 'game'
+      shell: cmd
+      run: |
+        mkdir dodsp_game_out\bin dodsp_game_out\scripts
+        copy /y ${{inputs.branch}}\game\mod_${{inputs.game}}\bin\*.dll dodsp_game_out\bin\ || exit /b 1
+        copy /y dodsp_tools\content\scripts\*.txt dodsp_game_out\scripts\ || exit /b 1
+        copy /y dodsp_tools\generated\game_sounds_german_chatter.txt dodsp_game_out\scripts\ || exit /b 1
+        dir /s /b dodsp_game_out
+
     - name: Publish game binaries
-      if: inputs.project-group == 'game' || inputs.project-group == 'shaders'
+      if: inputs.project-group == 'game'
+      uses: actions/upload-artifact@v4
+      with:
+        name: '${{inputs.project-group}}_${{inputs.game}}_win32_${{ inputs.configuration }}'
+        path: dodsp_game_out/
+        if-no-files-found: error
+
+    - name: Publish shader binaries
+      if: inputs.project-group == 'shaders'
       uses: actions/upload-artifact@v4
       with:
         name: '${{inputs.project-group}}_${{inputs.game}}_win32_${{ inputs.configuration }}'

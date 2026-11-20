@@ -696,6 +696,17 @@ If you learn something like this, add it here in the same commit as the fix.
   (every crew role has a valid hatch; tested with a broken entry), loader INVARIANT for a role without one, soldier
   INVARIANT if c1_tank_jump_off isn't 40 frames (the timing would be off), vehicle INVARIANT if crew are pending with
   no seat marked. LESSON: a model's hull box is not its shape - measure surfaces from the mesh.
+  FIRST V4e RUN 2026-11-20 (build 44779712985): crews appeared beside the tank again, no animation. MY MISTAKE: the test
+  steps said to copy scripts\dodsp_vehicles.txt "from the artifact", but the game artifact held only the DLLs - the
+  owner's old script had no hatches, so every crewman took the "no hatch" fallback; the loader's INVARIANT scrolled by
+  at map load and nothing at bail time said why. Whole-class fix (code + its data from ONE build): the game artifact is
+  now laid out like the mod folder - `bin\` (client.dll, server.dll) + `scripts\` (dodsp_vehicles.txt,
+  game_sounds_dodsp_vehicles.txt, game_sounds_german_chatter.txt) - and unzips straight into DOD-SP
+  (mapbase_build-base.yml "Lay out DOD-SP game files"). The script carries `script_version`, equal to
+  DODSP_VEHICLE_SCRIPT_VERSION in dodsp_vehicle.cpp (lint checks the repo copy, tested with a wrong one; the loader
+  prints an INVARIANT for the owner's copy; a crewman without a hatch prints the script's version at bail time). Bump
+  both whenever the code needs a new script key. Rule: never tell the owner to take a file from an artifact without
+  checking the artifact's file list in the CI log.
 - CoD1 set (owner's vehicles_part2.zip, 2026-11-19): REFERENCE ONLY except the **SU-152, which we keep**. One model per
   vehicle, turret/gun as BONES (tag_turret, tag_barrel, tag_flash = muzzle, tag_coaxel), faces +X (forward_yaw 0),
   CoD's rider tags tag_guy01..06 (Sherman, Elefant, SU-152: 6; Opel truck driver/passenger + 4), NO .phy (needs a

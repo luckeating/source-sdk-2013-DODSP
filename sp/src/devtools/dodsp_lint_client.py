@@ -263,8 +263,18 @@ def check_vehicle_types():
     bad = []
     with open(VEHICLE_SCRIPT, encoding="utf-8") as f:
         top = parse_kv(f.read())
-    types = dict(kv_get(top, "DoDSP_Vehicles") or [])
+    entries = kv_get(top, "DoDSP_Vehicles") or []
+    types = dict((k, v) for k, v in entries if isinstance(v, list))
     roles = {"commander", "gunner", "loader", "driver", "radio"}
+    # V4e: the script and server.dll come from one build - its script_version equals the C++ define
+    with open(VEHICLE_CPP, encoding="latin-1") as f:
+        m = re.search(r'#define DODSP_VEHICLE_SCRIPT_VERSION\s+"([^"]+)"', f.read())
+    want = m.group(1) if m else None
+    have = dict((k, v) for k, v in entries if not isinstance(v, list)).get("script_version")
+    if not want:
+        bad.append("dodsp_vehicle.cpp has no DODSP_VEHICLE_SCRIPT_VERSION - the lint's pattern is out of date")
+    elif have != want:
+        bad.append("dodsp_vehicles.txt script_version is %s, dodsp_vehicle.cpp wants %s - bump both together" % (have, want))
 
     def merged(name, depth=0):
         t = types[name]

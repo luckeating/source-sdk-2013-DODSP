@@ -1,4 +1,5 @@
-// DOD-SP vehicle types - one block per kind of vehicle. Goes in DOD-SP\scripts\dodsp_vehicles.txt.
+// DOD-SP vehicle types - one block per kind of vehicle. Goes in DOD-SP\scripts\dodsp_vehicles.txt (the game build ships it:
+// game_hl2_win32_Release unzips into DOD-SP with bin\ and scripts\ - always take both from one build).
 // A dodsp_vehicle in Hammer names one of these with its "vehicletype" key.
 //
 // Size comes from the model (never typed here). Speeds in units/s (1 unit ~ 1 inch: 39 units/s = 1 m/s),
@@ -60,6 +61,9 @@
 
 "DoDSP_Vehicles"
 {
+	// Must match DODSP_VEHICLE_SCRIPT_VERSION in server.dll (dodsp_vehicle.cpp): use this file with the server.dll of the same build.
+	"script_version"	"V4e"
+
 	"panzer2"
 	{
 		"model"				"models/cod2/vehicles/panzer2_hull.mdl"

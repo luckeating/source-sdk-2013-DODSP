@@ -48,6 +48,12 @@
 #include "tier0/memdbgon.h"
 
 #define DODSP_VEHICLE_SCRIPT	"scripts/dodsp_vehicles.txt"
+// INVARIANT (V4e): the type script and this server.dll come from ONE build. The script's "script_version" must equal
+// this; the lint checks the repo copy against it, the loader checks the owner's copy (V4e's first run: the old script
+// had no hatches, every crewman got out beside the tank and nothing at bail time said why). Bump both together
+// whenever the code starts needing a new key in the script.
+#define DODSP_VEHICLE_SCRIPT_VERSION	"V4e"
+static char s_szVehicleScriptVersion[32] = "not loaded";
 #define VEHICLE_THINK			0.05f
 #define VEHICLE_STEP			24.0f		// what it climbs without noticing (kerbs, rubble)
 #define VEHICLE_MAX_STEP_PER_32	36.0f		// ground change between two samples 32 units apart (a slope of ~48 degrees)
@@ -319,6 +325,11 @@ static void LoadVehicleTypes( bool bForce )
 		pKV->deleteThis();
 		return;
 	}
+	Q_strncpy( s_szVehicleScriptVersion, pKV->GetString( "script_version", "older than V4e" ), sizeof( s_szVehicleScriptVersion ) );
+	if ( Q_strcmp( s_szVehicleScriptVersion, DODSP_VEHICLE_SCRIPT_VERSION ) )
+		Warning( "INVARIANT DOD-SP vehicles: %s is version %s, this server.dll needs %s - copy scripts\\dodsp_vehicles.txt from "
+				 "the same build as server.dll (missing keys fall back: crews get out beside the vehicle, ...)\n",
+				 DODSP_VEHICLE_SCRIPT, s_szVehicleScriptVersion, DODSP_VEHICLE_SCRIPT_VERSION );
 	for ( KeyValues *pRawType = pKV->GetFirstTrueSubKey(); pRawType; pRawType = pRawType->GetNextTrueSubKey() )
 	{
 		KeyValues *pType = MergedVehicleType( pKV, pRawType, 0 );
@@ -3559,6 +3570,10 @@ bool CDoDSPVehicle::SpawnCrewman( const Vector &vecAwayFrom, int eRole )
 	CTraceFilterSimple filter( this, COLLISION_GROUP_NPC );
 	Vector vecHatch;
 	bool bHatch = HatchFor( eRole, &vecHatch );
+	if ( !bHatch )
+		Msg( "DOD-SP vehicle %s: its %s has no hatch in %s (script version %s, this server.dll wants %s) - he gets out beside it\n",
+			 Label(), ( eRole >= 0 && eRole < NUM_CREW_ROLES ) ? g_pszCrewRole[eRole] : "?", DODSP_VEHICLE_SCRIPT,
+			 s_szVehicleScriptVersion, DODSP_VEHICLE_SCRIPT_VERSION );
 	for ( int d = 0; d < 4; d++ )
 	{
 		// V4e: out of his hatch he jumps straight off the side, landing just clear of the hull (a short leap, not a

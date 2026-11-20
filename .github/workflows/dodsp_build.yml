@@ -4,7 +4,8 @@
 # Builds the HL2 (Mapbase) client.dll and server.dll for DOD-SP on every push to master
 # that touches game code. Download the result from the Actions tab:
 #   Actions -> "DOD-SP Build" -> newest run -> Artifacts -> game_hl2_win32_Release
-# Unzip it and copy client.dll + server.dll into sourcemods\DOD-SP\bin (back up the old ones first).
+# It is laid out like the DOD-SP folder (bin\client.dll + server.dll, scripts\ the files server.dll reads):
+# unzip it into sourcemods\DOD-SP (back up the old ones first). Code and scripts always come from one build.
 #
 # Can also be started by hand: Actions -> "DOD-SP Build" -> "Run workflow".
 #
