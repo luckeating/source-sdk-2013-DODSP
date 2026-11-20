@@ -727,7 +727,9 @@ If you learn something like this, add it here in the same commit as the fix.
   playback rate 0 (UpdatePlaybackRate stays the one owner of the rate), the lift on the same clock, the climb cut at
   frame 14 (the lid hold dropped), then the jump. Crewmen spawn with SF_NPC_FALL_TO_GROUND (no floor snap).
   LESSON: ask for a screenshot of the first wrong frame before the second blind fix - it showed position was right
-  and timing wrong in one look.
+  and timing wrong in one look. RULE (owner worried transports would go the same way): every crew / rider animation
+  on a vehicle is PREVIEWED before a build - dodsp_tools/vehicle_preview draws the animation against the vehicle's
+  real mesh with the game code's timing and positions, frame by frame, and the owner sees the strip first.
 - CoD1 set (owner's vehicles_part2.zip, 2026-11-19): REFERENCE ONLY except the **SU-152, which we keep**. One model per
   vehicle, turret/gun as BONES (tag_turret, tag_barrel, tag_flash = muzzle, tag_coaxel), faces +X (forward_yaw 0),
   CoD's rider tags tag_guy01..06 (Sherman, Elefant, SU-152: 6; Opel truck driver/passenger + 4), NO .phy (needs a
