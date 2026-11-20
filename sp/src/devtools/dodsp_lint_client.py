@@ -212,7 +212,7 @@ def check_vehicle_sight():
     func = ""
     with open(VEHICLE_CPP, encoding="latin-1") as f:
         for n, line in enumerate(f, 1):
-            m = re.match(r"^[A-Za-z].*\b(\w+)::(\w+)\s*\(", line)
+            m = re.match(r"^[A-Za-z][^(]*?(\w+)::~?(\w+)\s*\(", line)
             if m:
                 func = m.group(2)
             code = line.split("//")[0]
@@ -220,6 +220,128 @@ def check_vehicle_sight():
                 bad.append("dodsp_vehicle.cpp:%d: CTraceFilterWorldOnly (it skips static props) - use LineOfFire" % n)
             if "UTIL_TraceLine" in code and func != "LineOfFire" and "dodsp-lint: not a sight line" not in line:
                 bad.append("dodsp_vehicle.cpp:%d (%s): %s  (a sight test? use LineOfFire; else tag it)" % (n, func, line.strip()))
+    return bad
+
+
+def parse_kv(text):
+    """Minimal KeyValues reader: [(key, value-or-list)], comments stripped."""
+    text = re.sub(r"//[^\n]*", "", text)
+    toks = re.findall(r'"([^"]*)"|(\{)|(\})', text)
+    pos = 0
+
+    def block():
+        nonlocal pos
+        out = []
+        while pos < len(toks):
+            q, ob, cb = toks[pos]
+            if cb:
+                pos += 1
+                return out
+            key = q
+            pos += 1
+            q2, ob2, cb2 = toks[pos]
+            if ob2:
+                pos += 1
+                out.append((key, block()))
+            else:
+                pos += 1
+                out.append((key, q2))
+        return out
+    return block()
+
+
+def kv_get(blk, key):
+    for k, v in blk:
+        if k.lower() == key.lower():
+            return v
+    return None
+
+
+def check_vehicle_types():
+    """V4: every vehicle type has armour, a wreck and real ammunition (no V2 flat damage) - the C++ loader prints
+    the same as INVARIANTs at map load, this catches them before a build."""
+    bad = []
+    with open(VEHICLE_SCRIPT, encoding="utf-8") as f:
+        top = parse_kv(f.read())
+    types = dict(kv_get(top, "DoDSP_Vehicles") or [])
+    roles = {"commander", "gunner", "loader", "driver", "radio"}
+
+    def merged(name, depth=0):
+        t = types[name]
+        base = kv_get(t, "base")
+        out = dict(merged(base, depth + 1)) if base and base in types and depth < 5 else {}
+        for k, v in t:
+            if k != "base":
+                out[k] = v
+        return out
+    for name in types:
+        t = merged(name)
+        if "dead_model" not in t:
+            bad.append("%s: no dead_model (every variant names its own wreck)" % name)
+        ar = t.get("armour")
+        if not isinstance(ar, list):
+            bad.append("%s: no armour block" % name)
+        else:
+            a = dict(ar)
+            for k in ("hull_front", "hull_side", "hull_rear", "hull_top", "structure", "crew"):
+                if k not in a:
+                    bad.append("%s: armour has no %s" % (name, k))
+            for r in a.get("crew", "").split():
+                if r not in roles:
+                    bad.append("%s: crew role '%s'" % (name, r))
+            if "turret_model" in t and "turret_front" not in a:
+                bad.append("%s: has a turret but no turret_front armour" % name)
+        gun = t.get("gun")
+        if isinstance(gun, list):
+            g = dict(gun)
+            if "damage" in g or "radius" in g:
+                bad.append("%s: gun has V2's flat damage/radius - V4 uses the shells' real numbers" % name)
+            if "ap" not in g and "he" not in g:
+                bad.append("%s: gun has neither ap nor he ammunition" % name)
+            if int(g.get("magazine", "1")) > 1 and "cyclic" not in g:
+                bad.append("%s: a magazine gun with no cyclic rate" % name)
+            if isinstance(g.get("ap"), list):
+                ap = dict(g["ap"])
+                nums = [float(x) for x in ap.get("pen", "").split()]
+                pts = list(zip(nums[0::2], nums[1::2]))
+                if not pts or len(nums) % 2:
+                    bad.append("%s: ap pen is not 'metres mm' pairs" % name)
+                for (r0, p0), (r1, p1) in zip(pts, pts[1:]):
+                    if r1 <= r0 or p1 > p0:
+                        bad.append("%s: ap pen must go out in range and down in mm (%g m %g mm -> %g m %g mm)" % (name, r0, p0, r1, p1))
+                for k in ("calibre", "effect"):
+                    if k not in ap:
+                        bad.append("%s: ap has no %s" % (name, k))
+            if isinstance(g.get("he"), list):
+                he = dict(g["he"])
+                if float(he.get("filler", "0")) <= 0:
+                    bad.append("%s: he has no filler (kg)" % name)
+    if len(types) < 5:
+        bad.append("found only %d vehicle types - the lint's reader is out of date" % len(types))
+    return bad
+
+
+# INVARIANT (V4): the damage state has one writer per fact - structure in ApplyPenetration/BlastHit, the crew in
+# KillCrew/BailOut/Wreck, the state in SetBurning/CheckMorale/BailOut/Wreck (plus the constructor and Spawn).
+DAMAGE_WRITERS = {
+    "m_flStructure": {"ApplyPenetration", "BlastHit", "Spawn", "CDoDSPVehicle"},
+    "m_iCrewAlive": {"KillCrew", "BailOut", "Wreck", "Spawn", "CDoDSPVehicle"},
+    "m_eState": {"SetBurning", "CheckMorale", "BailOut", "Wreck", "CDoDSPVehicle"},
+}
+
+
+def check_vehicle_damage():
+    bad = []
+    func = ""
+    with open(VEHICLE_CPP, encoding="latin-1") as f:
+        for n, line in enumerate(f, 1):
+            m = re.match(r"^[A-Za-z][^(]*?(\w+)::~?(\w+)\s*\(", line)
+            if m:
+                func = m.group(2)
+            code = line.split("//")[0]
+            for var, owners in DAMAGE_WRITERS.items():
+                if re.search(r"\b%s\s*(?:[-+&|]?=)(?!=)" % var, code) and func not in owners:
+                    bad.append("dodsp_vehicle.cpp:%d (%s) writes %s - only %s may" % (n, func, var, ", ".join(sorted(owners))))
     return bad
 
 
@@ -231,6 +353,14 @@ def main():
         for b in sight_bad:
             print("  " + b)
         return 1
+    for what, fn in (("a vehicle type is missing V4's armour / wreck / real ammunition", check_vehicle_types),
+                     ("the vehicle damage state is written outside its owner (V4)", check_vehicle_damage)):
+        vbad = fn()
+        if vbad:
+            print("dodsp_lint_client: %s:" % what)
+            for b in vbad:
+                print("  " + b)
+            return 1
     vsound_bad = check_vehicle_sounds()
     if vsound_bad:
         print("dodsp_lint_client: a vehicle type names a sound the vehicle sound script doesn't have:")

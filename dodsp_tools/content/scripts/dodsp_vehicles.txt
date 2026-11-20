@@ -19,8 +19,26 @@
 //                    paint variants (winter, desert, brush, snow) are only their models - one owner per number.
 //   faction          axis or allies (who it shoots; a dodsp_vehicle's own "faction" key wins - captured tanks)
 //   turret_rate      degrees/s the turret traverses; pitch_rate: degrees/s the barrel elevates
-//   gun              main gun: damage at the centre of the burst (falls off to 0 at radius), reload seconds,
-//                    range, spread (degrees), sound. Super deadly on purpose (owner, 2026-11-19).
+//   gun              main gun (V4, REAL numbers - owner 2026-11-20 "fully real"):
+//                      magazine / cyclic   autocannons: rounds per magazine and rounds/minute within it
+//                      reload              seconds to load the next round (magazine guns: to change magazines)
+//                      rounds              carried (0 = never runs out); range (units), spread (degrees), sound
+//                      ap { calibre mm, pen "metres mm ...", effect, filler kg }   fired at vehicles
+//                      he { calibre mm, filler kg }                                fired at everything else
+//                    pen = penetration of a FLAT (vertical) plate by range - sources quoted against a 30-degree plate
+//                    are x 1.155 (1/cos 30). effect = what gets inside when it penetrates (game value, against the
+//                    target's "structure"). HE: blast and penetration come from the filler (dodsp_vehicle_armour.h:
+//                    75 mm M48 0.68 kg kills ~10 m / wounds ~25 m real; x dodsp_vehicle_he_scale 0.5 against people).
+//                    `dodsp_vehicle_penchart` in the console prints who gets through what, where.
+//   armour           V4, mm per plate, "thickness [lean]" (lean = degrees back from upright: the Sherman's glacis
+//                    "51 56" is 91 mm effective head-on). hull_front/side/rear/top required, hull_bottom = top if
+//                    missing; turret_* for turreted types. open_top 1 = open crew compartment. structure = how much
+//                    inside effect it takes before it's knocked out (game value, roughly by size). crew = the seats
+//                    in order (commander gunner loader driver radio). ammo_fire / fuel_fire = chance an ammunition /
+//                    engine hit sets it burning (Sherman dry stowage: 60-80% of penetrated tanks burned - real).
+//                    engine rear / front / middle.
+//   dead_model       the wreck (its own paint, so every variant names its own)
+//   1 m = 40 units (a 72-unit player ~ 1.8 m). "est." below = not found in a source, an estimate - correct freely.
 //   coax             machine gun beside the main gun, fires bursts at infantry: damage per bullet, rate (shots/s),
 //                    burst / pause (seconds), range, spread (degrees), sound (DoD:S's own MG sounds)
 //   sounds           engine_idle / engine_move (looped; idle fades into move with speed), turret_turn (loop) /
@@ -30,7 +48,10 @@
 //   susp_accel       the lurch: degrees the hull pitches per 100 units/s^2 of acceleration (default tracked 1.6,
 //                    wheeled 1.0); susp_freq (Hz, 1.6) / susp_damp (0..1, 0.35) its spring; recoil: degrees the main gun
 //                    kicks the hull (2). The models have no lurch animation (only 'idle' / turret 'aim') - it's code.
-//   Halftracks and the carrier have no weapons yet (their MG mounts come after V2).
+//   Halftracks and the carrier have no weapons yet (their MG mounts are V2b).
+// Sources (2026-11-20): Wikipedia (Panzer II, 2 cm KwK 30, Tiger I, 8.8 cm KwK 36, M4 Sherman, Crusader tank, Ordnance QF
+// 6-pounder, Sd.Kfz. 222, Sd.Kfz. 251, Universal Carrier, SU-152, ML-20), theshermantank.com M3 gun data (FM data),
+// miniatures.de AT weapon tables.
 
 "DoDSP_Vehicles"
 {
@@ -49,8 +70,25 @@
 		"turn_rate"			"30"
 		"turret_rate"		"40"
 		"pitch_rate"		"20"
-		"gun"		{ "damage" "300"	"radius" "128"	"reload" "1.5"	"range" "5000"	"spread" "0.8"	"sound" "DoDSP_Vehicle.GunFire20mm" }
+		// 2 cm KwK 30 L/55: 10-round magazines, ~280 rpm (sources: 260 / 280 sustained, 600 cyclic), 180 rounds carried.
+		// PzGr 40 (APCR) 40 mm at 100 m / 20 mm at 500 m against 30 degrees -> flat 46 / 23. HE (Sprgr) 11 g.
+		"gun"
+		{
+			"magazine"	"10"	"cyclic" "280"	"reload" "4"	"rounds" "180"		// reload = magazine change (est.)
+			"range"		"5000"	"spread" "0.8"	"sound" "DoDSP_Vehicle.GunFire20mm"
+			"ap"		{ "calibre" "20"	"pen" "100 46  500 23  1000 12"	"effect" "12"	"filler" "0" }
+			"he"		{ "calibre" "20"	"filler" "0.011" }
+		}
 		"coax"		{ "damage" "12"		"rate" "15"		"burst" "1.5"	"pause" "1.2"	"range" "2500"	"spread" "3"	"sound" "Weapon_Mg42.Shoot" }
+		// Ausf. F: hull front 35 (flat), superstructure / turret front 30, sides and rear 15; top / bottom est.
+		"armour"
+		{
+			"hull_front"	"35"	"hull_side"		"15"	"hull_rear"		"15"	"hull_top"		"10"	"hull_bottom"	"5"
+			"turret_front"	"30"	"turret_side"	"15"	"turret_rear"	"15"	"turret_top"	"10"
+			"structure"		"120"	"crew"	"commander driver loader"		// 3 crew: commander-gunner, driver, loader-radio
+			"ammo_fire"		"0.25"	"fuel_fire"		"0.3"	"engine"	"rear"		// fire chances est.
+		}
+		"dead_model"		"models/cod2/vehicles/panzer2_dead.mdl"
 		"sounds"	{ "engine_idle" "DoDSP_Vehicle.Engine1Idle"	"engine_move" "DoDSP_Vehicle.Engine1Move"	"turret_turn" "DoDSP_Vehicle.TurretTurn"
 					  "turret_stop" "DoDSP_Vehicle.TurretStop"	"reload" "DoDSP_Vehicle.Reload"	"explode" "DoDSP_Vehicle.ShellExplode" }
 		"seats"
@@ -66,6 +104,7 @@
 		"base"				"panzer2"
 		"model"				"models/cod2/vehicles/panzer2_winter_hull.mdl"
 		"turret_model"		"models/cod2/vehicles/panzer2_winter_turret.mdl"
+		"dead_model"		"models/cod2/vehicles/panzer2_winter_dead.mdl"
 	}
 	"tiger"
 	{
@@ -82,8 +121,26 @@
 		"turn_rate"			"16"
 		"turret_rate"		"18"
 		"pitch_rate"		"8"
-		"gun"		{ "damage" "1000"	"radius" "320"	"reload" "7"	"range" "8000"	"spread" "0.3"	"sound" "DoDSP_Vehicle.GunFire1" }
+		// 8.8 cm KwK 36 L/56: ~10 rpm, British trials 6-16 s per reload; 92 rounds. PzGr 39 (APCBC, 59 g filler)
+		// flat plate 162 / 151 / 138 / 126 / 116 mm at 0.1 / 0.5 / 1 / 1.5 / 2 km. HE (Sprgr) ~0.9 kg (est.).
+		"gun"
+		{
+			"reload"	"7"		"rounds" "92"
+			"range"		"8000"	"spread" "0.3"	"sound" "DoDSP_Vehicle.GunFire1"
+			"ap"		{ "calibre" "88"	"pen" "100 162  500 151  1000 138  1500 126  2000 116"	"effect" "180"	"filler" "0.059" }
+			"he"		{ "calibre" "88"	"filler" "0.9" }
+		}
 		"coax"		{ "damage" "12"		"rate" "15"		"burst" "1.5"	"pause" "1.2"	"range" "2500"	"spread" "3"	"sound" "Weapon_Mg42.Shoot" }
+		// hull front 100, sides 60 lower / 80 upper, turret front 100 (mantlet 110-200), turret sides / rear 80, top 25
+		// (40 from March 1944). Plates mostly flat. Rear 80 (est. - the source doesn't say).
+		"armour"
+		{
+			"hull_front"	"100"	"hull_side"		"80"	"hull_rear"		"80"	"hull_top"		"25"	"hull_bottom"	"25"
+			"turret_front"	"110"	"turret_side"	"80"	"turret_rear"	"80"	"turret_top"	"25"
+			"structure"		"300"	"crew"	"commander gunner loader driver radio"
+			"ammo_fire"		"0.45"	"fuel_fire"		"0.3"	"engine"	"rear"		// ammunition above the tracks; chances est.
+		}
+		"dead_model"		"models/cod2/vehicles/tiger_dead.mdl"
 		"sounds"	{ "engine_idle" "DoDSP_Vehicle.Engine3Idle"	"engine_move" "DoDSP_Vehicle.Engine3Move"	"turret_turn" "DoDSP_Vehicle.TurretTurn"
 					  "turret_stop" "DoDSP_Vehicle.TurretStop"	"reload" "DoDSP_Vehicle.Reload"	"explode" "DoDSP_Vehicle.ShellExplode" }
 		"seats"
@@ -99,6 +156,7 @@
 		"base"				"tiger"
 		"model"				"models/cod2/vehicles/tiger_brush_hull.mdl"
 		"turret_model"		"models/cod2/vehicles/tiger_brush_turret.mdl"
+		"dead_model"		"models/cod2/vehicles/tiger_brush_dead.mdl"
 	}
 	"sherman"
 	{
@@ -115,8 +173,26 @@
 		"turn_rate"			"24"
 		"turret_rate"		"25"
 		"pitch_rate"		"12"
-		"gun"		{ "damage" "700"	"radius" "256"	"reload" "5"	"range" "7000"	"spread" "0.5"	"sound" "DoDSP_Vehicle.GunFire2" }
+		// 75 mm M3: max 20 rpm. M61 APC against 30 degrees 66 / 61 / 56 / 51 mm at 457 / 914 / 1372 / 1829 m (FM data)
+		// -> flat 76 / 70 / 65 / 59. M48 HE: 680 g TNT. Rounds ~90 (est.); M61 filler ~0.07 kg (est.).
+		"gun"
+		{
+			"reload"	"4"		"rounds" "90"
+			"range"		"7000"	"spread" "0.5"	"sound" "DoDSP_Vehicle.GunFire2"
+			"ap"		{ "calibre" "75"	"pen" "100 80  457 76  914 70  1372 65  1829 59"	"effect" "110"	"filler" "0.07" }
+			"he"		{ "calibre" "75"	"filler" "0.68" }
+		}
 		"coax"		{ "damage" "12"		"rate" "9"		"burst" "1.8"	"pause" "1.0"	"range" "2500"	"spread" "3"	"sound" "Weapon_30cal.Shoot" }
+		// glacis 50.8 at 56 degrees (90.8 effective), hull sides 38 vertical, rear 38 (0-22 degrees), top 25, floor 25..13;
+		// turret front 76 at 30, sides 51 at 5, rear 51, roof 25. Early (dry) stowage: 60-80% burned when penetrated.
+		"armour"
+		{
+			"hull_front"	"51 56"	"hull_side"		"38"	"hull_rear"		"38 10"	"hull_top"		"25"	"hull_bottom"	"13"
+			"turret_front"	"76 30"	"turret_side"	"51 5"	"turret_rear"	"51"	"turret_top"	"25"
+			"structure"		"220"	"crew"	"commander gunner loader driver radio"
+			"ammo_fire"		"0.7"	"fuel_fire"		"0.2"	"engine"	"rear"
+		}
+		"dead_model"		"models/cod2/vehicles/sherman_dead.mdl"
 		"sounds"	{ "engine_idle" "DoDSP_Vehicle.Engine2Idle"	"engine_move" "DoDSP_Vehicle.Engine2Move"	"turret_turn" "DoDSP_Vehicle.TurretTurn"
 					  "turret_stop" "DoDSP_Vehicle.TurretStop"	"reload" "DoDSP_Vehicle.Reload"	"explode" "DoDSP_Vehicle.ShellExplode" }
 		"seats"
@@ -132,6 +208,7 @@
 		"base"				"sherman"
 		"model"				"models/cod2/vehicles/sherman_desert_hull.mdl"
 		"turret_model"		"models/cod2/vehicles/sherman_desert_turret.mdl"
+		"dead_model"		"models/cod2/vehicles/sherman_desert_dead.mdl"
 	}
 	"crusader"
 	{
@@ -148,8 +225,26 @@
 		"turn_rate"			"26"
 		"turret_rate"		"30"
 		"pitch_rate"		"15"
-		"gun"		{ "damage" "500"	"radius" "192"	"reload" "4"	"range" "6000"	"spread" "0.5"	"sound" "DoDSP_Vehicle.GunFire2" }
+		// Mk III (the barrel is too long for the 2-pounder - owner to confirm): 6-pdr L/43, 15 rpm, 65 rounds. AP 81 mm at
+		// 457 m against 30 degrees -> flat 94; the L/50 table (135/112/89/70/55) x 0.84 for the shorter barrel.
+		// HE Mk 10T ~3 kg shell, filler ~0.2 kg (est.).
+		"gun"
+		{
+			"reload"	"4"		"rounds" "65"
+			"range"		"6000"	"spread" "0.5"	"sound" "DoDSP_Vehicle.GunFire2"
+			"ap"		{ "calibre" "57"	"pen" "100 113  500 94  1000 75  1500 59  2000 46"	"effect" "70"	"filler" "0" }
+			"he"		{ "calibre" "57"	"filler" "0.2" }
+		}
 		"coax"		{ "damage" "12"		"rate" "10"		"burst" "1.5"	"pause" "1.2"	"range" "2500"	"spread" "3"	"sound" "Weapon_30cal.Shoot" }
+		// Mk III: 51 mm (the source gives one figure); sides / rear / top est. Notorious for brewing up (unprotected racks).
+		"armour"
+		{
+			"hull_front"	"51"	"hull_side"		"28"	"hull_rear"		"28"	"hull_top"		"10"	"hull_bottom"	"10"
+			"turret_front"	"51"	"turret_side"	"28"	"turret_rear"	"28"	"turret_top"	"10"
+			"structure"		"160"	"crew"	"commander gunner driver"		// Mk III: 3 crew (commander loads)
+			"ammo_fire"		"0.6"	"fuel_fire"		"0.3"	"engine"	"rear"
+		}
+		"dead_model"		"models/cod2/vehicles/crusader_dead.mdl"
 		"sounds"	{ "engine_idle" "DoDSP_Vehicle.Engine2Idle"	"engine_move" "DoDSP_Vehicle.Engine2Move"	"turret_turn" "DoDSP_Vehicle.TurretTurn"
 					  "turret_stop" "DoDSP_Vehicle.TurretStop"	"reload" "DoDSP_Vehicle.Reload"	"explode" "DoDSP_Vehicle.ShellExplode" }
 	}
@@ -169,8 +264,26 @@
 		"turn_rate"			"35"
 		"turret_rate"		"45"
 		"pitch_rate"		"25"
-		"gun"		{ "damage" "300"	"radius" "128"	"reload" "1.5"	"range" "5000"	"spread" "0.8"	"sound" "DoDSP_Vehicle.GunFire20mm" }
+		// Sd.Kfz. 222 (4 wheels, 20 mm): 2 cm KwK 30, the same gun as the Panzer II (KwK 38 from 1942). Rounds est.
+		"gun"
+		{
+			"magazine"	"10"	"cyclic" "280"	"reload" "4"	"rounds" "180"
+			"range"		"5000"	"spread" "0.8"	"sound" "DoDSP_Vehicle.GunFire20mm"
+			"ap"		{ "calibre" "20"	"pen" "100 46  500 23  1000 12"	"effect" "12"	"filler" "0" }
+			"he"		{ "calibre" "20"	"filler" "0.011" }
+		}
 		"coax"		{ "damage" "12"		"rate" "15"		"burst" "1.5"	"pause" "1.2"	"range" "2500"	"spread" "3"	"sound" "Weapon_Mg42.Shoot" }
+		// front 14.5 (30 on the 1942 Ausf. B), sides 8, rear 5, top 5; open-topped turret with a wire anti-grenade screen.
+		// Plate leans est.
+		"armour"
+		{
+			"hull_front"	"14.5 35"	"hull_side"	"8 35"	"hull_rear"		"5"		"hull_top"		"5"		"hull_bottom"	"5"
+			"turret_front"	"14.5"	"turret_side"	"8"		"turret_rear"	"8"		"turret_top"	"0"
+			"open_top"		"1"
+			"structure"		"70"	"crew"	"commander gunner driver"
+			"ammo_fire"		"0.2"	"fuel_fire"		"0.4"	"engine"	"rear"
+		}
+		"dead_model"		"models/cod2/vehicles/armoredcar_dead.mdl"
 		"sounds"	{ "engine_idle" "DoDSP_Vehicle.TruckIdle"	"engine_move" "DoDSP_Vehicle.TruckMove"	"turret_turn" "DoDSP_Vehicle.TurretTurn"
 					  "turret_stop" "DoDSP_Vehicle.TurretStop"	"reload" "DoDSP_Vehicle.Reload"	"explode" "DoDSP_Vehicle.ShellExplode" }
 	}
@@ -186,6 +299,15 @@
 		"accel"				"60"
 		"brake"				"160"
 		"turn_rate"			"28"
+		// Sd.Kfz. 251: front 14.5, sides 8 (V-shaped, steeply angled - lean est.), open top; engine at the front.
+		"armour"
+		{
+			"hull_front"	"14.5 30"	"hull_side"	"8 30"	"hull_rear"		"8"		"hull_top"		"0"		"hull_bottom"	"5"
+			"open_top"		"1"
+			"structure"		"90"	"crew"	"driver commander"		// + 10 passengers (V3)
+			"ammo_fire"		"0.1"	"fuel_fire"		"0.35"	"engine"	"front"
+		}
+		"dead_model"		"models/cod2/vehicles/halftrack_dead.mdl"
 		"sounds"	{ "engine_idle" "DoDSP_Vehicle.TruckIdle"	"engine_move" "DoDSP_Vehicle.TruckMove" }
 		"seats"
 		{
@@ -203,16 +325,19 @@
 	{
 		"base"				"halftrack"
 		"model"				"models/cod2/vehicles/halftrack_desert.mdl"
+		"dead_model"		"models/cod2/vehicles/halftrack_desert_dead.mdl"
 	}
 	"halftrack_snow"
 	{
 		"base"				"halftrack"
 		"model"				"models/cod2/vehicles/halftrack_snow.mdl"
+		"dead_model"		"models/cod2/vehicles/halftrack_snow_dead.mdl"
 	}
 	"halftrack_rockets"
 	{
 		"base"				"halftrack"
 		"model"				"models/cod2/vehicles/halftrack_rockets.mdl"
+		"dead_model"		"models/cod2/vehicles/halftrack_rockets_dead.mdl"
 	}
 	"carrier"
 	{
@@ -226,6 +351,15 @@
 		"accel"				"75"
 		"brake"				"170"
 		"turn_rate"			"35"
+		// Universal Carrier: 7-10 mm all round, open top, engine in the middle.
+		"armour"
+		{
+			"hull_front"	"10"	"hull_side"		"10"	"hull_rear"		"10"	"hull_top"		"0"		"hull_bottom"	"5"
+			"open_top"		"1"
+			"structure"		"60"	"crew"	"driver commander gunner"
+			"ammo_fire"		"0.1"	"fuel_fire"		"0.35"	"engine"	"middle"
+		}
+		"dead_model"		"models/cod2/vehicles/carrier_dead.mdl"
 		"sounds"	{ "engine_idle" "DoDSP_Vehicle.TruckIdle"	"engine_move" "DoDSP_Vehicle.TruckMove" }
 	}
 }

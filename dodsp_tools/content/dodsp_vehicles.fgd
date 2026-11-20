@@ -51,4 +51,8 @@
 	output OnNoRoute(void) : "No route to the goal for a vehicle this wide."
 	output OnTargetSeen(void) : "Picked a new target (the activator)."
 	output OnFire(void) : "Fired its main gun (the activator is the target)."
+	output OnPenetrated(void) : "A round got through its armour (the activator fired it)."
+	output OnImmobilized(void) : "Engine, tracks or driver gone - it can't move any more."
+	output OnBailOut(void) : "The crew got out (German crews come out as soldiers)."
+	output OnKnockedOut(void) : "Out of the fight: burning, abandoned or wrecked (fires once)."
 ]

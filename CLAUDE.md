@@ -222,7 +222,7 @@ If you learn something like this, add it here in the same commit as the fix.
   without a separate sun also never get the per-pixel sun on top (it used to add a second sun there).
   The fallback lives in server.dll: client.dll and server.dll must come from one build.
 - Stage 5: `dodsp_lamps_baked 0` (live lamps drawn live), `dodsp_lamps_scale 1`, `dodsp_lamps_shadows 1` reset too.
-- Vehicles: `dodsp_vehicle_road_slack 160`, `dodsp_vehicle_debug 0` reset too.
+- Vehicles: `dodsp_vehicle_road_slack 160`, `dodsp_vehicle_debug 0`, `dodsp_vehicle_he_scale 0.5` reset too.
 - `dodsp_sunshader` is read once per game start. Changing it mid-game does nothing until a restart.
 
 ## Owner-side pitfalls seen
@@ -601,6 +601,48 @@ If you learn something like this, add it here in the same commit as the fix.
   way round end with the tactical one dropping its goal. Undo: the V2c server.dll (build 44673825456).
   TESTED 2026-11-20 (build 44677367648): owner "v2d worked fine" - KNOWN-GOOD for V2d (vehicle space + one sight test).
   Owner expects more corrections once scenes and map orders get complex; re-test there before building on it.
+- **V4 BUILT 2026-11-20 (armour, damage, crews, wrecks - REAL numbers).** Owner's calls: "fully real" armour/guns/fire
+  rates, HE at HALF its real size against people (`dodsp_vehicle_he_scale` 0.5), damage to parts + crew with bail-outs,
+  infantry AT later (DoD's bazooka/Panzerschreck - "DOD's weapons cover it"). Research (sources in dodsp_vehicles.txt's
+  header): Panzer II F 35/30 front, 15 sides; KwK 30 10-round magazines ~280 rpm (sources disagree: 260 / 280 / 600
+  cyclic), PzGr 40 40 mm@100 m / 20@500 (30-degree plate); Tiger 100/80/80/25, KwK 36 PzGr 39 162..116 mm flat at
+  0.1..2 km; Sherman glacis 51@56 (91 eff.), sides 38, M61 66..51 mm (30 deg) at 457..1829 m, M48 HE 0.68 kg TNT; Crusader
+  Mk III (6-pdr - from the barrel length, owner to confirm) 51 mm; Sd.Kfz. 222 14.5/8/5 open turret; Sd.Kfz. 251 14.5/8
+  open; Universal Carrier 7-10 open; SU-152 75/60/20, ML-20S BR-540 125..90 mm. Penetration tables are FLAT-plate mm at
+  metres (30-degree sources x 1.155). 1 m = 40 units (DODSP_UNITS_PER_METRE, one owner) - so a DoD map (a few thousand
+  units) is 50-150 m: at game ranges almost everything gets through sides; fronts decide (Sherman 75 never through a
+  Tiger's front, through its side only within 100 m; Panzer II 20 mm through a Sherman's side within 200 m only).
+  Files: NEW dodsp/dodsp_vehicle_armour.cpp/.h (server_hl2.vpc) = the numbers and maths, one owner each: DoDSP_ShellPen
+  (range interpolation), DoDSP_EffectiveArmour (mm / cos, plates leaned back by their slope), DoDSP_RayBox, HE by
+  cube-root law anchored on the 75 mm M48 (0.68 kg: kills 10 m / wounds 25 m real; HE pen 35 mm x (kg/5.9)^(1/3)),
+  DoDSP_BulletPen (rifle ball 6 mm, pistol 2), DoDSP_ShellBlast (THE shell explosion: fireball, sound, shake,
+  RadiusDamage to people; g_DoDSPBlast tells vehicles in the blast its real charge, saved/restored for chain
+  cook-offs). dodsp_vehicle.cpp: ShellHitBox (which plate: turret box cut at its own body - the model box reaches to
+  the muzzle; hull box cut halfway into the turret), FindShellHit (shells find vehicles by their ARMOUR BOXES - the
+  turrets have no collision model, the trace alone flies through them), TakeArmourHit (effective mm vs pen +-10%,
+  ricochet past 70 deg unless calibre >= 3x plate, open tops have no top plate), BlastHit/ExternalBlast (nearest plate
+  vs charge at distance; big HE outside breaks tracks/gun/turret, >= 4 kg can knock the crew out), ApplyPenetration
+  (structure -= effect +-25%, spall casualties, crit table by part x face (VehicleCrit_t, engine front/rear/middle),
+  ammo -> ammo_fire, engine -> immobile + fuel_fire), crew roles (commander/gunner/loader/driver/radio: no turret crew =
+  can't aim, no gunner = 2x spread + 0.6x traverse, no loader = 2x reload, no driver AND no radio = immobile),
+  CheckMorale -> BailOut (VehicleBail_t: fire / too few crew / immobile + can't fight / immobile + 2 penetrations in
+  15 s; German crews spawn as npc_german_soldier with MP40s on the side away from the attacker, squad tankcrew<idx>;
+  Allied crews just leave - no Allied NPC yet), states (VehicleState_t fighting / burning / abandoned / wrecked: out of
+  the fight = CLASS_NONE, nobody shoots it), SetBurning (env_fire; ammunition: cook-off in 6-15 s; engine: burns out in
+  30-60 s, 40% reaches the ammunition), Wreck (dead_model, static physics, still an obstacle in s_All, burns 40-90 s,
+  cook-off blast VEHICLE_COOKOFF_KG 2.0). Guns: AP at vehicles / HE at the rest (ShellFor), magazine + cyclic +
+  reload + rounds carried ("out of main-gun ammunition"), targets it can't hurt count 3x as far (CanHurt). Bullets go
+  through TraceAttack (never the engine's health), blasts through OnTakeDamage. Outputs OnPenetrated/OnImmobilized/
+  OnBailOut/OnKnockedOut. Console: `dodsp_vehicle_penchart` (every gun vs every plate, metres), `dodsp_vehicles` adds the
+  damage line. Every penetration / immobilised / burning / bail-out / knock-out / wreck prints one line; non-penetrating
+  hits only with dodsp_vehicle_debug.
+  Guards: loader INVARIANTs (no armour = can't be damaged, bad pen table, gun with neither ap nor he, V2's flat
+  damage/radius left in, magazine without cyclic, dead_model file missing); lint check_vehicle_types (armour, crew roles,
+  dead_model per variant, pen pairs out in range / down in mm, no flat damage) and check_vehicle_damage (ONE writer
+  set for m_flStructure / m_iCrewAlive / m_eState); name tables with COMPILE_TIME_ASSERTs. Estimates are marked "est." in
+  the script (fire chances, structure values, some plates, Sherman rounds, 6-pdr HE filler, 88 HE ~0.9 kg).
+  Undo: the V2d server.dll (build 44677367648) + the old scripts\dodsp_vehicles.txt (V2d ignores the new keys but the
+  new script has no "damage"/"radius", so V2d's guns would fall back to 600/256 - keep the old script with it).
 - CoD1 set (owner's vehicles_part2.zip, 2026-11-19): REFERENCE ONLY except the **SU-152, which we keep**. One model per
   vehicle, turret/gun as BONES (tag_turret, tag_barrel, tag_flash = muzzle, tag_coaxel), faces +X (forward_yaw 0),
   CoD's rider tags tag_guy01..06 (Sherman, Elefant, SU-152: 6; Opel truck driver/passenger + 4), NO .phy (needs a

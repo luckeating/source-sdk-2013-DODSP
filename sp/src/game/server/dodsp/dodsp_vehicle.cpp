@@ -41,6 +41,7 @@
 #include "soundenvelope.h"
 #include "SoundEmitterSystem/isoundemittersystembase.h"
 #include "dodsp_factions.h"
+#include "dodsp_vehicle_armour.h"
 #include "soundchars.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
@@ -127,10 +128,11 @@ enum VehicleTacticWhy_t
 	VWHY_NO_FIRE_SPOT,		// no node with a shot at its range - goes closer / waits
 	VWHY_LEASH,				// would leave its leash
 	VWHY_SETTLING,			// just moved: stays a moment before moving again (no dithering)
+	VWHY_IMMOBILE,			// V4: engine / tracks / driver gone - it fights where it stands
 	NUM_VWHYS
 };
 static const char *s_pszTacticWhy[] = { "", "ordered", "no enemy known", "enemy in sight and range", "enemy too far",
-	"enemy too close", "no shot from here", "reported by its side", "no node with a shot", "leash", "settling" };
+	"enemy too close", "no shot from here", "reported by its side", "no node with a shot", "leash", "settling", "immobilised" };
 COMPILE_TIME_ASSERT( ARRAYSIZE( s_pszTacticWhy ) == NUM_VWHYS );
 
 #define VEHICLE_TACTIC_INTERVAL	1.0f
@@ -164,6 +166,58 @@ enum VehicleGiveWay_t
 static const char *s_pszGiveWay[] = { "", "it is parked", "head-on, this one gives way", "it isn't moving" };
 COMPILE_TIME_ASSERT( ARRAYSIZE( s_pszGiveWay ) == NUM_VEHICLE_GIVEWAY );
 
+// V4: what a vehicle is now, what a penetration broke, why the crew got out (reason codes, printed by name)
+enum VehicleState_t
+{
+	VSTATE_FIGHTING,
+	VSTATE_BURNING,			// out of the fight: burns, the crew gets out, it cooks off or burns out
+	VSTATE_ABANDONED,		// the crew left (or is dead); the vehicle is intact
+	VSTATE_WRECKED,			// the dead model
+	NUM_VSTATES
+};
+static const char *s_pszVehicleState[] = { "fighting", "burning", "abandoned", "wrecked" };
+COMPILE_TIME_ASSERT( ARRAYSIZE( s_pszVehicleState ) == NUM_VSTATES );
+
+enum VehicleCrit_t
+{
+	VCRIT_NONE,
+	VCRIT_AMMO,				// ammunition: may set it burning (DoDSPArmour_t::flAmmoFire)
+	VCRIT_ENGINE,			// immobilised; may set it burning (flFuelFire)
+	VCRIT_DRIVE,			// transmission / tracks / wheels: immobilised
+	VCRIT_TURRET,			// turret ring jammed: the gun points where it pointed
+	VCRIT_GUN,				// main gun out
+	VCRIT_CREW,				// a crewman hit
+	NUM_VCRITS
+};
+static const char *s_pszCrit[] = { "nothing vital", "ammunition", "engine", "transmission / tracks", "turret ring", "main gun", "crew" };
+COMPILE_TIME_ASSERT( ARRAYSIZE( s_pszCrit ) == NUM_VCRITS );
+
+enum VehicleBail_t
+{
+	VBAIL_NONE,
+	VBAIL_FIRE,				// it's burning
+	VBAIL_CREW,				// one man can't fight a tank
+	VBAIL_HELPLESS,			// can't move and can't fight
+	VBAIL_UNDER_FIRE,		// can't move and keeps getting penetrated
+	VBAIL_KNOCKED_OUT,
+	NUM_VBAILS
+};
+static const char *s_pszBail[] = { "", "it's burning", "too few crew left to fight it", "it can't move and can't fight",
+	"it can't move and keeps getting penetrated", "knocked out" };
+COMPILE_TIME_ASSERT( ARRAYSIZE( s_pszBail ) == NUM_VBAILS );
+
+#define VEHICLE_COOKOFF_KG		2.0f		// an ammunition cook-off goes up like this much explosive (game value)
+#define VEHICLE_PEN_MEMORY		15.0f		// two penetrations this close together on an immobile vehicle: the crew gets out
+
+// where an armour box was hit (one owner: CDoDSPVehicle::ShellHitBox)
+struct VehicleHit_t
+{
+	int		ePart, eFace;		// ArmourPart_t / ArmourFace_t
+	Vector	vecPoint;
+	Vector	vecNormal;			// the plate's outward normal, leaned back by its slope (world)
+	float	t;					// distance along the ray
+};
+
 //-----------------------------------------------------------------------------
 // Vehicle types (scripts/dodsp_vehicles.txt)
 //-----------------------------------------------------------------------------
@@ -185,13 +239,18 @@ struct VehicleType_t
 	int		eFaction;				// DoDSPFaction_t ("faction" - the entity's own key wins)
 	float	flTurretRate;			// degrees/s the turret traverses
 	float	flPitchRate;			// degrees/s the barrel elevates
-	struct Gun_t { bool bHas; float flDamage, flRadius, flReload, flRange, flSpread; char szSound[64]; };
-	Gun_t	gun;					// main gun: one shell, explodes where it hits (damage falls off over radius)
+	// main gun (V4: real ammunition - "ap" for vehicles, "he" for everything else; a magazine fed at a cyclic rate
+	// for autocannons, one round + "reload" for the rest; "rounds" carried, 0 = never runs out)
+	struct Gun_t { bool bHas; float flReload, flRange, flSpread; int nMagazine; float flCyclic; int nRounds; DoDSPShell_t ap, he; char szSound[64]; };
+	Gun_t	gun;
 	struct Coax_t { bool bHas; float flDamage, flRate, flBurst, flPause, flRange, flSpread; char szSound[64]; };
 	Coax_t	coax;					// machine gun beside the main gun: bursts at infantry
 	float	flSuspAccel;			// degrees the hull pitches per 100 units/s^2 of acceleration (the lurch)
 	float	flSuspFreq, flSuspDamp;	// its spring: rocks at this many Hz, this much damping (0..1)
 	float	flRecoil;				// the main gun kicks the hull back this many degrees
+	DoDSPArmour_t armour;			// V4 ("armour" block; invalid = it can't be hurt, and the load says so)
+	bool	bVariant;				// has a "base" (a paint scheme): the pen chart lists the base only
+	char	szDeadModel[MAX_PATH];	// V4: the wreck
 	char	szEngineIdle[64], szEngineMove[64], szTurretTurn[64], szTurretStop[64], szReload[64], szExplode[64];
 	struct Seat_t { Vector vecOrigin; float flYaw; };
 	CUtlVector<Seat_t> seats;		// V3
@@ -279,9 +338,37 @@ static void LoadVehicleTypes( bool bForce )
 		t->flPitchRate = pType->GetFloat( "pitch_rate", 15.0f );
 		KeyValues *pGun = pType->FindKey( "gun" );
 		t->gun.bHas = pGun != NULL;
-		t->gun.flDamage = pGun ? pGun->GetFloat( "damage", 600.0f ) : 0.0f;
-		t->gun.flRadius = pGun ? pGun->GetFloat( "radius", 256.0f ) : 0.0f;
 		t->gun.flReload = pGun ? pGun->GetFloat( "reload", 5.0f ) : 0.0f;
+		t->gun.nMagazine = pGun ? MAX( pGun->GetInt( "magazine", 1 ), 1 ) : 1;
+		t->gun.flCyclic = pGun ? pGun->GetFloat( "cyclic", 0.0f ) : 0.0f;
+		t->gun.nRounds = pGun ? MAX( pGun->GetInt( "rounds", 0 ), 0 ) : 0;
+		if ( pGun )
+		{
+			char szErr[160];
+			if ( !DoDSP_ParseShell( pGun->FindKey( "ap" ), t->gun.ap, false, szErr, sizeof( szErr ) ) )
+				Warning( "INVARIANT DOD-SP vehicles: type '%s' gun \"ap\": %s - no AP shells\n", t->szName, szErr );
+			if ( !DoDSP_ParseShell( pGun->FindKey( "he" ), t->gun.he, true, szErr, sizeof( szErr ) ) )
+				Warning( "INVARIANT DOD-SP vehicles: type '%s' gun \"he\": %s - no HE shells\n", t->szName, szErr );
+			if ( !t->gun.ap.bValid && !t->gun.he.bValid )
+			{
+				Warning( "INVARIANT DOD-SP vehicles: type '%s' has a \"gun\" with neither \"ap\" nor \"he\" ammunition - main gun off\n", t->szName );
+				t->gun.bHas = false;
+			}
+			if ( pGun->FindKey( "damage" ) || pGun->FindKey( "radius" ) )
+				Warning( "INVARIANT DOD-SP vehicles: type '%s' gun still has V2's flat \"damage\"/\"radius\" - ignored (V4: the shells' real numbers decide)\n", t->szName );
+			if ( t->gun.nMagazine > 1 && t->gun.flCyclic <= 0.0f )
+			{
+				Warning( "INVARIANT DOD-SP vehicles: type '%s' gun has a %d-round magazine but no \"cyclic\" rate - 120 rpm\n", t->szName, t->gun.nMagazine );
+				t->gun.flCyclic = 120.0f;
+			}
+		}
+		{
+			char szErr[160];
+			if ( !DoDSP_ParseArmour( pType->FindKey( "armour" ), t->armour, szErr, sizeof( szErr ) ) )
+				Warning( "INVARIANT DOD-SP vehicles: type '%s' armour: %s - it can't be damaged\n", t->szName, szErr );
+		}
+		Q_strncpy( t->szDeadModel, pType->GetString( "dead_model", "" ), sizeof( t->szDeadModel ) );
+		t->bVariant = pRawType->GetString( "base", "" )[0] != 0;
 		t->gun.flRange = pGun ? pGun->GetFloat( "range", 6000.0f ) : 0.0f;
 		t->gun.flSpread = pGun ? pGun->GetFloat( "spread", 0.5f ) : 0.0f;
 		Q_strncpy( t->gun.szSound, pGun ? pGun->GetString( "sound", "DoDSP_Vehicle.GunFire1" ) : "", sizeof( t->gun.szSound ) );
@@ -710,10 +797,14 @@ public:
 	virtual void	UpdateOnRemove( void );
 	virtual void	Blocked( CBaseEntity *pOther );
 	virtual int		DrawDebugTextOverlays( void );
-	virtual Class_T	Classify( void ) { return DoDSP_ClassForFaction( m_eFaction ); }	// one owner: dodsp_factions
+	// one owner: dodsp_factions. Out of the fight (burning / abandoned / wrecked) it's no side: nobody shoots it
+	virtual Class_T	Classify( void ) { return m_eState == VSTATE_FIGHTING ? DoDSP_ClassForFaction( m_eFaction ) : CLASS_NONE; }
+	virtual void	TraceAttack( const CTakeDamageInfo &info, const Vector &vecDir, trace_t *ptr, CDmgAccumulator *pAccumulator = NULL );
+	virtual int		OnTakeDamage( const CTakeDamageInfo &info );
 	int				GetFaction( void ) const { return m_eFaction; }
 
 	void			DriveThink( void );
+	void			WreckThink( void );
 	bool			DriveTo( const Vector &vecGoal, bool bScripted = true );	// scripted: a map input / console order (tactics wait)
 	void			Stop( void );
 	void			Report( void );
@@ -729,8 +820,40 @@ public:
 	void			InputOpenFire( inputdata_t &inputdata );
 
 	static CUtlVector<CDoDSPVehicle *> s_All;
+	static CDoDSPVehicle *FindShellHit( const Vector &vecFrom, const Vector &vecDir, float flMax, CDoDSPVehicle *pSkip, VehicleHit_t *pHit );
 
 private:
+	// V4 armour and damage (one owner for each: whether a hit gets in = TakeArmourHit / BlastHit; what it breaks
+	// = ApplyPenetration; who's left = the crew mask; what it is now = m_eState)
+	bool			ShellHitBox( const Vector &vecFrom, const Vector &vecDir, float flMax, VehicleHit_t *pHit );
+	bool			TakeArmourHit( const VehicleHit_t &hit, const Vector &vecPath, float flPen, float flEffect, float flCalibre,
+								   CBaseEntity *pAttacker, const char *pszWhat, bool bQuiet, float flFiller );
+	void			BlastHit( const Vector &vecCentre, float flFiller, CBaseEntity *pAttacker );
+	void			ExternalBlast( float flFiller, float k, CBaseEntity *pAttacker );
+	void			ApplyPenetration( int ePart, int eFace, float flEffect, CBaseEntity *pAttacker, const char *pszWhat );
+	int				RollCrit( int ePart, int eFace );
+	void			KillCrew( int n, int ePart, const char *pszWhy );
+	void			SetImmobile( const char *pszWhy, CBaseEntity *pAttacker );
+	void			SetBurning( bool bAmmo, CBaseEntity *pAttacker );
+	void			CheckMorale( CBaseEntity *pAttacker );
+	void			BailOut( int eWhy, CBaseEntity *pAttacker );
+	bool			SpawnCrewman( const Vector &vecAwayFrom );
+	void			KnockOut( bool bCatastrophic, CBaseEntity *pAttacker, const char *pszWhy );
+	void			Wreck( bool bBlowUp, CBaseEntity *pAttacker );
+	void			DamageStateThink( void );
+	int				CrewAlive( void ) const;
+	bool			CrewHas( int eRole ) const;
+	bool			TypeHasRole( int eRole ) const;
+	bool			CanAim( void ) const;			// someone in the turret to lay the gun
+	float			ReloadScale( void ) const;
+	float			AimPenalty( void ) const;		// x spread (no trained gunner left)
+	float			TurretRate( void ) const;
+	bool			MainGunUsable( void ) const;
+	const DoDSPShell_t *ShellFor( CBaseEntity *pTarget ) const;
+	bool			CanHurt( CDoDSPVehicle *pOther );
+	void			DamageReport( char *psz, int n ) const;
+	void			MakeFire( float flSize, bool bEngine );
+	void			FireKnockedOut( CBaseEntity *pAttacker );
 	bool			PlanRoute( void );
 	int				NearestNode( const Vector &vecPos, bool bFromHere );
 	int				NodeCandidates( const Vector &vecPos, bool bFromHere, int nMax, CUtlVector<int> &out );
@@ -856,6 +979,22 @@ private:
 	COutputEvent	m_OnArrived;
 	COutputEvent	m_OnStuck;
 	COutputEvent	m_OnNoRoute;
+
+	// V4 damage state (saved)
+	int				m_eState;					// VehicleState_t
+	float			m_flStructure;
+	int				m_iCrewAlive;				// bit per crew seat (DoDSPArmour_t::eCrew)
+	bool			m_bImmobile, m_bTurretJammed, m_bGunOut;
+	float			m_flBailAt, m_flCookOffAt, m_flBurnOutAt;
+	EHANDLE			m_hFire;
+	EHANDLE			m_hKiller;
+	int				m_iRounds, m_iMagLeft;
+	float			m_flPenTimes[2];
+	bool			m_bOutputKO, m_bOutOfAmmoSaid;
+	COutputEvent	m_OnPenetrated;
+	COutputEvent	m_OnImmobilized;
+	COutputEvent	m_OnBailOut;
+	COutputEvent	m_OnKnockedOut;
 };
 
 CUtlVector<CDoDSPVehicle *> CDoDSPVehicle::s_All;
@@ -900,6 +1039,29 @@ BEGIN_DATADESC( CDoDSPVehicle )
 	DEFINE_OUTPUT( m_OnArrived, "OnArrived" ),
 	DEFINE_OUTPUT( m_OnStuck, "OnStuck" ),
 	DEFINE_OUTPUT( m_OnNoRoute, "OnNoRoute" ),
+	DEFINE_THINKFUNC( DriveThink ),
+	DEFINE_THINKFUNC( WreckThink ),
+	// V4
+	DEFINE_FIELD( m_eState, FIELD_INTEGER ),
+	DEFINE_FIELD( m_flStructure, FIELD_FLOAT ),
+	DEFINE_FIELD( m_iCrewAlive, FIELD_INTEGER ),
+	DEFINE_FIELD( m_bImmobile, FIELD_BOOLEAN ),
+	DEFINE_FIELD( m_bTurretJammed, FIELD_BOOLEAN ),
+	DEFINE_FIELD( m_bGunOut, FIELD_BOOLEAN ),
+	DEFINE_FIELD( m_flBailAt, FIELD_TIME ),
+	DEFINE_FIELD( m_flCookOffAt, FIELD_TIME ),
+	DEFINE_FIELD( m_flBurnOutAt, FIELD_TIME ),
+	DEFINE_FIELD( m_hFire, FIELD_EHANDLE ),
+	DEFINE_FIELD( m_hKiller, FIELD_EHANDLE ),
+	DEFINE_FIELD( m_iRounds, FIELD_INTEGER ),
+	DEFINE_FIELD( m_iMagLeft, FIELD_INTEGER ),
+	DEFINE_ARRAY( m_flPenTimes, FIELD_TIME, 2 ),
+	DEFINE_FIELD( m_bOutputKO, FIELD_BOOLEAN ),
+	DEFINE_FIELD( m_bOutOfAmmoSaid, FIELD_BOOLEAN ),
+	DEFINE_OUTPUT( m_OnPenetrated, "OnPenetrated" ),
+	DEFINE_OUTPUT( m_OnImmobilized, "OnImmobilized" ),
+	DEFINE_OUTPUT( m_OnBailOut, "OnBailOut" ),
+	DEFINE_OUTPUT( m_OnKnockedOut, "OnKnockedOut" ),
 END_DATADESC()
 
 IMPLEMENT_SERVERCLASS_ST( CDoDSPVehicle, DT_DoDSPVehicle )
@@ -960,6 +1122,14 @@ CDoDSPVehicle::CDoDSPVehicle()
 	}
 	m_iBadSpot = 0;
 	m_flWaitSince = m_flWaitSeen = m_flNextGiveWay = m_flAvoidUntil = m_flNextHoldMsg = 0.0f;
+	m_eState = VSTATE_FIGHTING;
+	m_flStructure = 0.0f;
+	m_iCrewAlive = 0;
+	m_bImmobile = m_bTurretJammed = m_bGunOut = false;
+	m_flBailAt = m_flCookOffAt = m_flBurnOutAt = 0.0f;
+	m_iRounds = m_iMagLeft = 0;
+	m_flPenTimes[0] = m_flPenTimes[1] = -100.0f;
+	m_bOutputKO = m_bOutOfAmmoSaid = false;
 	s_All.AddToTail( this );
 }
 
@@ -969,6 +1139,8 @@ void CDoDSPVehicle::UpdateOnRemove( void )
 	StopSounds();
 	if ( m_hTurret.Get() )
 		UTIL_Remove( m_hTurret.Get() );
+	if ( m_hFire.Get() )
+		UTIL_Remove( m_hFire.Get() );
 	BaseClass::UpdateOnRemove();
 }
 
@@ -980,6 +1152,16 @@ void CDoDSPVehicle::Precache( void )
 		PrecacheModel( m_pType->szModel );
 		if ( m_pType->szTurretModel[0] )
 			PrecacheModel( m_pType->szTurretModel );
+		if ( m_pType->szDeadModel[0] )
+		{
+			if ( filesystem->FileExists( m_pType->szDeadModel, "GAME" ) )
+				PrecacheModel( m_pType->szDeadModel );
+			else
+				Warning( "INVARIANT DOD-SP vehicles: type '%s' dead_model %s not found - a knocked-out one keeps its live model\n",
+						 m_pType->szName, m_pType->szDeadModel );
+		}
+		UTIL_PrecacheOther( "env_fire" );
+		UTIL_PrecacheOther( "npc_german_soldier" );
 		VehicleSoundsLevelInit();
 		const char *pszNames[] = { m_pType->gun.szSound, m_pType->coax.szSound, m_pType->szEngineIdle, m_pType->szEngineMove,
 								   m_pType->szTurretTurn, m_pType->szTurretStop, m_pType->szReload, m_pType->szExplode };
@@ -1035,7 +1217,17 @@ void CDoDSPVehicle::Spawn( void )
 
 	SetSolid( SOLID_VPHYSICS );
 	SetMoveType( MOVETYPE_PUSH );
-	m_takedamage = DAMAGE_NO;	// V4
+	// V4: hits are judged by its armour (TraceAttack / OnTakeDamage); health is never used
+	if ( m_pType->armour.bValid )
+	{
+		m_takedamage = DAMAGE_YES;
+		m_flStructure = m_pType->armour.flStructure;
+		m_iCrewAlive = ( 1 << m_pType->armour.nCrew ) - 1;
+	}
+	else
+		m_takedamage = DAMAGE_NO;
+	m_iRounds = m_pType->gun.nRounds;
+	m_iMagLeft = m_pType->gun.nMagazine;
 	if ( !VPhysicsInitShadow( false, false ) )
 	{
 		Warning( "INVARIANT DOD-SP vehicle %s: %s has no physics model (.phy) - it can't push or be hit\n", Label(), m_pType->szModel );
@@ -1615,6 +1807,11 @@ void CDoDSPVehicle::DriveThink( void )
 	SetMoveDoneTime( 1.0f );
 	if ( !m_pType )
 		return;
+	if ( m_eState != VSTATE_FIGHTING )
+	{
+		DamageStateThink();		// burning / abandoned: no driving, no guns
+		return;
+	}
 	float dt = VEHICLE_THINK;
 	if ( m_flHalfWidth <= 0.0f || m_flBodyHeight <= 0.0f )
 	{
@@ -1700,6 +1897,19 @@ void CDoDSPVehicle::DriveThink( void )
 	}
 	else
 		m_bReversing = false;
+
+	// V4: an immobilised vehicle doesn't move; a jammed turret is aimed by turning the whole (tracked) tank
+	if ( m_bImmobile )
+	{
+		flTargetSpeed = 0.0f;
+		flYawRate = 0.0f;
+	}
+	else if ( m_bTurretJammed && !m_bHasGoal && m_pType->bTracked && m_hTarget.Get() )
+	{
+		Vector vecTo = m_hTarget->WorldSpaceCenter() - vecPos;
+		float flWantHeading = RAD2DEG( atan2f( vecTo.y, vecTo.x ) ) - ( m_flTurretYaw + m_flTurretFwdOffset ) + m_pType->flForwardYaw;
+		flYawRate = clamp( AngleDiff( flWantHeading, m_flHeading ) * 2.0f, -m_pType->flTurnRate, m_pType->flTurnRate );
+	}
 
 	// other vehicles (V2d): it brakes for any vehicle its body would reach before it could stop, and gives way
 	// by the right of way (GiveWay). Checked in the direction it WANTS to go, so it never sets off into one.
@@ -2001,6 +2211,13 @@ void CDoDSPVehicle::TacticsThink( void )
 	m_flNextTactic = now + VEHICLE_TACTIC_INTERVAL;
 	UpdateQuarry();
 	m_bPreferReverse = false;
+	if ( m_bImmobile )
+	{
+		if ( m_bHasGoal )
+			Stop();
+		SetTactic( VTACTIC_HOLD, VWHY_IMMOBILE );
+		return;
+	}
 	if ( m_bScriptedGoal )
 	{
 		SetTactic( VTACTIC_SCRIPTED, VWHY_ORDERED );
@@ -2304,6 +2521,11 @@ CBaseEntity *CDoDSPVehicle::FindTarget( void )
 		if ( !TargetValid( p, flRange, false ) )
 			continue;
 		float flDist = ( p->WorldSpaceCenter() - vecPivot ).Length();
+		// V4: a vehicle whose armour facing it its gun can't get through counts as 3x as far (it still shoots it
+		// when nothing else is there - a hit on the tracks or a lucky angle)
+		CDoDSPVehicle *pV = dynamic_cast<CDoDSPVehicle *>( p );
+		if ( pV && !CanHurt( pV ) )
+			flDist *= 3.0f;
 		if ( flDist < flBest && CanSee( p ) )
 		{
 			flBest = flDist;
@@ -2340,17 +2562,29 @@ bool CDoDSPVehicle::FriendlyInTheWay( const Vector &vecFrom, const Vector &vecDi
 	return false;
 }
 
+// One shell (V4): AP at vehicles, HE at everything else, each with its real numbers. A vehicle on the line is
+// found by its ARMOUR BOXES (FindShellHit) - the turrets have no collision model, so the trace alone would fly
+// through them - and judged by TakeArmourHit; anything else gets the blast (DoDSP_ShellBlast) or, for solid shot,
+// the hole.
 void CDoDSPVehicle::FireMainGun( const Vector &vecAim )
 {
+	CBaseEntity *pTarget = m_hTarget.Get();
+	const DoDSPShell_t *pShell = ShellFor( pTarget );
+	if ( !pShell )
+		return;
+	bool bHE = ( pShell == &m_pType->gun.he );
 	Vector vecDir = vecAim;
-	// a little spread: a shell isn't a laser
-	float flSpread = DEG2RAD( m_pType->gun.flSpread ) * 0.5f * ( fabs( m_flSpeed ) < 15.0f ? 1.0f : 3.0f );
+	// a little spread: a shell isn't a laser (wider on the move, and with no trained gunner left)
+	float flSpread = DEG2RAD( m_pType->gun.flSpread ) * 0.5f * ( fabs( m_flSpeed ) < 15.0f ? 1.0f : 3.0f ) * AimPenalty();
 	vecDir += Vector( random->RandomFloat( -flSpread, flSpread ), random->RandomFloat( -flSpread, flSpread ), random->RandomFloat( -flSpread, flSpread ) );
 	VectorNormalize( vecDir );
 	Vector vecMuzzle = MuzzlePos( vecDir );
 	trace_t tr;
 	CTraceFilterSkipTwoEntities filter( this, m_hTurret.Get(), COLLISION_GROUP_NONE );
 	UTIL_TraceLine( vecMuzzle, vecMuzzle + vecDir * m_pType->gun.flRange, MASK_SHOT, &filter, &tr );	// dodsp-lint: not a sight line (the shell's own flight)
+	float flTraceDist = tr.fraction * m_pType->gun.flRange;
+	VehicleHit_t vh;
+	CDoDSPVehicle *pHitV = FindShellHit( vecMuzzle, vecDir, flTraceDist + 8.0f, this, &vh );
 	QAngle angDir;
 	VectorAngles( vecDir, angDir );
 	g_pEffects->MuzzleFlash( vecMuzzle, angDir, 6.0f, MUZZLEFLASH_TYPE_DEFAULT );
@@ -2359,25 +2593,66 @@ void CDoDSPVehicle::FireMainGun( const Vector &vecAim )
 	UTIL_ScreenShake( vecMuzzle, 6.0f, 150.0f, 0.6f, 1024.0f, SHAKE_START );
 	// recoil: the hull rocks away from the shot (nose up when firing ahead, down when firing behind)
 	m_flSuspVel += m_pType->flRecoil * 2.0f * M_PI_F * m_pType->flSuspFreq * cosf( DEG2RAD( m_flTurretYaw + m_flTurretFwdOffset ) );
-	if ( tr.fraction < 1.0f && !tr.startsolid )
+	char szWhat[64];
+	Q_snprintf( szWhat, sizeof( szWhat ), "%s's %.0f mm %s", Label(), pShell->flCalibre, bHE ? "HE" : "AP" );
+	const char *pszHit = "nothing";
+	float flHitDist = 0.0f;
+	if ( pHitV )
 	{
-		Vector vecBoom = tr.endpos + tr.plane.normal * 8.0f;
-		// the game's explosion does the damage (falls off over the radius) and the fireball; ours is the sound
-		ExplosionCreate( vecBoom, angDir, this, (int)m_pType->gun.flDamage, (int)m_pType->gun.flRadius, true, 0.0f, false, true );
-		if ( m_pType->szExplode[0] )
-		{
-			CPASAttenuationFilter boomFilter( vecBoom, SNDLVL_140dB );
-			EmitSound( boomFilter, entindex(), m_pType->szExplode, &vecBoom );
-		}
-		UTIL_ScreenShake( vecBoom, 12.0f, 150.0f, 1.0f, m_pType->gun.flRadius * 3.0f, SHAKE_START );
+		pszHit = pHitV->Label();
+		flHitDist = vh.t;
+		float flPen = DoDSP_ShellPen( *pShell, vh.t );
+		bool bIn = pHitV->TakeArmourHit( vh, vecDir, flPen, pShell->flEffect, pShell->flCalibre, this, szWhat, false, pShell->flFiller );
+		// HE (and a shell that stayed outside) bursts on the plate; the vehicle's own hit is judged above, so the
+		// blast leaves it out. A shell that got in did its work inside (its effect).
+		if ( !bIn || bHE )
+			DoDSP_ShellBlast( vh.vecPoint - vecDir * 8.0f, pShell->flFiller, this, pHitV, m_pType->szExplode );
+		UTIL_ScreenShake( vh.vecPoint, 12.0f, 150.0f, 1.0f, 768.0f, SHAKE_START );
 	}
-	m_flNextGun = gpGlobals->curtime + m_pType->gun.flReload;
-	m_bReloadSoundDone = false;
+	else if ( tr.fraction < 1.0f && !tr.startsolid )
+	{
+		pszHit = VehicleHitName( tr );
+		flHitDist = flTraceDist;
+		Vector vecBoom = tr.endpos + tr.plane.normal * 8.0f;
+		if ( pShell->flFiller > 0.0f )
+			DoDSP_ShellBlast( vecBoom, pShell->flFiller, this, NULL, m_pType->szExplode );
+		else
+			g_pEffects->Sparks( tr.endpos, 2, 2, &tr.plane.normal );
+		// solid shot (or a dud) that hits a man: it goes through him
+		if ( tr.m_pEnt && ( tr.m_pEnt->IsNPC() || tr.m_pEnt->IsPlayer() ) )
+		{
+			CTakeDamageInfo dmg( this, this, 300.0f, DMG_BULLET );
+			dmg.SetDamagePosition( tr.endpos );
+			dmg.SetDamageForce( vecDir * 20000.0f );
+			tr.m_pEnt->TakeDamage( dmg );
+		}
+	}
+	// ammunition: a magazine at the cyclic rate, then the reload (longer with the loader gone); rounds carried
+	float now = gpGlobals->curtime;
+	if ( m_pType->gun.nRounds > 0 )
+		m_iRounds = MAX( m_iRounds - 1, 0 );
+	m_iMagLeft--;
+	bool bRoundsLeft = m_pType->gun.nRounds <= 0 || m_iRounds > 0;
+	if ( m_iMagLeft > 0 && bRoundsLeft )
+	{
+		m_flNextGun = now + 60.0f / MAX( m_pType->gun.flCyclic, 1.0f );
+		m_bReloadSoundDone = true;		// no clank between rounds of a magazine
+	}
+	else
+	{
+		m_iMagLeft = m_pType->gun.nRounds > 0 ? MIN( m_pType->gun.nMagazine, m_iRounds ) : m_pType->gun.nMagazine;
+		m_flNextGun = now + m_pType->gun.flReload * ReloadScale();
+		m_bReloadSoundDone = !bRoundsLeft;
+	}
+	if ( !bRoundsLeft && !m_bOutOfAmmoSaid )
+	{
+		m_bOutOfAmmoSaid = true;
+		Msg( "DOD-SP vehicle %s: out of main-gun ammunition (%d rounds carried) - machine gun only\n", Label(), m_pType->gun.nRounds );
+	}
 	m_OnFire.FireOutput( m_hTarget.Get(), this );
 	if ( dodsp_vehicle_debug.GetBool() )
-		Msg( "DOD-SP vehicle %s: main gun fired at %s - hit %s %.0f units out\n", Label(),
-			 VehicleWho( m_hTarget.Get() ), tr.fraction < 1.0f ? VehicleHitName( tr ) : "nothing",
-			 ( tr.endpos - vecMuzzle ).Length() );
+		Msg( "DOD-SP vehicle %s: fired %s at %s - hit %s %.0f units out (%d in the magazine, %d rounds left)\n", Label(), bHE ? "HE" : "AP",
+			 VehicleWho( pTarget ), pszHit, flHitDist, m_iMagLeft, m_pType->gun.nRounds > 0 ? m_iRounds : -1 );
 }
 
 void CDoDSPVehicle::FireCoax( const Vector &vecDir )
@@ -2441,13 +2716,13 @@ void CDoDSPVehicle::WeaponThink( float dt )
 	float flOldYaw = m_flTurretYaw;
 	if ( m_hTurret.Get() )
 	{
-		m_flTurretYaw = ApproachAngle( flWantYaw, m_flTurretYaw, m_pType->flTurretRate * dt );
+		m_flTurretYaw = ApproachAngle( flWantYaw, m_flTurretYaw, TurretRate() * dt );
 		float flPitchMin = MIN( m_flPoseMin * m_flPitchSign, m_flPoseMax * m_flPitchSign );
 		float flPitchMax = MAX( m_flPoseMin * m_flPitchSign, m_flPoseMax * m_flPitchSign );
 		if ( m_iPitchPose < 0 )
 			flPitchMin = flPitchMax = 0.0f;
 		flWantPitch = clamp( flWantPitch, flPitchMin, flPitchMax );
-		m_flTurretPitch = Approach( flWantPitch, m_flTurretPitch, m_pType->flPitchRate * dt );
+		m_flTurretPitch = Approach( flWantPitch, m_flTurretPitch, ( CanAim() ? m_pType->flPitchRate : 0.0f ) * dt );
 		m_hTurret->SetLocalAngles( QAngle( 0, m_flTurretYaw, 0 ) );
 		CBaseAnimating *pT = dynamic_cast<CBaseAnimating *>( m_hTurret.Get() );
 		if ( pT && m_iPitchPose >= 0 )
@@ -2462,7 +2737,7 @@ void CDoDSPVehicle::WeaponThink( float dt )
 		EmitSound( m_pType->szReload );
 	}
 
-	if ( !pTarget || m_bHoldFire )
+	if ( !pTarget || m_bHoldFire || !CanAim() )
 		return;
 	Vector vecBarrel = BarrelDir();
 	Vector vecToTarget = vecAimPoint - MuzzlePos( vecBarrel );
@@ -2474,13 +2749,17 @@ void CDoDSPVehicle::WeaponThink( float dt )
 	// reach the target or land within half its blast radius of it; the coax must reach it
 	Vector vecMuzzleNow = MuzzlePos( vecBarrel );
 	trace_t trShot;
-	bool bShellClear = LineOfFire( vecMuzzleNow, vecAimPoint, pTarget, m_pType->gun.flRadius * 0.5f, &trShot );
+	const DoDSPShell_t *pShell = ShellFor( pTarget );
+	float flShellKill = 0.0f, flShellWound = 0.0f;
+	if ( pShell && pShell->flFiller > 0.0f && !dynamic_cast<CDoDSPVehicle *>( pTarget ) )
+		DoDSP_HERadiiPeople( pShell->flFiller, &flShellKill, &flShellWound );
+	bool bShellClear = LineOfFire( vecMuzzleNow, vecAimPoint, pTarget, flShellKill, &trShot );
 	bool bBulletClear = bShellClear && LineOfFire( vecMuzzleNow, vecAimPoint, pTarget, 0.0f );
 	CBaseEntity *pFriend = NULL;
 	// main gun: at anything hostile, when the barrel is on it. A defensive vehicle stops to shoot; an offensive
 	// one shoots on the move too (FireMainGun spreads moving shots wider)
 	bool bStill = fabs( m_flSpeed ) < 15.0f;
-	if ( m_pType->gun.bHas && now >= m_flNextGun && flErr <= VEHICLE_GUN_CONE && flDist <= m_pType->gun.flRange &&
+	if ( MainGunUsable() && pShell && now >= m_flNextGun && flErr <= VEHICLE_GUN_CONE && flDist <= m_pType->gun.flRange &&
 		 ( bStill || m_eBehavior != VBEHAVE_DEFENSIVE ) )
 	{
 		if ( !bShellClear )
@@ -2493,7 +2772,7 @@ void CDoDSPVehicle::WeaponThink( float dt )
 			}
 			m_flNextGun = now + 0.5f;		// look again shortly (the turret or the target moves)
 		}
-		else if ( FriendlyInTheWay( MuzzlePos( vecBarrel ), vecBarrel, flDist + 64.0f, m_pType->gun.flRadius, &pFriend ) )
+		else if ( FriendlyInTheWay( MuzzlePos( vecBarrel ), vecBarrel, flDist + 64.0f, flShellWound, &pFriend ) )
 		{
 			if ( dodsp_vehicle_debug.GetBool() )
 				Msg( "DOD-SP vehicle %s: holding fire - %s in the way\n", Label(), VehicleWho( pFriend ) );
@@ -2516,6 +2795,891 @@ void CDoDSPVehicle::WeaponThink( float dt )
 			m_flNextCoaxShot = now + 1.0f / MAX( m_pType->coax.flRate, 1.0f );
 			if ( bBulletClear && !FriendlyInTheWay( MuzzlePos( vecBarrel ), vecBarrel, flDist + 64.0f, 0.0f, &pFriend ) )
 				FireCoax( vecBarrel );
+		}
+	}
+}
+
+//-----------------------------------------------------------------------------
+// V4: armour, damage, crews, wrecks. Owner's calls 2026-11-20: fully real armour and guns, HE at half its real
+// size against people, damage to parts AND crew, crews bail out (German crews come out as soldiers; DOD-SP has no
+// Allied infantry yet). One owner each:
+//   whether a hit gets in  - TakeArmourHit (shells, bullets) / BlastHit (blasts), using dodsp_vehicle_armour
+//   what it breaks         - ApplyPenetration (structure, the crit table, crew casualties)
+//   who is left            - m_iCrewAlive (KillCrew / BailOut), and what each role does (CanAim, ReloadScale ...)
+//   what the vehicle is    - m_eState (fighting / burning / abandoned / wrecked)
+//-----------------------------------------------------------------------------
+
+// What a penetration of a plate breaks: weights per crit (AMMO ENGINE DRIVE TURRET GUN CREW) for a tank with its
+// engine at the back - ammunition along the hull sides and in the turret, transmission at the front, engine at the
+// rear. RollCrit moves the engine for front / middle engines and drops what the vehicle hasn't got. Game values.
+static const float s_flCritHull[NUM_AFACES][6] =
+{
+	{ 25,  0, 35,  0,  0, 40 },		// front
+	{ 45, 15, 20,  0,  0, 20 },		// side
+	{ 15, 70, 10,  0,  0,  5 },		// rear
+	{ 25, 40,  0,  0,  0, 35 },		// top
+	{ 20, 20, 30,  0,  0, 30 },		// bottom
+};
+static const float s_flCritTurret[NUM_AFACES][6] =
+{
+	{ 15,  0,  0, 20, 35, 30 },
+	{ 25,  0,  0, 25, 15, 35 },
+	{ 30,  0,  0, 25, 10, 35 },
+	{ 15,  0,  0, 15, 10, 60 },
+	{ 15,  0,  0, 15, 10, 60 },
+};
+static const float s_flCritOpenTop[6] = { 5, 10, 0, 0, 0, 85 };	// into an open compartment: mostly the men
+
+int CDoDSPVehicle::RollCrit( int ePart, int eFace )
+{
+	const DoDSPArmour_t &ar = m_pType->armour;
+	float w[6];
+	if ( ePart == APART_TURRET )
+		memcpy( w, s_flCritTurret[eFace], sizeof( w ) );
+	else if ( eFace == AFACE_TOP && ar.bOpenTop )
+		memcpy( w, s_flCritOpenTop, sizeof( w ) );
+	else
+	{
+		int eRow = eFace;
+		if ( ar.iEngineAt == AFACE_FRONT && ( eFace == AFACE_FRONT || eFace == AFACE_REAR ) )
+			eRow = ( eFace == AFACE_FRONT ) ? AFACE_REAR : AFACE_FRONT;		// engine and transmission swap ends
+		memcpy( w, s_flCritHull[eRow], sizeof( w ) );
+		if ( ar.iEngineAt == AFACE_TOP )		// engine in the middle (carrier): behind the sides, less at the back
+		{
+			if ( eFace == AFACE_REAR )
+			{
+				w[1] -= 35.0f;
+				w[2] += 15.0f;
+				w[5] += 20.0f;
+			}
+			else if ( eFace == AFACE_SIDE )
+			{
+				w[1] += 15.0f;
+				w[0] -= 15.0f;
+			}
+		}
+	}
+	// what it hasn't got can't be hit
+	if ( !m_hTurret.Get() )
+	{
+		w[5] += w[3];
+		w[3] = 0.0f;
+	}
+	if ( !m_pType->gun.bHas )
+	{
+		w[5] += w[4] + w[0] * 0.5f;
+		w[4] = 0.0f;
+		w[0] *= 0.5f;
+	}
+	float flSum = 0.0f;
+	for ( int i = 0; i < 6; i++ )
+		flSum += MAX( w[i], 0.0f );
+	float r = random->RandomFloat( 0.0f, flSum );
+	for ( int i = 0; i < 6; i++ )
+	{
+		r -= MAX( w[i], 0.0f );
+		if ( r <= 0.0f && w[i] > 0.0f )
+			return VCRIT_AMMO + i;
+	}
+	return VCRIT_CREW;
+}
+
+int CDoDSPVehicle::CrewAlive( void ) const
+{
+	int n = 0;
+	for ( int i = 0; i < DODSP_MAX_CREW; i++ )
+		if ( m_iCrewAlive & ( 1 << i ) )
+			n++;
+	return n;
+}
+
+bool CDoDSPVehicle::CrewHas( int eRole ) const
+{
+	for ( int i = 0; i < m_pType->armour.nCrew; i++ )
+		if ( ( m_iCrewAlive & ( 1 << i ) ) && m_pType->armour.eCrew[i] == eRole )
+			return true;
+	return false;
+}
+
+bool CDoDSPVehicle::TypeHasRole( int eRole ) const
+{
+	for ( int i = 0; i < m_pType->armour.nCrew; i++ )
+		if ( m_pType->armour.eCrew[i] == eRole )
+			return true;
+	return false;
+}
+
+// someone in the turret to lay the gun (the commander or the loader takes over from a dead gunner)
+bool CDoDSPVehicle::CanAim( void ) const
+{
+	if ( !m_pType->armour.bValid )
+		return true;
+	return CrewHas( CREW_GUNNER ) || CrewHas( CREW_COMMANDER ) || CrewHas( CREW_LOADER );
+}
+
+float CDoDSPVehicle::ReloadScale( void ) const
+{
+	if ( !m_pType->armour.bValid )
+		return 1.0f;
+	if ( TypeHasRole( CREW_LOADER ) && !CrewHas( CREW_LOADER ) )
+		return 2.0f;		// the gunner or commander loads too
+	return 1.0f;
+}
+
+float CDoDSPVehicle::AimPenalty( void ) const
+{
+	if ( m_pType->armour.bValid && TypeHasRole( CREW_GUNNER ) && !CrewHas( CREW_GUNNER ) )
+		return 2.0f;
+	return 1.0f;
+}
+
+float CDoDSPVehicle::TurretRate( void ) const
+{
+	if ( m_bTurretJammed || !CanAim() )
+		return 0.0f;
+	return m_pType->flTurretRate * ( AimPenalty() > 1.0f ? 0.6f : 1.0f );
+}
+
+bool CDoDSPVehicle::MainGunUsable( void ) const
+{
+	return m_pType->gun.bHas && !m_bGunOut && CanAim() && ( m_pType->gun.nRounds <= 0 || m_iRounds > 0 );
+}
+
+// AP at vehicles, HE at everything else (what a crew loaded), whichever it has if it has only one
+const DoDSPShell_t *CDoDSPVehicle::ShellFor( CBaseEntity *pTarget ) const
+{
+	if ( !m_pType->gun.bHas )
+		return NULL;
+	const DoDSPShell_t *pAP = m_pType->gun.ap.bValid ? &m_pType->gun.ap : NULL;
+	const DoDSPShell_t *pHE = m_pType->gun.he.bValid ? &m_pType->gun.he : NULL;
+	if ( dynamic_cast<CDoDSPVehicle *>( pTarget ) )
+		return pAP ? pAP : pHE;
+	return pHE ? pHE : pAP;
+}
+
+// Where a ray meets this vehicle's armour: the turret's box (cut at its own body - the model's box reaches out to
+// the muzzle) and the hull's (cut halfway up the turret's lower part, so a shot at the turret meets the turret).
+// The face entered, its plate leaned back by its slope. One owner for "which plate" - shells, bullets, the
+// can-it-hurt test and the pen chart all ask this.
+bool CDoDSPVehicle::ShellHitBox( const Vector &vecFrom, const Vector &vecDir, float flMax, VehicleHit_t *pHit )
+{
+	if ( !m_pType || !m_pType->armour.bValid || m_eState == VSTATE_WRECKED )
+		return false;
+	bool bHit = false;
+	float flBest = flMax;
+	CBaseAnimating *pT = dynamic_cast<CBaseAnimating *>( m_hTurret.Get() );
+	CStudioHdr *pTHdr = pT ? pT->GetModelPtr() : NULL;
+	for ( int ePart = 0; ePart < NUM_APARTS; ePart++ )
+	{
+		CBaseEntity *pPart = this;
+		Vector vecMins, vecMaxs;
+		float flFwd;
+		if ( ePart == APART_TURRET )
+		{
+			if ( !pTHdr )
+				continue;
+			vecMins = pTHdr->hull_min();
+			vecMaxs = pTHdr->hull_max();
+			flFwd = m_flTurretFwdOffset;
+			Vector f( cosf( DEG2RAD( flFwd ) ), sinf( DEG2RAD( flFwd ) ), 0.0f );
+			int a = ( fabs( f.x ) >= fabs( f.y ) ) ? 0 : 1;
+			if ( f[a] > 0.0f )
+				vecMaxs[a] = MIN( vecMaxs[a], -vecMins[a] * 1.2f );
+			else
+				vecMins[a] = MAX( vecMins[a], -vecMaxs[a] * 1.2f );
+			pPart = pT;
+		}
+		else
+		{
+			vecMins = CollisionProp()->OBBMins();
+			vecMaxs = CollisionProp()->OBBMaxs();
+			if ( pTHdr )
+				vecMaxs.z = MIN( vecMaxs.z, pT->GetLocalOrigin().z + 0.5f * pTHdr->hull_min().z );
+			flFwd = m_pType->flForwardYaw;
+		}
+		const matrix3x4_t &xf = pPart->EntityToWorldTransform();
+		Vector o, d;
+		VectorITransform( vecFrom, xf, o );
+		VectorIRotate( vecDir, xf, d );
+		float t;
+		int iAxis, iSign;
+		if ( !DoDSP_RayBox( o, d, vecMins, vecMaxs, &t, &iAxis, &iSign ) || t > flBest )
+			continue;
+		Vector n( 0.0f, 0.0f, 0.0f );
+		n[iAxis] = (float)iSign;
+		Vector f( cosf( DEG2RAD( flFwd ) ), sinf( DEG2RAD( flFwd ) ), 0.0f );
+		int eFace;
+		if ( iAxis == 2 )
+			eFace = ( iSign > 0 ) ? AFACE_TOP : AFACE_BOTTOM;
+		else
+		{
+			float dp = DotProduct( n, f );
+			eFace = ( dp > 0.7f ) ? AFACE_FRONT : ( dp < -0.7f ) ? AFACE_REAR : AFACE_SIDE;
+		}
+		const ArmourPlate_t &plate = m_pType->armour.plates[ePart][eFace];
+		if ( iAxis != 2 && plate.flSlope != 0.0f )
+		{
+			float flSlope = DEG2RAD( plate.flSlope );
+			n = n * cosf( flSlope ) + Vector( 0.0f, 0.0f, sinf( flSlope ) );
+		}
+		Vector vecNormal;
+		VectorRotate( n, xf, vecNormal );
+		pHit->ePart = ePart;
+		pHit->eFace = eFace;
+		pHit->t = t;
+		pHit->vecPoint = vecFrom + vecDir * t;
+		pHit->vecNormal = vecNormal;
+		flBest = t;
+		bHit = true;
+	}
+	return bHit;
+}
+
+CDoDSPVehicle *CDoDSPVehicle::FindShellHit( const Vector &vecFrom, const Vector &vecDir, float flMax, CDoDSPVehicle *pSkip, VehicleHit_t *pHit )
+{
+	CDoDSPVehicle *pBest = NULL;
+	float flBest = flMax;
+	for ( int i = 0; i < s_All.Count(); i++ )
+	{
+		CDoDSPVehicle *pV = s_All[i];
+		VehicleHit_t h;
+		if ( pV != pSkip && pV->ShellHitBox( vecFrom, vecDir, flBest, &h ) )
+		{
+			pBest = pV;
+			flBest = h.t;
+			*pHit = h;
+		}
+	}
+	return pBest;
+}
+
+// Does it get in? The plate's effective thickness on this path against the shell's penetration (+-10%); past
+// VEHICLE_RICOCHET_ANGLE it skids off unless it overmatches the plate. An open top has no plate. Penetrations are
+// always printed (they change the fight); the rest only with dodsp_vehicle_debug.
+bool CDoDSPVehicle::TakeArmourHit( const VehicleHit_t &hit, const Vector &vecPath, float flPen, float flEffect, float flCalibre,
+								   CBaseEntity *pAttacker, const char *pszWhat, bool bQuiet, float flFiller )
+{
+	if ( !m_pType || !m_pType->armour.bValid || m_eState == VSTATE_WRECKED )
+		return false;
+	ArmourPlate_t plate = m_pType->armour.plates[hit.ePart][hit.eFace];
+	bool bOpen = hit.ePart == APART_HULL && hit.eFace == AFACE_TOP && m_pType->armour.bOpenTop;
+	if ( bOpen )
+		plate.flMM = 0.0f;
+	float flAngle = 0.0f;
+	float flEff = DoDSP_EffectiveArmour( plate, vecPath, hit.vecNormal, &flAngle );
+	bool bRicochet = plate.flMM > 0.0f && flAngle > VEHICLE_RICOCHET_ANGLE && flCalibre < 3.0f * plate.flMM;
+	float flRoll = flPen * random->RandomFloat( 0.9f, 1.1f );
+	bool bIn = !bRicochet && flRoll >= flEff;
+	if ( ( bIn && ( !bQuiet || dodsp_vehicle_debug.GetBool() ) ) || ( !bIn && !bQuiet && dodsp_vehicle_debug.GetBool() ) )
+		Msg( "DOD-SP vehicle %s: %s hit its %s %s%s at %.0f deg (%.0f mm = %.0f mm effective) with %.0f mm penetration - %s\n", Label(),
+			 pszWhat, g_pszArmourPart[hit.ePart], g_pszArmourFace[hit.eFace], bOpen ? " (open)" : "", flAngle, plate.flMM, flEff,
+			 flRoll, bIn ? "IN" : bRicochet ? "ricochet" : "stopped" );
+	if ( bIn )
+		ApplyPenetration( hit.ePart, hit.eFace, flEffect, pAttacker, pszWhat );
+	else if ( flFiller >= 0.5f )
+		ExternalBlast( flFiller, 1.0f, pAttacker );
+	return bIn;
+}
+
+// A big charge bursting outside: tracks, the gun, the turret ring - and the very big ones (152 mm) stun or kill
+// the crew through the plate ("dislodging the turret of a Tiger" - SU-152 article).
+void CDoDSPVehicle::ExternalBlast( float flFiller, float k, CBaseEntity *pAttacker )
+{
+	if ( m_eState == VSTATE_WRECKED )
+		return;
+	float p = clamp( flFiller / 10.0f, 0.0f, 0.6f ) * k;
+	if ( random->RandomFloat() < p )
+	{
+		int e = random->RandomInt( 0, 2 );
+		if ( e == 1 && m_pType->gun.bHas && !m_bGunOut )
+		{
+			m_bGunOut = true;
+			Msg( "DOD-SP vehicle %s: the blast wrecked its main gun\n", Label() );
+		}
+		else if ( e == 2 && m_hTurret.Get() && !m_bTurretJammed )
+		{
+			m_bTurretJammed = true;
+			Msg( "DOD-SP vehicle %s: the blast jammed its turret\n", Label() );
+		}
+		else
+			SetImmobile( "the blast broke a track / wheel", pAttacker );
+	}
+	if ( flFiller >= 4.0f && k > 0.8f && random->RandomFloat() < 0.25f )
+	{
+		KnockOut( false, pAttacker, "the blast knocked the crew out" );
+		return;
+	}
+	CheckMorale( pAttacker );
+}
+
+// A blast near the vehicle (our shells' bursts and anything else that explodes): the plate facing it against what
+// the charge pierces at that distance (REAL size - armour doesn't care about balance); into an open top the
+// fragments reach the crew out to the wound radius.
+void CDoDSPVehicle::BlastHit( const Vector &vecCentre, float flFiller, CBaseEntity *pAttacker )
+{
+	if ( flFiller <= 0.0f )
+		return;
+	float flKill, flWound;
+	DoDSP_HERadiiReal( flFiller, &flKill, &flWound );
+	Vector vecLocal;
+	VectorITransform( vecCentre, EntityToWorldTransform(), vecLocal );
+	Vector vecMins = CollisionProp()->OBBMins(), vecMaxs = CollisionProp()->OBBMaxs();
+	Vector vecNear;
+	int iAxis = 2, iSign = 1;
+	float flOut = 0.0f;
+	for ( int a = 0; a < 3; a++ )
+	{
+		vecNear[a] = clamp( vecLocal[a], vecMins[a], vecMaxs[a] );
+		float o = fabs( vecLocal[a] - vecNear[a] ) / MAX( vecMaxs[a] - vecMins[a], 1.0f );
+		if ( o > flOut )
+		{
+			flOut = o;
+			iAxis = a;
+			iSign = ( vecLocal[a] > vecMaxs[a] ) ? 1 : -1;
+		}
+	}
+	float flDist = ( vecLocal - vecNear ).Length();
+	if ( flDist >= flWound )
+		return;
+	int eFace;
+	if ( iAxis == 2 )
+		eFace = ( iSign > 0 ) ? AFACE_TOP : AFACE_BOTTOM;
+	else
+	{
+		Vector f( cosf( DEG2RAD( m_pType->flForwardYaw ) ), sinf( DEG2RAD( m_pType->flForwardYaw ) ), 0.0f );
+		Vector n( 0.0f, 0.0f, 0.0f );
+		n[iAxis] = (float)iSign;
+		float dp = DotProduct( n, f );
+		eFace = ( dp > 0.7f ) ? AFACE_FRONT : ( dp < -0.7f ) ? AFACE_REAR : AFACE_SIDE;
+	}
+	char szWhat[64];
+	Q_snprintf( szWhat, sizeof( szWhat ), "a %.2f kg blast %.0f units off", flFiller, flDist );
+	// fragments into an open compartment from anywhere above its sides
+	if ( m_pType->armour.bOpenTop && vecLocal.z > vecMaxs.z * 0.5f && m_eState != VSTATE_BURNING )
+	{
+		float k = 1.0f - flDist / flWound;
+		if ( random->RandomFloat() < 0.6f * k )
+		{
+			m_flStructure -= 10.0f * k;
+			KillCrew( 1, APART_HULL, "fragments into the open top" );
+			CheckMorale( pAttacker );
+		}
+	}
+	if ( flDist >= flKill || m_eState == VSTATE_WRECKED )
+		return;
+	float k = 1.0f - flDist / flKill;
+	float flPen = DoDSP_HEPen( flFiller ) * k;
+	const ArmourPlate_t &plate = m_pType->armour.plates[APART_HULL][eFace];
+	if ( flPen >= plate.flMM )
+	{
+		if ( dodsp_vehicle_debug.GetBool() )
+			Msg( "DOD-SP vehicle %s: %s pierced its hull %s (%.0f mm vs %.0f mm)\n", Label(), szWhat, g_pszArmourFace[eFace], flPen, plate.flMM );
+		ApplyPenetration( APART_HULL, eFace, 60.0f * powf( flFiller / 0.68f, 1.0f / 3.0f ) * k, pAttacker, szWhat );
+	}
+	else if ( flFiller >= 0.5f )
+		ExternalBlast( flFiller, k, pAttacker );
+}
+
+// What got in: the structure takes the round's effect (+-25%); spall kills crew; one part in the crit table may be
+// hit (big rounds always, bullets seldom). Every penetration prints one line.
+void CDoDSPVehicle::ApplyPenetration( int ePart, int eFace, float flEffect, CBaseEntity *pAttacker, const char *pszWhat )
+{
+	if ( m_eState == VSTATE_WRECKED )
+		return;
+	float now = gpGlobals->curtime;
+	if ( pAttacker )
+		m_hKiller = pAttacker;
+	m_flStructure -= flEffect * random->RandomFloat( 0.75f, 1.25f );
+	m_flPenTimes[1] = m_flPenTimes[0];
+	m_flPenTimes[0] = now;
+	m_OnPenetrated.FireOutput( pAttacker, this );
+	int nCas = 0;
+	if ( random->RandomFloat() < MIN( 0.8f, flEffect / 150.0f ) )
+		nCas++;
+	if ( flEffect > 150.0f && random->RandomFloat() < 0.5f )
+		nCas++;
+	int eCrit = VCRIT_NONE;
+	if ( random->RandomFloat() < clamp( flEffect / 40.0f, 0.05f, 1.0f ) )
+		eCrit = RollCrit( ePart, eFace );
+	int eFire = 0;		// 1 ammunition, 2 engine
+	switch ( eCrit )
+	{
+	case VCRIT_AMMO:
+		if ( random->RandomFloat() < m_pType->armour.flAmmoFire )
+			eFire = 1;
+		else
+			nCas++;
+		break;
+	case VCRIT_ENGINE:
+		SetImmobile( "engine hit", pAttacker );
+		if ( random->RandomFloat() < m_pType->armour.flFuelFire )
+			eFire = 2;
+		break;
+	case VCRIT_DRIVE:
+		SetImmobile( "transmission / tracks hit", pAttacker );
+		break;
+	case VCRIT_TURRET:
+		m_bTurretJammed = true;
+		break;
+	case VCRIT_GUN:
+		m_bGunOut = true;
+		break;
+	case VCRIT_CREW:
+		nCas++;
+		break;
+	}
+	if ( flEffect >= 10.0f || eCrit != VCRIT_NONE || nCas || dodsp_vehicle_debug.GetBool() )		// not every bullet
+		Msg( "DOD-SP vehicle %s: PENETRATED (%s %s) by %s - %s%s; structure %.0f of %.0f\n", Label(), g_pszArmourPart[ePart],
+			 g_pszArmourFace[eFace], pszWhat, s_pszCrit[eCrit], eFire == 1 ? " - it catches fire" : eFire == 2 ? " - the engine catches fire" : "",
+			 m_flStructure, m_pType->armour.flStructure );
+	if ( nCas )
+		KillCrew( nCas, ePart, "hit by the round / spall" );
+	if ( m_flStructure <= 0.0f )
+	{
+		KnockOut( m_flStructure < -0.5f * m_pType->armour.flStructure, pAttacker, "too much damage inside" );
+		return;
+	}
+	if ( eFire )
+	{
+		SetBurning( eFire == 1, pAttacker );
+		return;
+	}
+	CheckMorale( pAttacker );
+}
+
+void CDoDSPVehicle::KillCrew( int n, int ePart, const char *pszWhy )
+{
+	const DoDSPArmour_t &ar = m_pType->armour;
+	for ( int k = 0; k < n; k++ )
+	{
+		int iPick = -1;
+		// the men in the part that was hit first (turret: commander, gunner, loader; hull: driver, radio)
+		for ( int pass = 0; pass < 2 && iPick < 0; pass++ )
+		{
+			int nCand = 0;
+			for ( int i = 0; i < ar.nCrew; i++ )
+			{
+				if ( !( m_iCrewAlive & ( 1 << i ) ) )
+					continue;
+				int e = ar.eCrew[i];
+				bool bTurretMan = ( e == CREW_COMMANDER || e == CREW_GUNNER || e == CREW_LOADER );
+				if ( pass == 0 && bTurretMan != ( ePart == APART_TURRET ) )
+					continue;
+				if ( random->RandomInt( 0, nCand++ ) == 0 )
+					iPick = i;
+			}
+		}
+		if ( iPick < 0 )
+			break;
+		m_iCrewAlive &= ~( 1 << iPick );
+		Msg( "DOD-SP vehicle %s: its %s is killed (%s) - crew %d of %d left\n", Label(), g_pszCrewRole[ar.eCrew[iPick]], pszWhy,
+			 CrewAlive(), ar.nCrew );
+	}
+	if ( !CrewHas( CREW_DRIVER ) && !CrewHas( CREW_RADIO ) )
+		SetImmobile( "no one left to drive it", NULL );
+}
+
+void CDoDSPVehicle::SetImmobile( const char *pszWhy, CBaseEntity *pAttacker )
+{
+	if ( m_bImmobile )
+		return;
+	m_bImmobile = true;
+	if ( m_bHasGoal )
+		Stop();
+	Msg( "DOD-SP vehicle %s: IMMOBILISED - %s\n", Label(), pszWhy );
+	m_OnImmobilized.FireOutput( pAttacker ? pAttacker : this, this );
+}
+
+void CDoDSPVehicle::FireKnockedOut( CBaseEntity *pAttacker )
+{
+	if ( m_bOutputKO )
+		return;
+	m_bOutputKO = true;
+	m_OnKnockedOut.FireOutput( pAttacker ? pAttacker : this, this );
+}
+
+// One env_fire on the vehicle: the engine deck for an engine fire, the fighting compartment otherwise
+void CDoDSPVehicle::MakeFire( float flSize, bool bEngine )
+{
+	if ( m_hFire.Get() )
+		return;
+	CBaseEntity *pFire = CreateEntityByName( "env_fire" );
+	if ( !pFire )
+		return;
+	float flAlong = 0.0f;
+	if ( bEngine )
+		flAlong = ( m_pType->armour.iEngineAt == AFACE_FRONT ? 0.6f : m_pType->armour.iEngineAt == AFACE_REAR ? -0.6f : 0.0f ) * m_flHalfLength;
+	Vector vecFwd( cosf( DEG2RAD( m_flHeading ) ), sinf( DEG2RAD( m_flHeading ) ), 0.0f );
+	Vector vecAt = GetAbsOrigin() + vecFwd * flAlong + Vector( 0.0f, 0.0f, m_flBodyHeight * 0.6f );
+	char szSize[16];
+	Q_snprintf( szSize, sizeof( szSize ), "%.0f", flSize );
+	pFire->KeyValue( "firesize", szSize );
+	pFire->KeyValue( "fireattack", "1" );
+	pFire->KeyValue( "firetype", "0" );
+	pFire->KeyValue( "damagescale", "1.0" );
+	pFire->KeyValue( "spawnflags", "13" );		// infinite (we put it out), start on, start full
+	pFire->SetAbsOrigin( vecAt );
+	DispatchSpawn( pFire );
+	pFire->Activate();
+	m_hFire = pFire;
+}
+
+void CDoDSPVehicle::SetBurning( bool bAmmo, CBaseEntity *pAttacker )
+{
+	if ( m_eState == VSTATE_BURNING || m_eState == VSTATE_WRECKED )
+		return;
+	float now = gpGlobals->curtime;
+	m_eState = VSTATE_BURNING;
+	m_bImmobile = true;
+	Stop();
+	StopSounds();
+	m_flSpeed = 0.0f;
+	m_flTrackSpeed = 0.0f;
+	MakeFire( bAmmo ? 160.0f : 112.0f, !bAmmo );
+	m_flBailAt = CrewAlive() ? now + random->RandomFloat( 1.0f, 3.0f ) : 0.0f;
+	if ( bAmmo )
+	{
+		m_flCookOffAt = now + random->RandomFloat( 6.0f, 15.0f );
+		m_flBurnOutAt = 0.0f;
+	}
+	else
+	{
+		m_flBurnOutAt = now + random->RandomFloat( 30.0f, 60.0f );
+		m_flCookOffAt = ( random->RandomFloat() < 0.4f ) ? now + random->RandomFloat( 12.0f, 30.0f ) : 0.0f;	// the fire reaches the ammunition
+	}
+	Msg( "DOD-SP vehicle %s: BURNING - %s fire%s\n", Label(), bAmmo ? "ammunition" : "engine",
+		 m_flCookOffAt > 0.0f ? ", it will cook off" : ", it will burn out" );
+	FireKnockedOut( pAttacker );
+}
+
+// The crew decides it's had enough (reason codes): fire, too few men, can't move AND can't fight, can't move and
+// keeps getting penetrated.
+void CDoDSPVehicle::CheckMorale( CBaseEntity *pAttacker )
+{
+	if ( m_eState != VSTATE_FIGHTING || !m_pType->armour.bValid )
+		return;
+	if ( CrewAlive() == 0 )
+	{
+		Msg( "DOD-SP vehicle %s: the whole crew is dead - out of the fight\n", Label() );
+		m_eState = VSTATE_ABANDONED;
+		Stop();
+		StopSounds();
+		FireKnockedOut( pAttacker );
+		return;
+	}
+	bool bCanFight = MainGunUsable() || ( m_pType->coax.bHas && CanAim() );
+	bool bTwoPens = gpGlobals->curtime - m_flPenTimes[1] < VEHICLE_PEN_MEMORY;
+	int eWhy = VBAIL_NONE;
+	if ( CrewAlive() <= 1 && m_pType->armour.nCrew > 2 )
+		eWhy = VBAIL_CREW;
+	else if ( m_bImmobile && !bCanFight )
+		eWhy = VBAIL_HELPLESS;
+	else if ( m_bImmobile && bTwoPens )
+		eWhy = VBAIL_UNDER_FIRE;
+	if ( eWhy != VBAIL_NONE )
+		BailOut( eWhy, pAttacker );
+}
+
+// Everyone alive gets out (a burning vehicle costs some of them). German crews come out as soldiers with MP40s on
+// the side away from whoever hit them; DOD-SP has no Allied infantry NPC yet - an Allied crew leaves the fight.
+void CDoDSPVehicle::BailOut( int eWhy, CBaseEntity *pAttacker )
+{
+	const DoDSPArmour_t &ar = m_pType->armour;
+	int nOut = 0, nLost = 0, nNoRoom = 0;
+	bool bAxis = ( m_eFaction == DODSP_FACTION_AXIS );
+	Vector vecFrom = pAttacker ? pAttacker->GetAbsOrigin() : GetAbsOrigin() + Vector( cosf( DEG2RAD( m_flHeading ) ), sinf( DEG2RAD( m_flHeading ) ), 0.0f ) * 512.0f;
+	for ( int i = 0; i < ar.nCrew; i++ )
+	{
+		if ( !( m_iCrewAlive & ( 1 << i ) ) )
+			continue;
+		m_iCrewAlive &= ~( 1 << i );
+		if ( m_eState == VSTATE_BURNING && random->RandomFloat() > 0.75f )
+		{
+			nLost++;
+			continue;
+		}
+		if ( !bAxis )
+			nOut++;
+		else if ( SpawnCrewman( vecFrom ) )
+			nOut++;
+		else
+			nNoRoom++;
+	}
+	if ( nOut + nLost + nNoRoom > 0 )
+	{
+		Msg( "DOD-SP vehicle %s: CREW BAILS OUT (%s) - %d got out%s%s%s\n", Label(), s_pszBail[eWhy], nOut,
+			 nLost ? ", some didn't make it" : "", nNoRoom ? ", no room beside it for some" : "",
+			 bAxis ? "" : " (DOD-SP has no Allied infantry NPC yet: they leave the fight)" );
+		m_OnBailOut.FireOutput( pAttacker ? pAttacker : this, this );
+	}
+	if ( m_eState == VSTATE_FIGHTING )
+	{
+		m_eState = VSTATE_ABANDONED;
+		Stop();
+		StopSounds();
+		FireKnockedOut( pAttacker );
+	}
+}
+
+bool CDoDSPVehicle::SpawnCrewman( const Vector &vecAwayFrom )
+{
+	Vector vecFwd( cosf( DEG2RAD( m_flHeading ) ), sinf( DEG2RAD( m_flHeading ) ), 0.0f );
+	Vector vecRight( vecFwd.y, -vecFwd.x, 0.0f );
+	Vector vecAway = GetAbsOrigin() - vecAwayFrom;
+	vecAway.z = 0.0f;
+	VectorNormalize( vecAway );
+	Vector vecSide = ( DotProduct( vecAway, vecRight ) >= 0.0f ) ? vecRight : -vecRight;
+	Vector vecEnd = ( DotProduct( vecAway, vecFwd ) >= 0.0f ) ? vecFwd : -vecFwd;
+	Vector vecDirs[4] = { vecSide, vecEnd, -vecSide, -vecEnd };
+	float flOut[4] = { m_flHalfWidth, m_flHalfLength, m_flHalfWidth, m_flHalfLength };
+	CTraceFilterSimple filter( this, COLLISION_GROUP_NPC );
+	for ( int d = 0; d < 4; d++ )
+	{
+		for ( int k = 0; k < 3; k++ )
+		{
+			Vector p = GetAbsOrigin() + vecDirs[d] * ( flOut[d] + 32.0f + 24.0f * k ) +
+					   ( ( d & 1 ) ? vecSide : vecFwd ) * random->RandomFloat( -0.5f, 0.5f ) * ( ( d & 1 ) ? m_flHalfWidth : m_flHalfLength );
+			float flZ;
+			if ( !GroundAt( p, 64.0f, 256.0f, &flZ, NULL, this ) )
+				continue;
+			p.z = flZ + 4.0f;
+			trace_t tr;
+			UTIL_TraceHull( p, p, NAI_Hull::Mins( HULL_HUMAN ), NAI_Hull::Maxs( HULL_HUMAN ), MASK_NPCSOLID, &filter, &tr );
+			if ( tr.startsolid || tr.allsolid )
+				continue;
+			CBaseEntity *pNPC = CreateEntityByName( "npc_german_soldier" );
+			if ( !pNPC )
+				return false;
+			char szSquad[32];
+			Q_snprintf( szSquad, sizeof( szSquad ), "tankcrew%d", entindex() );
+			pNPC->KeyValue( "additionalequipment", "weapon_mp40" );
+			pNPC->KeyValue( "squadname", szSquad );
+			pNPC->SetAbsOrigin( p );
+			pNPC->SetAbsAngles( QAngle( 0.0f, RAD2DEG( atan2f( vecAway.y, vecAway.x ) ), 0.0f ) );
+			DispatchSpawn( pNPC );
+			pNPC->Activate();
+			return true;
+		}
+	}
+	return false;
+}
+
+void CDoDSPVehicle::KnockOut( bool bCatastrophic, CBaseEntity *pAttacker, const char *pszWhy )
+{
+	if ( m_eState == VSTATE_WRECKED )
+		return;
+	Msg( "DOD-SP vehicle %s: KNOCKED OUT - %s%s\n", Label(), pszWhy, bCatastrophic ? " - it blows up" : "" );
+	if ( bCatastrophic )
+	{
+		Wreck( true, pAttacker );
+		return;
+	}
+	if ( m_eState == VSTATE_BURNING )
+		return;
+	if ( random->RandomFloat() < 0.5f )
+	{
+		SetBurning( random->RandomFloat() < m_pType->armour.flAmmoFire, pAttacker );
+		return;
+	}
+	BailOut( VBAIL_KNOCKED_OUT, pAttacker );
+}
+
+// The dead model, the fire, and whoever was still inside. A cook-off goes up like VEHICLE_COOKOFF_KG of explosive.
+void CDoDSPVehicle::Wreck( bool bBlowUp, CBaseEntity *pAttacker )
+{
+	if ( m_eState == VSTATE_WRECKED )
+		return;
+	float now = gpGlobals->curtime;
+	if ( CrewAlive() )
+		Msg( "DOD-SP vehicle %s: %d crew were still inside\n", Label(), CrewAlive() );
+	m_iCrewAlive = 0;
+	Stop();
+	StopSounds();
+	m_eState = VSTATE_WRECKED;
+	m_bImmobile = true;
+	m_flSpeed = 0.0f;
+	m_flTrackSpeed = 0.0f;
+	FireKnockedOut( pAttacker );
+	if ( bBlowUp )
+		DoDSP_ShellBlast( WorldSpaceCenter() + Vector( 0.0f, 0.0f, 16.0f ), VEHICLE_COOKOFF_KG, pAttacker ? pAttacker : this, this, m_pType->szExplode );
+	if ( m_hTurret.Get() )
+	{
+		UTIL_Remove( m_hTurret.Get() );
+		m_hTurret = NULL;
+	}
+	if ( m_pType->szDeadModel[0] && modelinfo->GetModelIndex( m_pType->szDeadModel ) >= 0 )
+	{
+		VPhysicsDestroyObject();
+		SetModel( m_pType->szDeadModel );
+		SetMoveType( MOVETYPE_NONE );
+		SetSolid( SOLID_VPHYSICS );
+		if ( !VPhysicsInitStatic() )
+			SetSolid( SOLID_BBOX );
+		MeasureBody();
+	}
+	MakeFire( 128.0f, false );
+	m_flBurnOutAt = now + random->RandomFloat( 40.0f, 90.0f );
+	Msg( "DOD-SP vehicle %s: WRECKED%s\n", Label(), bBlowUp ? " - the ammunition went up" : " - burnt out" );
+	SetThink( &CDoDSPVehicle::WreckThink );
+	SetNextThink( now + 1.0f );
+}
+
+void CDoDSPVehicle::WreckThink( void )
+{
+	if ( m_flBurnOutAt > 0.0f && gpGlobals->curtime >= m_flBurnOutAt )
+	{
+		m_flBurnOutAt = 0.0f;
+		if ( m_hFire.Get() )
+			UTIL_Remove( m_hFire.Get() );
+		m_hFire = NULL;
+	}
+	if ( m_flBurnOutAt > 0.0f )
+		SetNextThink( gpGlobals->curtime + 1.0f );
+}
+
+// burning / abandoned: no engine, no guns; the fire's clock
+void CDoDSPVehicle::DamageStateThink( void )
+{
+	float now = gpGlobals->curtime;
+	m_flSpeed = 0.0f;
+	m_flTrackSpeed = 0.0f;
+	if ( m_eState == VSTATE_BURNING )
+	{
+		if ( m_flBailAt > 0.0f && now >= m_flBailAt )
+		{
+			m_flBailAt = 0.0f;
+			BailOut( VBAIL_FIRE, m_hKiller.Get() );
+		}
+		if ( m_flCookOffAt > 0.0f && now >= m_flCookOffAt )
+		{
+			m_flCookOffAt = 0.0f;
+			Wreck( true, m_hKiller.Get() );
+			return;
+		}
+		if ( m_flBurnOutAt > 0.0f && now >= m_flBurnOutAt )
+		{
+			m_flBurnOutAt = 0.0f;
+			Wreck( false, m_hKiller.Get() );
+			return;
+		}
+	}
+	SetNextThink( now + 0.25f );
+}
+
+// Bullets: judged by the armour where they strike. Nothing goes into the engine's health (the base class would).
+void CDoDSPVehicle::TraceAttack( const CTakeDamageInfo &info, const Vector &vecDir, trace_t *ptr, CDmgAccumulator *pAccumulator )
+{
+	if ( !m_pType || !m_pType->armour.bValid || m_eState == VSTATE_WRECKED || !( info.GetDamageType() & DMG_BULLET ) || info.GetAttacker() == this )
+		return;
+	Vector vecPath = vecDir;
+	VectorNormalize( vecPath );
+	VehicleHit_t hit;
+	if ( !ShellHitBox( ptr->endpos - vecPath * 48.0f, vecPath, 96.0f, &hit ) )
+		return;
+	float flPen = DoDSP_BulletPen( info.GetAmmoType(), info.GetDamage(), ( ptr->endpos - ptr->startpos ).Length() );
+	TakeArmourHit( hit, vecPath, flPen, 2.0f, 8.0f, info.GetAttacker(), "a bullet", true, 0.0f );
+}
+
+// Blasts: our shells say their real charge (g_DoDSPBlast); anything else (grenades, env_explosion) is guessed from
+// its damage (a 125-damage grenade ~ 0.1 kg).
+int CDoDSPVehicle::OnTakeDamage( const CTakeDamageInfo &info )
+{
+	if ( !m_pType || !m_pType->armour.bValid || m_eState == VSTATE_WRECKED )
+		return 0;
+	if ( info.GetDamageType() & DMG_BLAST )
+	{
+		bool bOurs = g_DoDSPBlast.bActive;
+		BlastHit( bOurs ? g_DoDSPBlast.vecCentre : info.GetDamagePosition(), bOurs ? g_DoDSPBlast.flFiller : info.GetDamage() * 0.0008f,
+				  info.GetAttacker() );
+	}
+	return 0;
+}
+
+// Can its gun get through the plate facing it from here? (the target choice prefers what it can hurt)
+bool CDoDSPVehicle::CanHurt( CDoDSPVehicle *pOther )
+{
+	const DoDSPShell_t *pShell = ShellFor( pOther );
+	if ( !pShell )
+		return false;
+	if ( !pOther->m_pType || !pOther->m_pType->armour.bValid )
+		return true;
+	Vector vecFrom = AimPivot();
+	Vector vecDir = pOther->WorldSpaceCenter() - vecFrom;
+	float flDist = VectorNormalize( vecDir );
+	VehicleHit_t h;
+	if ( !pOther->ShellHitBox( vecFrom, vecDir, flDist + 256.0f, &h ) )
+		return true;
+	ArmourPlate_t plate = pOther->m_pType->armour.plates[h.ePart][h.eFace];
+	float flEff = DoDSP_EffectiveArmour( plate, vecDir, h.vecNormal, NULL );
+	return DoDSP_ShellPen( *pShell, h.t ) >= flEff * 0.9f;
+}
+
+void CDoDSPVehicle::DamageReport( char *psz, int n ) const
+{
+	if ( !m_pType->armour.bValid )
+	{
+		Q_strncpy( psz, "armour: none (the type's \"armour\" block didn't load) - it can't be damaged", n );
+		return;
+	}
+	char szCrew[96] = "";
+	for ( int i = 0; i < m_pType->armour.nCrew; i++ )
+	{
+		if ( !( m_iCrewAlive & ( 1 << i ) ) )
+			continue;
+		if ( szCrew[0] )
+			Q_strncat( szCrew, " ", sizeof( szCrew ), COPY_ALL_CHARACTERS );
+		Q_strncat( szCrew, g_pszCrewRole[m_pType->armour.eCrew[i]], sizeof( szCrew ), COPY_ALL_CHARACTERS );
+	}
+	char szAmmo[48] = "";
+	if ( m_pType->gun.bHas && m_pType->gun.nRounds > 0 )
+		Q_snprintf( szAmmo, sizeof( szAmmo ), ", %d rounds left", m_iRounds );
+	Q_snprintf( psz, n, "%s: structure %.0f of %.0f, crew %d of %d (%s)%s%s%s%s", s_pszVehicleState[m_eState], m_flStructure,
+				m_pType->armour.flStructure, CrewAlive(), m_pType->armour.nCrew, szCrew[0] ? szCrew : "none", m_bImmobile ? ", IMMOBILISED" : "",
+				m_bTurretJammed ? ", turret jammed" : "", m_bGunOut ? ", main gun out" : "", szAmmo );
+}
+
+// Every gun against every vehicle (real numbers): how far out it gets through each plate, head-on.
+CON_COMMAND( dodsp_vehicle_penchart, "V4: every vehicle gun against every vehicle's armour - how far out (metres) it gets through each plate head-on." )
+{
+	LoadVehicleTypes( false );
+	for ( int g = 0; g < s_Types.Count(); g++ )
+	{
+		VehicleType_t *pG = s_Types[g];
+		if ( pG->bVariant || !pG->gun.bHas || !pG->gun.ap.bValid )
+			continue;
+		const DoDSPShell_t &ap = pG->gun.ap;
+		Msg( "%s %.0f mm AP: %.0f mm at 100 m, %.0f at 500 m, %.0f at 1000 m, %.0f at 2000 m (1 m = %.0f units)\n", pG->szName, ap.flCalibre,
+			 DoDSP_ShellPen( ap, 100.0f * DODSP_UNITS_PER_METRE ), DoDSP_ShellPen( ap, 500.0f * DODSP_UNITS_PER_METRE ),
+			 DoDSP_ShellPen( ap, 1000.0f * DODSP_UNITS_PER_METRE ), DoDSP_ShellPen( ap, 2000.0f * DODSP_UNITS_PER_METRE ), DODSP_UNITS_PER_METRE );
+		for ( int a = 0; a < s_Types.Count(); a++ )
+		{
+			VehicleType_t *pA = s_Types[a];
+			if ( pA->bVariant || !pA->armour.bValid )
+				continue;
+			char szLine[256] = "";
+			static const int s_iFaces[][2] = { { APART_HULL, AFACE_FRONT }, { APART_HULL, AFACE_SIDE }, { APART_HULL, AFACE_REAR },
+											   { APART_TURRET, AFACE_FRONT }, { APART_TURRET, AFACE_SIDE } };
+			for ( int f = 0; f < ARRAYSIZE( s_iFaces ); f++ )
+			{
+				if ( s_iFaces[f][0] == APART_TURRET && !pA->szTurretModel[0] )
+					continue;
+				const ArmourPlate_t &plate = pA->armour.plates[s_iFaces[f][0]][s_iFaces[f][1]];
+				float flEff = plate.flMM / MAX( cosf( DEG2RAD( plate.flSlope ) ), 0.17f );
+				int nBest = -1;
+				for ( int m = 0; m <= 3000; m += 50 )
+					if ( DoDSP_ShellPen( ap, m * DODSP_UNITS_PER_METRE ) >= flEff )
+						nBest = m;
+				char szRange[24], szOne[64];
+				if ( nBest < 0 )
+					Q_strncpy( szRange, "never", sizeof( szRange ) );
+				else if ( nBest >= 3000 )
+					Q_strncpy( szRange, "any range", sizeof( szRange ) );
+				else
+					Q_snprintf( szRange, sizeof( szRange ), "<= %d m", nBest );
+				Q_snprintf( szOne, sizeof( szOne ), "%s%s %s %s", szLine[0] ? ", " : "", g_pszArmourPart[s_iFaces[f][0]], g_pszArmourFace[s_iFaces[f][1]], szRange );
+				Q_strncat( szLine, szOne, sizeof( szLine ), COPY_ALL_CHARACTERS );
+			}
+			Msg( "    vs %-12s %s\n", pA->szName, szLine );
 		}
 	}
 }
@@ -2633,6 +3797,9 @@ void CDoDSPVehicle::Report( void )
 	Msg( "    side %s, target %s%s, turret %.0f deg / barrel %.0f deg, main gun %s\n", DoDSP_FactionName( m_eFaction ),
 		 m_hTarget.Get() ? VehicleWho( m_hTarget.Get() ) : "none", m_bHoldFire ? " (holding fire)" : "", m_flTurretYaw, m_flTurretPitch,
 		 !m_pType || !m_pType->gun.bHas ? "none" : ( gpGlobals->curtime >= m_flNextGun ? "loaded" : "reloading" ) );
+	char szDamage[256];
+	DamageReport( szDamage, sizeof( szDamage ) );
+	Msg( "    %s\n", szDamage );
 }
 
 // Fine-tuning the script's estimate in game: move the turret, print the line for the script

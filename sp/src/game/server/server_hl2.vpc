@@ -30,6 +30,8 @@ $Project "Server (HL2)"
 		$File	"dodsp\dodsp_vehicle.cpp"
 		$File	"dodsp\dodsp_factions.cpp"
 		$File	"dodsp\dodsp_factions.h"
+		$File	"dodsp\dodsp_vehicle_armour.cpp"
+		$File	"dodsp\dodsp_vehicle_armour.h"
 	}
 
 	$Folder	"Source Files"
