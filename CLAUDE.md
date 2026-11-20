@@ -555,6 +555,26 @@ If you learn something like this, add it here in the same commit as the fix.
   TESTED 2026-11-19 (build 44669320376, gm_countrysidedrive_d, Panzer II): WORKS - owner: "damn this thing shreds", "all
   the sounds work and actually blend very very well together" (so DoD:S's Weapon_Mg42.Shoot is a real entry). KNOWN-GOOD
   for V2. Next: V2b (halftrack/carrier hull MGs, SU-152 hull-aims), V3 riders, V4 damage.
+- **V2c BUILT 2026-11-19 (tactics, reversing, lurch).** Owner: vehicles hunt by DEFAULT; fighting style is a Hammer
+  choice ("both - a hammer option to play defensively or offensively"); knowledge = own eyes + its side's soldiers
+  (no wallhacks); "allowing it to go backwards". Key `behavior`: offensive (default: closes to 600..1800, shoots on the
+  move with 3x spread, patrols random graded nodes 512..3000 away with 4-8 s pauses when no enemy is known),
+  defensive (spots 1500..min(gun range x 0.8, 4000) away with a shot, fires only when stopped, keeps its front to the
+  enemy = reverses to spots behind it, leash 2000 by default, returns home when no enemy), hold, scripted. Key `leash`.
+  TacticsThink (1 Hz) is the ONE owner of where it wants to be: UpdateQuarry (turret's target, else the nearest enemy
+  its side's AIs within 3000 are fighting at their GetEnemyLKP; forgotten after 30 s unseen/unreported) ->
+  ChooseFirePosition (graded nodes in the band, in the leash, within 4000; best 24 by distance get a world-only line
+  test from turret height) -> DriveTo(.., false). Map orders (DriveTo input, console goto, initial goal) set
+  m_bScriptedGoal: tactics wait until it arrives. Reason codes (VehicleTactic_t / VehicleTacticWhy_t, name tables
+  with COMPILE_TIME_ASSERT) printed on every change with dodsp_vehicle_debug, and in `dodsp_vehicles`. Guards: a new
+  spot is kept >= 4 s (VEHICLE_SETTLE_TIME); 6 new spots in 30 s = `INVARIANT ... can't settle`. The turret pre-aims at
+  the last known spot. REVERSE: a route point > 110 deg off the nose (sticky to 70) within 768 units - or anywhere
+  when m_bPreferReverse (defensive with an enemy) - is driven to backwards at reverse_speed; TurnCost counts it so
+  routes may start with a node behind. LURCH: the models have no animation for it (every hull: only 'idle'; turrets
+  'aim'), so a damped spring on the hull pitch (driven by acceleration; nose up pulling away, down braking, overshoot)
+  plus a recoil kick from the main gun (by turret yaw); type keys susp_accel / susp_freq / susp_damp / recoil.
+  Files: dodsp_vehicle.cpp, dodsp_vehicles.fgd/.txt. Undo: `behavior scripted` on the entity (V2 behaviour), or the
+  V2 server.dll (build 44669320376).
 - CoD1 set (owner's vehicles_part2.zip, 2026-11-19): REFERENCE ONLY except the **SU-152, which we keep**. One model per
   vehicle, turret/gun as BONES (tag_turret, tag_barrel, tag_flash = muzzle, tag_coaxel), faces +X (forward_yaw 0),
   CoD's rider tags tag_guy01..06 (Sherman, Elefant, SU-152: 6; Opel truck driver/passenger + 4), NO .phy (needs a

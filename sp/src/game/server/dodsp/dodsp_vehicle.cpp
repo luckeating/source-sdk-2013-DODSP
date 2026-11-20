@@ -55,6 +55,8 @@
 #define VEHICLE_DIRECT_DIST		768.0f		// a goal this close is driven to straight, off the road
 #define VEHICLE_JOIN_NODES		6			// nodes considered for joining the road (and leaving it for the goal)
 #define VEHICLE_TURN_COST		512.0f		// an about-turn on the spot counts like this many units of driving
+#define VEHICLE_REVERSE_DIST	768.0f		// a route point behind it this close is reached backwards, not by turning round
+#define VEHICLE_REVERSE_ANGLE	110.0f		// "behind" = more than this many degrees off the nose
 #define VEHICLE_BADLINK_TIME	30.0f
 
 // How far a route may cut past a road node it skips: the blend between "every node" (0) and "any shortcut the
@@ -74,6 +76,69 @@ enum VehicleStuck_t
 };
 static const char *s_pszStuck[] = { "none", "world", "entity", "no-route", "no-progress" };
 COMPILE_TIME_ASSERT( ARRAYSIZE( s_pszStuck ) == NUM_VSTUCK );
+
+// V2c: how a vehicle fights (Hammer key "behavior")
+enum VehicleBehavior_t
+{
+	VBEHAVE_OFFENSIVE,		// hunts: closes to fighting range, shoots on the move too
+	VBEHAVE_DEFENSIVE,		// holds good firing spots at long range, stops to shoot, backs away from what gets close
+	VBEHAVE_HOLD,			// stays where it is; the turret still fights
+	VBEHAVE_SCRIPTED,		// moves only on map inputs (V1/V2 behaviour)
+	NUM_VBEHAVES
+};
+static const char *s_pszBehaviors[] = { "offensive", "defensive", "hold", "scripted" };
+COMPILE_TIME_ASSERT( ARRAYSIZE( s_pszBehaviors ) == NUM_VBEHAVES );
+
+static int VehicleBehaviorFromName( const char *psz )
+{
+	for ( int i = 0; i < NUM_VBEHAVES; i++ )
+		if ( !Q_stricmp( psz, s_pszBehaviors[i] ) )
+			return i;
+	if ( !Q_stricmp( psz, "hunt" ) || !Q_stricmp( psz, "aggressive" ) )
+		return VBEHAVE_OFFENSIVE;
+	return -1;
+}
+
+// What it's doing and why (reason codes; dodsp_vehicle_debug prints every change)
+enum VehicleTactic_t
+{
+	VTACTIC_NONE,
+	VTACTIC_SCRIPTED,		// driving to a map / console order
+	VTACTIC_HOLD,
+	VTACTIC_ROAM,			// no enemy known: patrols the nodes (offensive) or keeps home (defensive)
+	VTACTIC_HUNT,			// enemy out of sight: going where it was last known
+	VTACTIC_REPOSITION,		// driving to a node with a shot at the enemy, at its kind of range
+	VTACTIC_FIGHT,			// has its shot: stays and fires
+	NUM_VTACTICS
+};
+static const char *s_pszTactics[] = { "none", "scripted", "hold", "roam", "hunt", "reposition", "fight" };
+COMPILE_TIME_ASSERT( ARRAYSIZE( s_pszTactics ) == NUM_VTACTICS );
+
+enum VehicleTacticWhy_t
+{
+	VWHY_NONE,
+	VWHY_ORDERED,			// a map input / console goto
+	VWHY_NO_ENEMY,
+	VWHY_SEES_ENEMY,		// in sight and in its range band
+	VWHY_TOO_FAR,
+	VWHY_TOO_CLOSE,
+	VWHY_NO_SHOT,			// enemy known but not in sight from here
+	VWHY_REPORTED,			// its side's soldiers reported the enemy
+	VWHY_NO_FIRE_SPOT,		// no node with a shot at its range - goes closer / waits
+	VWHY_LEASH,				// would leave its leash
+	VWHY_SETTLING,			// just moved: stays a moment before moving again (no dithering)
+	NUM_VWHYS
+};
+static const char *s_pszTacticWhy[] = { "", "ordered", "no enemy known", "enemy in sight and range", "enemy too far",
+	"enemy too close", "no shot from here", "reported by its side", "no node with a shot", "leash", "settling" };
+COMPILE_TIME_ASSERT( ARRAYSIZE( s_pszTacticWhy ) == NUM_VWHYS );
+
+#define VEHICLE_TACTIC_INTERVAL	1.0f
+#define VEHICLE_FORGET_TIME		30.0f		// an enemy unseen and unreported this long is forgotten
+#define VEHICLE_SPOTTER_RANGE	3000.0f		// its side's soldiers this close share what they see
+#define VEHICLE_ROAM_RADIUS		3000.0f
+#define VEHICLE_FIRE_NODE_SEARCH 4000.0f	// firing spots considered within this of the vehicle
+#define VEHICLE_SETTLE_TIME		4.0f		// a new firing spot is kept at least this long
 
 //-----------------------------------------------------------------------------
 // Vehicle types (scripts/dodsp_vehicles.txt)
@@ -100,6 +165,9 @@ struct VehicleType_t
 	Gun_t	gun;					// main gun: one shell, explodes where it hits (damage falls off over radius)
 	struct Coax_t { bool bHas; float flDamage, flRate, flBurst, flPause, flRange, flSpread; char szSound[64]; };
 	Coax_t	coax;					// machine gun beside the main gun: bursts at infantry
+	float	flSuspAccel;			// degrees the hull pitches per 100 units/s^2 of acceleration (the lurch)
+	float	flSuspFreq, flSuspDamp;	// its spring: rocks at this many Hz, this much damping (0..1)
+	float	flRecoil;				// the main gun kicks the hull back this many degrees
 	char	szEngineIdle[64], szEngineMove[64], szTurretTurn[64], szTurretStop[64], szReload[64], szExplode[64];
 	struct Seat_t { Vector vecOrigin; float flYaw; };
 	CUtlVector<Seat_t> seats;		// V3
@@ -179,6 +247,10 @@ static void LoadVehicleTypes( bool bForce )
 			Warning( "INVARIANT DOD-SP vehicles: type '%s' has faction '%s' - not a side (axis / allies) - made axis\n", t->szName, pType->GetString( "faction" ) );
 			t->eFaction = DODSP_FACTION_AXIS;
 		}
+		t->flSuspAccel = pType->GetFloat( "susp_accel", t->bTracked ? 1.6f : 1.0f );
+		t->flSuspFreq = pType->GetFloat( "susp_freq", 1.6f );
+		t->flSuspDamp = pType->GetFloat( "susp_damp", 0.35f );
+		t->flRecoil = pType->GetFloat( "recoil", 2.0f );
 		t->flTurretRate = pType->GetFloat( "turret_rate", 30.0f );
 		t->flPitchRate = pType->GetFloat( "pitch_rate", 15.0f );
 		KeyValues *pGun = pType->FindKey( "gun" );
@@ -618,7 +690,7 @@ public:
 	int				GetFaction( void ) const { return m_eFaction; }
 
 	void			DriveThink( void );
-	bool			DriveTo( const Vector &vecGoal );
+	bool			DriveTo( const Vector &vecGoal, bool bScripted = true );	// scripted: a map input / console order (tactics wait)
 	void			Stop( void );
 	void			Report( void );
 	void			SetTurretOffset( const Vector &vecOffset );
@@ -642,6 +714,12 @@ private:
 	QAngle			BuildAngles( float flHeading, const Vector &vecPos, float *pflGroundZ );
 	void			MeasureBody( void );
 	float			HeadingFromAngles( void ) const;
+	// V2c tactics
+	void			TacticsThink( void );
+	void			UpdateQuarry( void );
+	int				ChooseFirePosition( const Vector &vecTarget, float flMin, float flMax );
+	void			SetTactic( int eTactic, int eWhy );
+	bool			InBand( float flDist, float *pflMin, float *pflMax );
 	// V2 weapons
 	void			WeaponThink( float dt );
 	bool			CalibrateTurret( void );
@@ -687,6 +765,26 @@ private:
 	CUtlVector<BadLink_t> m_BadLinks;
 	int				m_iLastFrom, m_iLastTo;		// the node link it was driving when stuck
 
+	// V2c: behaviour (how it fights) and what it knows
+	string_t		m_iszBehavior;				// Hammer key "behavior": offensive / defensive / hold / scripted
+	int				m_eBehavior;
+	float			m_flLeash;					// Hammer key "leash": how far from home it may go (0 = anywhere)
+	Vector			m_vecHome;
+	bool			m_bScriptedGoal;			// driving to a map / console order: tactics wait till it arrives
+	EHANDLE			m_hQuarry;					// the enemy it's after (seen itself or reported by its side)
+	Vector			m_vecQuarryPos;				// where that enemy was last known to be
+	float			m_flQuarryTime;				// when
+	int				m_eTactic, m_eTacticWhy;
+	float			m_flNextTactic;
+	int				m_iFireNode;				// the node it's driving to for a shot (-1 none)
+	float			m_flRoamWaitUntil;
+	float			m_flRepositions[6];			// ring of the last reposition times (dithering guard)
+	int				m_iReposition;
+	float			m_flNoRepositionUntil;
+	float			m_flSuspPitch, m_flSuspVel, m_flPrevSpeed;	// the hull's rock on its suspension (degrees, nose up +)
+	bool			m_bPreferReverse;			// keep the front to the enemy: back away rather than turn round
+	bool			m_bReversing;
+
 	// V2: side, target, turret
 	string_t		m_iszFaction;				// Hammer key "faction" (empty = the type's)
 	int				m_eFaction;
@@ -731,6 +829,14 @@ BEGIN_DATADESC( CDoDSPVehicle )
 	DEFINE_FIELD( m_vecGoal, FIELD_POSITION_VECTOR ),
 	DEFINE_FIELD( m_bInitialGoalDone, FIELD_BOOLEAN ),
 	DEFINE_KEYFIELD( m_iszFaction, FIELD_STRING, "faction" ),
+	DEFINE_KEYFIELD( m_iszBehavior, FIELD_STRING, "behavior" ),
+	DEFINE_KEYFIELD( m_flLeash, FIELD_FLOAT, "leash" ),
+	DEFINE_FIELD( m_eBehavior, FIELD_INTEGER ),
+	DEFINE_FIELD( m_vecHome, FIELD_POSITION_VECTOR ),
+	DEFINE_FIELD( m_bScriptedGoal, FIELD_BOOLEAN ),
+	DEFINE_FIELD( m_hQuarry, FIELD_EHANDLE ),
+	DEFINE_FIELD( m_vecQuarryPos, FIELD_POSITION_VECTOR ),
+	DEFINE_FIELD( m_flQuarryTime, FIELD_TIME ),
 	DEFINE_FIELD( m_eFaction, FIELD_INTEGER ),
 	DEFINE_FIELD( m_hForcedTarget, FIELD_EHANDLE ),
 	DEFINE_FIELD( m_bHoldFire, FIELD_BOOLEAN ),
@@ -773,6 +879,22 @@ CDoDSPVehicle::CDoDSPVehicle()
 	m_flNavCheckTime = 0.0f;
 	m_flHalfWidth = m_flHalfLength = m_flBodyHeight = 0.0f;
 	m_eFaction = DODSP_FACTION_AXIS;
+	m_eBehavior = 0;
+	m_flLeash = 0.0f;
+	m_vecHome = vec3_origin;
+	m_bScriptedGoal = false;
+	m_vecQuarryPos = vec3_origin;
+	m_flQuarryTime = -1000.0f;
+	m_eTactic = m_eTacticWhy = 0;
+	m_flNextTactic = 0.0f;
+	m_iFireNode = -1;
+	m_flRoamWaitUntil = 0.0f;
+	for ( int i = 0; i < ARRAYSIZE( m_flRepositions ); i++ )
+		m_flRepositions[i] = -1000.0f;
+	m_iReposition = 0;
+	m_flNoRepositionUntil = 0.0f;
+	m_bPreferReverse = m_bReversing = false;
+	m_flSuspPitch = m_flSuspVel = m_flPrevSpeed = 0.0f;
 	m_bHoldFire = false;
 	m_flNextScan = 0.0f;
 	m_flTurretYaw = m_flTurretPitch = 0.0f;
@@ -845,6 +967,20 @@ void CDoDSPVehicle::Spawn( void )
 	if ( DoDSP_FactionOf( this ) != m_eFaction )
 		Warning( "INVARIANT DOD-SP vehicle %s: side %s but its class counts as %s (dodsp_factions.cpp tables disagree)\n",
 				 GetDebugName(), DoDSP_FactionName( m_eFaction ), DoDSP_FactionName( DoDSP_FactionOf( this ) ) );
+
+	// how it fights (V2c): offensive unless the map says otherwise
+	m_eBehavior = VBEHAVE_OFFENSIVE;
+	if ( m_iszBehavior != NULL_STRING && STRING( m_iszBehavior )[0] )
+	{
+		int e = VehicleBehaviorFromName( STRING( m_iszBehavior ) );
+		if ( e >= 0 )
+			m_eBehavior = e;
+		else
+			Warning( "INVARIANT DOD-SP vehicle %s: behavior '%s' is not offensive / defensive / hold / scripted - offensive\n", GetDebugName(), STRING( m_iszBehavior ) );
+	}
+	if ( m_flLeash <= 0.0f && m_eBehavior == VBEHAVE_DEFENSIVE )
+		m_flLeash = 2000.0f;
+	m_vecHome = GetAbsOrigin();
 
 	SetSolid( SOLID_VPHYSICS );
 	SetMoveType( MOVETYPE_PUSH );
@@ -1017,10 +1153,17 @@ int CDoDSPVehicle::NearestNode( const Vector &vecPos, bool bFromHere )
 float CDoDSPVehicle::TurnCost( const Vector &vecTo ) const
 {
 	Vector vecDir( vecTo.x, vecTo.y, 0.0f );
-	if ( VectorNormalize( vecDir ) < 1.0f )
+	float flLen = VectorNormalize( vecDir );
+	if ( flLen < 1.0f )
 		return 0.0f;
 	Vector vecFwd( cosf( DEG2RAD( m_flHeading ) ), sinf( DEG2RAD( m_flHeading ) ), 0.0f );
-	return VEHICLE_TURN_COST * 0.5f * ( 1.0f - DotProduct( vecDir, vecFwd ) );
+	float flDot = DotProduct( vecDir, vecFwd );
+	float flCost = VEHICLE_TURN_COST * 0.5f * ( 1.0f - flDot );
+	// a node close behind is reached backwards (the drive code reverses to it): cost = lining the tail up,
+	// plus the slower drive
+	if ( flLen <= VEHICLE_REVERSE_DIST && m_pType->flReverseSpeed > 0.0f )
+		flCost = MIN( flCost, VEHICLE_TURN_COST * 0.5f * ( 1.0f + flDot ) + flLen * 0.5f );
+	return flCost;
 }
 
 bool CDoDSPVehicle::PlanRoute( void )
@@ -1153,8 +1296,11 @@ bool CDoDSPVehicle::PlanRoute( void )
 	return m_Route.Count() > 0;
 }
 
-bool CDoDSPVehicle::DriveTo( const Vector &vecGoal )
+bool CDoDSPVehicle::DriveTo( const Vector &vecGoal, bool bScripted )
 {
+	m_bScriptedGoal = bScripted;
+	if ( bScripted )
+		m_iFireNode = -1;
 	float flZ;
 	if ( GroundAt( vecGoal, 32.0f, 256.0f, &flZ, NULL, this ) )
 		m_vecGoal = Vector( vecGoal.x, vecGoal.y, flZ );
@@ -1168,6 +1314,7 @@ bool CDoDSPVehicle::DriveTo( const Vector &vecGoal )
 	if ( !PlanRoute() )
 	{
 		m_bHasGoal = false;
+		m_bScriptedGoal = false;
 		SetStuck( VSTUCK_NOROUTE, NULL );
 		m_OnNoRoute.FireOutput( this, this );
 		return false;
@@ -1181,6 +1328,7 @@ bool CDoDSPVehicle::DriveTo( const Vector &vecGoal )
 void CDoDSPVehicle::Stop( void )
 {
 	m_bHasGoal = false;
+	m_bScriptedGoal = false;
 	m_Route.RemoveAll();
 }
 
@@ -1237,6 +1385,8 @@ void CDoDSPVehicle::DriveThink( void )
 	}
 	if ( m_bHasGoal && !m_Route.Count() && !PlanRoute() )		// the route isn't saved: plan again after a load
 		Stop();
+	if ( m_flNavCheckTime <= 0.0f )
+		TacticsThink();
 
 	// where to: the route point it's on (passed when within a vehicle half-length of it)
 	float flTargetSpeed = 0.0f, flYawRate = 0.0f;
@@ -1259,6 +1409,17 @@ void CDoDSPVehicle::DriveThink( void )
 			float flWant = RAD2DEG( atan2f( vecTo.y, vecTo.x ) );
 			float flDiff = AngleDiff( flWant, m_flHeading );
 			float flMax = m_pType->flMaxSpeed * m_flMaxSpeedScale;
+			// backwards (owner, V2c): a point behind it close by - or anywhere when it keeps its front to an enemy -
+			// is reached in reverse instead of turning round. Sticky until the point is well off its tail.
+			float flPointDist = vecTo.Length2D();
+			bool bBehind = fabs( flDiff ) > ( m_bReversing ? 70.0f : VEHICLE_REVERSE_ANGLE );
+			m_bReversing = bBehind && ( flPointDist <= VEHICLE_REVERSE_DIST || m_bPreferReverse ) && m_pType->flReverseSpeed > 0.0f;
+			if ( m_bReversing )
+			{
+				flWant = AngleNormalize( flWant + 180.0f );
+				flDiff = AngleDiff( flWant, m_flHeading );
+				flMax = m_pType->flReverseSpeed * m_flMaxSpeedScale;
+			}
 			// slow for the corner ahead and for the goal (it can stop in time)
 			float flCos = cosf( DEG2RAD( MIN( fabs( flDiff ), 90.0f ) ) );
 			flTargetSpeed = flMax * MAX( flCos, 0.25f );
@@ -1278,8 +1439,12 @@ void CDoDSPVehicle::DriveThink( void )
 				if ( fabs( flDiff ) > 60.0f )
 					flTargetSpeed = MIN( flTargetSpeed, 60.0f );		// slow, tight turn
 			}
+			if ( m_bReversing )
+				flTargetSpeed = -flTargetSpeed;
 		}
 	}
+	else
+		m_bReversing = false;
 
 	// waiting for someone it can't push
 	if ( m_hBlocker.Get() && now - m_flBlockedTime < 1.0f )
@@ -1316,6 +1481,29 @@ void CDoDSPVehicle::DriveThink( void )
 	Vector vecNext = vecPos + vecFwd * ( m_flSpeed * dt );
 	float flGroundZ;
 	QAngle angWant = BuildAngles( m_flHeading, vecNext, &flGroundZ );
+	// the lurch (owner: "from a complete stop to moving, with a lurch" - the models have no animation for it, only
+	// 'idle'): the hull rocks on a damped spring driven by its acceleration - nose up pulling away, nose down
+	// braking, a little overshoot - and by the main gun's recoil (FireMainGun kicks m_flSuspVel)
+	{
+		float flAccel = ( m_flSpeed - m_flPrevSpeed ) / dt;
+		m_flPrevSpeed = m_flSpeed;
+		float flTarget = clamp( flAccel / 100.0f * m_pType->flSuspAccel, -6.0f, 6.0f );
+		float w = 2.0f * M_PI_F * MAX( m_pType->flSuspFreq, 0.1f );
+		float flSpring = w * w * ( flTarget - m_flSuspPitch ) - 2.0f * m_pType->flSuspDamp * w * m_flSuspVel;
+		m_flSuspVel += flSpring * dt;
+		m_flSuspPitch = clamp( m_flSuspPitch + m_flSuspVel * dt, -8.0f, 8.0f );
+		if ( fabs( m_flSuspPitch ) > 0.01f )
+		{
+			// about the hull's own sideways axis (model space), nose up = +
+			float flMY = DEG2RAD( m_pType->flForwardYaw );
+			Vector vecSide( -sinf( flMY ), cosf( flMY ), 0.0f );
+			matrix3x4_t matHull, matRock, matOut;
+			AngleMatrix( angWant, matHull );
+			MatrixBuildRotationAboutAxis( vecSide, -m_flSuspPitch, matRock );
+			ConcatTransforms( matHull, matRock, matOut );
+			MatrixAngles( matOut, angWant );
+		}
+	}
 	QAngle angNow = GetLocalAngles();
 	QAngle angVel( AngleDiff( angWant.x, angNow.x ), AngleDiff( angWant.y, angNow.y ), AngleDiff( angWant.z, angNow.z ) );
 	angVel *= ( 1.0f / dt ) * 0.5f;
@@ -1389,6 +1577,260 @@ void CDoDSPVehicle::DriveThink( void )
 #define VEHICLE_SCAN_INTERVAL	0.3f
 #define VEHICLE_GUN_CONE		1.5f		// degrees: the barrel must be this close to the target to fire the main gun
 #define VEHICLE_COAX_CONE		5.0f
+
+//-----------------------------------------------------------------------------
+// V2c: tactics - one owner for where a vehicle WANTS to be (the driving code gets it there, the turret code
+// shoots). Once a second:
+//   what it knows: its own sight (the turret's target) first, else what its side's soldiers within
+//     VEHICLE_SPOTTER_RANGE are fighting (their enemy and where they last knew him) - no wallhacks.
+//   offensive: closes to 600..1800 units, shoots on the move as well; with no enemy known it patrols the nodes.
+//   defensive: holds spots 1500..(gun range) away with a shot, stops to shoot, backs off from what gets close,
+//     never leaves its leash (2000 units from where it started unless the map says otherwise).
+//   hold: stays; the turret fights. scripted: moves only on inputs.
+// A firing spot is a graded node (it can drive there) in its range band from the enemy, inside its leash,
+// with a clear line from turret height to the enemy - nearest first. It keeps a spot while it has its shot
+// (no hunting for a better one), and keeps any new spot VEHICLE_SETTLE_TIME at least; six new spots inside
+// 30 s prints an INVARIANT (dithering). Map orders (DriveTo inputs, console goto) come first: tactics wait
+// till it arrives.
+//-----------------------------------------------------------------------------
+void CDoDSPVehicle::SetTactic( int eTactic, int eWhy )
+{
+	if ( eTactic == m_eTactic && eWhy == m_eTacticWhy )
+		return;
+	m_eTactic = eTactic;
+	m_eTacticWhy = eWhy;
+	if ( dodsp_vehicle_debug.GetBool() )
+		Msg( "DOD-SP vehicle %s (%s): %s%s%s\n", GetDebugName(), s_pszBehaviors[m_eBehavior], s_pszTactics[eTactic],
+			 s_pszTacticWhy[eWhy][0] ? " - " : "", s_pszTacticWhy[eWhy] );
+}
+
+bool CDoDSPVehicle::InBand( float flDist, float *pflMin, float *pflMax )
+{
+	float flGun = m_pType->gun.bHas ? m_pType->gun.flRange : m_pType->coax.flRange;
+	if ( m_eBehavior == VBEHAVE_DEFENSIVE )
+	{
+		*pflMin = 1500.0f;
+		*pflMax = MAX( 1600.0f, MIN( flGun * 0.8f, 4000.0f ) );
+	}
+	else
+	{
+		*pflMin = 600.0f;
+		*pflMax = MIN( 1800.0f, MAX( flGun * 0.8f, 700.0f ) );
+	}
+	return flDist >= *pflMin && flDist <= *pflMax;
+}
+
+void CDoDSPVehicle::UpdateQuarry( void )
+{
+	float now = gpGlobals->curtime;
+	// its own eyes first
+	if ( m_hTarget.Get() && m_hTarget->IsAlive() )
+	{
+		m_hQuarry = m_hTarget.Get();
+		m_vecQuarryPos = m_hTarget->WorldSpaceCenter();
+		m_flQuarryTime = now;
+		return;
+	}
+	// its side's soldiers nearby: what they are fighting, where they last knew it
+	CAI_BaseNPC **ppAIs = g_AI_Manager.AccessAIs();
+	float flBest = FLT_MAX;
+	CBaseEntity *pBest = NULL;
+	Vector vecBest;
+	for ( int i = 0; i < g_AI_Manager.NumAIs(); i++ )
+	{
+		CAI_BaseNPC *pNPC = ppAIs[i];
+		if ( !pNPC || !pNPC->IsAlive() || DoDSP_FactionOf( pNPC ) != m_eFaction )
+			continue;
+		if ( ( pNPC->GetAbsOrigin() - GetAbsOrigin() ).Length() > VEHICLE_SPOTTER_RANGE )
+			continue;
+		CBaseEntity *pEnemy = pNPC->GetEnemy();
+		if ( !pEnemy || !pEnemy->IsAlive() || ( pEnemy->GetFlags() & FL_NOTARGET ) || !DoDSP_Hostile( m_eFaction, DoDSP_FactionOf( pEnemy ) ) )
+			continue;
+		Vector vecLKP = pNPC->GetEnemyLKP();
+		float flDist = ( vecLKP - GetAbsOrigin() ).Length();
+		if ( flDist < flBest )
+		{
+			flBest = flDist;
+			pBest = pEnemy;
+			vecBest = vecLKP;
+		}
+	}
+	if ( pBest )
+	{
+		bool bNews = m_hQuarry.Get() != pBest || now - m_flQuarryTime > 2.0f;
+		m_hQuarry = pBest;
+		m_vecQuarryPos = vecBest;
+		m_flQuarryTime = now;
+		if ( bNews && dodsp_vehicle_debug.GetBool() )
+			Msg( "DOD-SP vehicle %s: %s reported at %.0f %.0f %.0f\n", GetDebugName(), pBest->GetClassname(), vecBest.x, vecBest.y, vecBest.z );
+		return;
+	}
+	// forget a stale one
+	if ( m_hQuarry.Get() && ( !m_hQuarry->IsAlive() || now - m_flQuarryTime > VEHICLE_FORGET_TIME ) )
+		m_hQuarry = NULL;
+}
+
+int CDoDSPVehicle::ChooseFirePosition( const Vector &vecTarget, float flMin, float flMax )
+{
+	VehicleNav_t *pNav = GetVehicleNav( m_flHalfWidth, m_flBodyHeight, m_pType->szName );
+	if ( !pNav )
+		return -1;
+	struct Cand_t { float flScore; int i; };
+	CUtlVector<Cand_t> cands;
+	Vector vecMe = GetAbsOrigin();
+	float flMid = 0.5f * ( flMin + flMax );
+	for ( int i = 0; i < pNav->nNodes; i++ )
+	{
+		if ( !pNav->links[i].Count() )
+			continue;
+		const Vector &vecNode = g_pBigAINet->GetNode( i, false )->GetOrigin();
+		float flToTarget = ( vecNode - vecTarget ).Length2D();
+		if ( flToTarget < flMin || flToTarget > flMax )
+			continue;
+		float flToMe = ( vecNode - vecMe ).Length2D();
+		if ( flToMe > VEHICLE_FIRE_NODE_SEARCH )
+			continue;
+		if ( m_flLeash > 0.0f && ( vecNode - m_vecHome ).Length2D() > m_flLeash )
+			continue;
+		Cand_t c = { flToMe + 0.5f * fabs( flToTarget - flMid ), i };
+		cands.AddToTail( c );
+	}
+	// the best few by score get the (costlier) line-of-fire test
+	CTraceFilterWorldOnly filter;
+	for ( int k = 0; k < cands.Count() && k < 24; k++ )
+	{
+		int iMin = k;
+		for ( int m = k + 1; m < cands.Count(); m++ )
+			if ( cands[m].flScore < cands[iMin].flScore )
+				iMin = m;
+		Cand_t tmp = cands[k]; cands[k] = cands[iMin]; cands[iMin] = tmp;
+		Vector vecEye = g_pBigAINet->GetNode( cands[k].i, false )->GetOrigin() + Vector( 0, 0, m_flBodyHeight );
+		trace_t tr;
+		UTIL_TraceLine( vecEye, vecTarget, MASK_SOLID, &filter, &tr );
+		if ( tr.fraction >= 0.98f )
+			return cands[k].i;
+	}
+	return -1;
+}
+
+void CDoDSPVehicle::TacticsThink( void )
+{
+	float now = gpGlobals->curtime;
+	if ( now < m_flNextTactic )
+		return;
+	m_flNextTactic = now + VEHICLE_TACTIC_INTERVAL;
+	UpdateQuarry();
+	m_bPreferReverse = false;
+	if ( m_bScriptedGoal )
+	{
+		SetTactic( VTACTIC_SCRIPTED, VWHY_ORDERED );
+		return;
+	}
+	if ( m_eBehavior == VBEHAVE_SCRIPTED )
+	{
+		SetTactic( VTACTIC_SCRIPTED, VWHY_NONE );
+		return;
+	}
+	if ( m_eBehavior == VBEHAVE_HOLD )
+	{
+		SetTactic( VTACTIC_HOLD, m_hQuarry.Get() ? VWHY_SEES_ENEMY : VWHY_NO_ENEMY );
+		return;
+	}
+	Vector vecMe = GetAbsOrigin();
+	if ( !m_hQuarry.Get() )
+	{
+		m_iFireNode = -1;
+		if ( m_eBehavior == VBEHAVE_DEFENSIVE )
+		{
+			// keep home (a failed route waits before trying again - no OnNoRoute every second)
+			if ( !m_bHasGoal && now >= m_flRoamWaitUntil && ( vecMe - m_vecHome ).Length2D() > 256.0f )
+			{
+				DriveTo( m_vecHome, false );
+				m_flRoamWaitUntil = now + 5.0f;
+			}
+			SetTactic( VTACTIC_ROAM, VWHY_NO_ENEMY );
+			return;
+		}
+		// patrol: a random node within reach, a pause at each
+		if ( !m_bHasGoal && now >= m_flRoamWaitUntil )
+		{
+			VehicleNav_t *pNav = GetVehicleNav( m_flHalfWidth, m_flBodyHeight, m_pType->szName );
+			if ( pNav && pNav->nNodes > 0 )
+			{
+				for ( int tries = 0; tries < 12; tries++ )
+				{
+					int i = random->RandomInt( 0, pNav->nNodes - 1 );
+					if ( !pNav->links[i].Count() )
+						continue;
+					const Vector &vecNode = g_pBigAINet->GetNode( i, false )->GetOrigin();
+					float flDist = ( vecNode - vecMe ).Length2D();
+					if ( flDist < 512.0f || flDist > VEHICLE_ROAM_RADIUS )
+						continue;
+					if ( m_flLeash > 0.0f && ( vecNode - m_vecHome ).Length2D() > m_flLeash )
+						continue;
+					if ( DriveTo( vecNode, false ) )
+						break;
+				}
+			}
+			m_flRoamWaitUntil = now + random->RandomFloat( 4.0f, 8.0f );
+		}
+		if ( m_bHasGoal )
+			m_flRoamWaitUntil = now + random->RandomFloat( 4.0f, 8.0f );		// the pause starts when it arrives
+		SetTactic( VTACTIC_ROAM, VWHY_NO_ENEMY );
+		return;
+	}
+
+	// an enemy is known
+	bool bSees = m_hTarget.Get() == m_hQuarry.Get() && m_hTarget.Get() != NULL;
+	float flDist = ( m_vecQuarryPos - vecMe ).Length2D();
+	float flMin, flMax;
+	bool bInBand = InBand( flDist, &flMin, &flMax );
+	// defensive: what gets close is backed away from, front to it
+	m_bPreferReverse = ( m_eBehavior == VBEHAVE_DEFENSIVE );
+	if ( bSees && ( bInBand || ( m_eBehavior == VBEHAVE_OFFENSIVE && flDist < flMin ) ) )
+	{
+		// it has its shot: stay (an offensive tank this close doesn't back off - it's winning)
+		if ( m_bHasGoal && m_eBehavior == VBEHAVE_DEFENSIVE )
+			Stop();
+		if ( m_bHasGoal && m_eBehavior == VBEHAVE_OFFENSIVE && flDist <= flMax )
+			Stop();
+		m_iFireNode = -1;
+		SetTactic( VTACTIC_FIGHT, VWHY_SEES_ENEMY );
+		return;
+	}
+	int eWhy = !bSees ? ( m_hTarget.Get() ? VWHY_NO_SHOT : VWHY_REPORTED ) : ( flDist > flMax ? VWHY_TOO_FAR : VWHY_TOO_CLOSE );
+	// still on the way to a spot, or just got there: keep it a while (no dithering)
+	if ( ( m_bHasGoal && m_iFireNode >= 0 ) || now < m_flNoRepositionUntil )
+	{
+		SetTactic( m_iFireNode >= 0 ? VTACTIC_REPOSITION : VTACTIC_FIGHT, m_bHasGoal ? eWhy : VWHY_SETTLING );
+		return;
+	}
+	int iNode = ChooseFirePosition( m_vecQuarryPos, flMin, flMax );
+	if ( iNode >= 0 && DriveTo( g_pBigAINet->GetNode( iNode, false )->GetOrigin(), false ) )
+	{
+		m_iFireNode = iNode;
+		m_flNoRepositionUntil = now + VEHICLE_SETTLE_TIME;
+		// dithering guard: six new spots in 30 s
+		m_flRepositions[m_iReposition] = now;
+		m_iReposition = ( m_iReposition + 1 ) % ARRAYSIZE( m_flRepositions );
+		if ( now - m_flRepositions[m_iReposition] < 30.0f )
+			Warning( "INVARIANT DOD-SP vehicle %s: %d new firing spots in %.0f s - it can't settle (enemy at %.0f %.0f %.0f, %s)\n",
+					 GetDebugName(), ARRAYSIZE( m_flRepositions ), now - m_flRepositions[m_iReposition],
+					 m_vecQuarryPos.x, m_vecQuarryPos.y, m_vecQuarryPos.z, s_pszTacticWhy[eWhy] );
+		SetTactic( VTACTIC_REPOSITION, eWhy );
+		return;
+	}
+	m_iFireNode = -1;
+	// no spot with a shot at its range: offensive goes to where the enemy was; defensive waits, turret on him
+	if ( m_eBehavior == VBEHAVE_OFFENSIVE && !bSees && !m_bHasGoal && flDist > 256.0f )
+	{
+		if ( DriveTo( m_vecQuarryPos, false ) )
+			m_flNoRepositionUntil = now + VEHICLE_SETTLE_TIME;
+		SetTactic( VTACTIC_HUNT, VWHY_NO_FIRE_SPOT );
+		return;
+	}
+	SetTactic( bSees ? VTACTIC_FIGHT : VTACTIC_HUNT, VWHY_NO_FIRE_SPOT );
+}
 
 bool CDoDSPVehicle::CalibrateTurret( void )
 {
@@ -1567,7 +2009,7 @@ void CDoDSPVehicle::FireMainGun( const Vector &vecAim )
 {
 	Vector vecDir = vecAim;
 	// a little spread: a shell isn't a laser
-	float flSpread = DEG2RAD( m_pType->gun.flSpread ) * 0.5f;
+	float flSpread = DEG2RAD( m_pType->gun.flSpread ) * 0.5f * ( fabs( m_flSpeed ) < 15.0f ? 1.0f : 3.0f );
 	vecDir += Vector( random->RandomFloat( -flSpread, flSpread ), random->RandomFloat( -flSpread, flSpread ), random->RandomFloat( -flSpread, flSpread ) );
 	VectorNormalize( vecDir );
 	Vector vecMuzzle = MuzzlePos( vecDir );
@@ -1580,6 +2022,8 @@ void CDoDSPVehicle::FireMainGun( const Vector &vecAim )
 	if ( m_pType->gun.szSound[0] )
 		EmitSound( m_pType->gun.szSound );
 	UTIL_ScreenShake( vecMuzzle, 6.0f, 150.0f, 0.6f, 1024.0f, SHAKE_START );
+	// recoil: the hull rocks away from the shot (nose up when firing ahead, down when firing behind)
+	m_flSuspVel += m_pType->flRecoil * 2.0f * M_PI_F * m_pType->flSuspFreq * cosf( DEG2RAD( m_flTurretYaw + m_flTurretFwdOffset ) );
 	if ( tr.fraction < 1.0f && !tr.startsolid )
 	{
 		Vector vecBoom = tr.endpos + tr.plane.normal * 8.0f;
@@ -1648,9 +2092,11 @@ void CDoDSPVehicle::WeaponThink( float dt )
 	// turn the turret and raise the barrel toward it (in the hull's frame), else back to the front
 	float flWantYaw = 0.0f, flWantPitch = 0.0f;
 	Vector vecAimPoint = vec3_origin;
-	if ( pTarget )
+	bool bAimAtQuarry = !pTarget && m_hQuarry.Get() && gpGlobals->curtime - m_flQuarryTime < VEHICLE_FORGET_TIME;
+	if ( pTarget || bAimAtQuarry )
 	{
-		vecAimPoint = pTarget->WorldSpaceCenter();
+		// a target in sight; else where its enemy was last known (the turret is ready when he shows)
+		vecAimPoint = pTarget ? pTarget->WorldSpaceCenter() : m_vecQuarryPos;
 		Vector vecLocal;
 		VectorIRotate( vecAimPoint - AimPivot(), EntityToWorldTransform(), vecLocal );
 		flWantYaw = RAD2DEG( atan2f( vecLocal.y, vecLocal.x ) ) - m_flTurretFwdOffset;
@@ -1690,8 +2136,11 @@ void CDoDSPVehicle::WeaponThink( float dt )
 	if ( !bSeen )
 		return;
 	CBaseEntity *pFriend = NULL;
-	// main gun: at anything hostile, when the barrel is on it
-	if ( m_pType->gun.bHas && now >= m_flNextGun && flErr <= VEHICLE_GUN_CONE && flDist <= m_pType->gun.flRange )
+	// main gun: at anything hostile, when the barrel is on it. A defensive vehicle stops to shoot; an offensive
+	// one shoots on the move too (FireMainGun spreads moving shots wider)
+	bool bStill = fabs( m_flSpeed ) < 15.0f;
+	if ( m_pType->gun.bHas && now >= m_flNextGun && flErr <= VEHICLE_GUN_CONE && flDist <= m_pType->gun.flRange &&
+		 ( bStill || m_eBehavior != VBEHAVE_DEFENSIVE ) )
 	{
 		if ( FriendlyInTheWay( MuzzlePos( vecBarrel ), vecBarrel, flDist + 64.0f, m_pType->gun.flRadius, &pFriend ) )
 		{
@@ -1824,6 +2273,10 @@ void CDoDSPVehicle::Report( void )
 		 m_pType ? m_pType->szName : "?", m_flHalfLength * 2.0f, m_flHalfWidth * 2.0f, p.x, p.y, p.z, m_flHeading, m_flSpeed,
 		 m_bHasGoal ? "driving" : "parked", m_eStuck != VSTUCK_NONE ? ( m_eStuck == VSTUCK_WORLD ? ", wall ahead" : ", was stuck" ) : "",
 		 m_iRoute, m_Route.Count() );
+	Msg( "    %s: %s%s%s, enemy known: %s (%.0f s ago)%s\n", s_pszBehaviors[m_eBehavior], s_pszTactics[m_eTactic],
+		 s_pszTacticWhy[m_eTacticWhy][0] ? " - " : "", s_pszTacticWhy[m_eTacticWhy],
+		 m_hQuarry.Get() ? m_hQuarry->GetClassname() : "none", m_hQuarry.Get() ? gpGlobals->curtime - m_flQuarryTime : 0.0f,
+		 m_bReversing ? ", reversing" : "" );
 	Msg( "    side %s, target %s%s, turret %.0f deg / barrel %.0f deg, main gun %s\n", DoDSP_FactionName( m_eFaction ),
 		 m_hTarget.Get() ? m_hTarget->GetClassname() : "none", m_bHoldFire ? " (holding fire)" : "", m_flTurretYaw, m_flTurretPitch,
 		 !m_pType || !m_pType->gun.bHas ? "none" : ( gpGlobals->curtime >= m_flNextGun ? "loaded" : "reloading" ) );

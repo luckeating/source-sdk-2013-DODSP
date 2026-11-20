@@ -23,6 +23,14 @@
 		"carrier" : "Bren carrier"
 	]
 	goal(target_destination) : "Drive to at start" : "" : "Optional: an entity it drives to when the map starts."
+	behavior(choices) : "Behaviour" : "offensive" : "Offensive: hunts, closes in, shoots on the move. Defensive: holds long-range spots, stops to shoot, backs away from what gets close, stays in its leash. Hold: stays put. Scripted: moves only on inputs." =
+	[
+		"offensive" : "Offensive"
+		"defensive" : "Defensive"
+		"hold" : "Hold position"
+		"scripted" : "Scripted (inputs only)"
+	]
+	leash(float) : "Leash" : "0" : "How far (units) from where it starts it may go. 0 = anywhere (defensive: 2000)."
 	faction(choices) : "Side" : "" : "Who it fights for. Empty = the type's own side (German vehicles axis, Allied ones allies)." =
 	[
 		"" : "The type's side"

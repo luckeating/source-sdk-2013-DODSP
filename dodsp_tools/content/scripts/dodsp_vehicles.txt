@@ -27,6 +27,9 @@
 //                    turret_stop, reload, explode (shell impact). Entries: scripts/game_sounds_dodsp_vehicles.txt.
 //                    Which engine sound fits which vehicle is a GUESS (engine1 light, 2 medium, 3 heavy, truck for
 //                    wheels) - swap them by ear.
+//   susp_accel       the lurch: degrees the hull pitches per 100 units/s^2 of acceleration (default tracked 1.6,
+//                    wheeled 1.0); susp_freq (Hz, 1.6) / susp_damp (0..1, 0.35) its spring; recoil: degrees the main gun
+//                    kicks the hull (2). The models have no lurch animation (only 'idle' / turret 'aim') - it's code.
 //   Halftracks and the carrier have no weapons yet (their MG mounts come after V2).
 
 "DoDSP_Vehicles"
