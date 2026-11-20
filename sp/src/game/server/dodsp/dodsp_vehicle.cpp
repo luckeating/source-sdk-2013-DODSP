@@ -57,7 +57,7 @@
 // this; the lint checks the repo copy against it, the loader checks the owner's copy (V4e's first run: the old script
 // had no hatches, every crewman got out beside the tank and nothing at bail time said why). Bump both together
 // whenever the code starts needing a new key in the script.
-#define DODSP_VEHICLE_SCRIPT_VERSION	"V3"
+#define DODSP_VEHICLE_SCRIPT_VERSION	"V3e"
 static char s_szVehicleScriptVersion[32] = "not loaded";
 
 // V4h: how a shell's strike on the armour went - what HitFeedback shows and plays (name table guarded below)
@@ -229,7 +229,7 @@ COMPILE_TIME_ASSERT( ARRAYSIZE( s_pszBail ) == NUM_VBAILS );
 // V4b: the German soldier's bail-out (npc_german_soldier.cpp - one owner for how a man climbs out and jumps off)
 extern bool GermanSoldier_BailOut( CBaseEntity *pEnt, const Vector &vecHatch, const Vector &vecGround, const Vector &vecRun, float flYaw );
 // V3 riders (npc_german_soldier.cpp owns how a man rides and gets off; the vehicle owns when)
-extern bool GermanSoldier_BeginRide( CBaseEntity *pEnt, CBaseEntity *pVehicle, const Vector &vecSeat, float flYaw, const char *pszIdle, const char *pszGetout );
+extern bool GermanSoldier_BeginRide( CBaseEntity *pEnt, CBaseEntity *pVehicle, const Vector &vecSeat, float flYaw, const char *pszIdle, const char *pszGetout, const char *pszFidget );
 extern int GermanSoldier_RideGetOut( CBaseEntity *pEnt, bool bForce );	// 1 going, 0 can't, -1 his landing spot is taken
 extern void GermanSoldier_RideAbort( CBaseEntity *pEnt );
 extern int GermanSoldier_RideState( CBaseEntity *pEnt );		// 0 off, 1 seated, 2 getting off
@@ -261,6 +261,9 @@ struct VehicleHit_t
 //-----------------------------------------------------------------------------
 // Vehicle types (scripts/dodsp_vehicles.txt)
 //-----------------------------------------------------------------------------
+#define VEHICLE_MAX_MGS		4
+static const char *s_pszMGMount[] = { "turret", "barrel", "hull" };
+
 struct VehicleType_t
 {
 	char	szName[32];
@@ -283,8 +286,16 @@ struct VehicleType_t
 	// for autocannons, one round + "reload" for the rest; "rounds" carried, 0 = never runs out)
 	struct Gun_t { bool bHas; float flReload, flRange, flSpread; int nMagazine; float flCyclic; int nRounds; DoDSPShell_t ap, he; char szSound[64]; };
 	Gun_t	gun;
-	struct Coax_t { bool bHas; float flDamage, flRate, flBurst, flPause, flRange, flSpread; char szSound[64]; };
-	Coax_t	coax;					// machine gun beside the main gun: bursts at infantry
+	// V3e: the machine guns, each on its REAL mount (CoD2's tags, dodsp_tools/generated/cod2_vehicle_tags.txt): turret
+	// (turret model space, turns with it), barrel (also rises with the gun about vecPivot), hull (hull model space: a
+	// ball mount aiming on its own within flArc degrees each side and flPitchMin..Max, manned by iCrew). Bursts at
+	// infantry. (Before V3e one "coax" fired from the main gun's muzzle - the Tiger's 3.7 m out, nowhere near its MG.)
+	enum { MG_TURRET, MG_BARREL, MG_HULL, NUM_MG_MOUNTS };
+	struct MG_t { char szName[16]; int eMount; Vector vecMuzzle, vecPivot; float flArc, flPitchMin, flPitchMax; int iCrew;
+				  float flDamage, flRate, flBurst, flPause, flRange, flSpread; char szSound[64]; };
+	MG_t	mgs[VEHICLE_MAX_MGS];
+	int		nMGs;
+	float	flMGRange;				// the longest of them
 	float	flSuspAccel;			// degrees the hull pitches per 100 units/s^2 of acceleration (the lurch)
 	float	flSuspFreq, flSuspDamp;	// its spring: rocks at this many Hz, this much damping (0..1)
 	float	flRecoil;				// the main gun kicks the hull back this many degrees
@@ -294,7 +305,7 @@ struct VehicleType_t
 	char	szEngineIdle[64], szEngineMove[64], szTurretTurn[64], szTurretStop[64], szReload[64], szExplode[64];
 	// V3: a rider's seat - where (model space), facing (yaw on the vehicle), his looping idle and his get-out (both
 	// sequences of npc_ww2_anims_ride), and how long after the dismount order he goes
-	struct Seat_t { Vector vecOrigin; float flYaw; char szIdle[64], szGetout[64]; float flDelay; };
+	struct Seat_t { Vector vecOrigin; float flYaw; char szIdle[64], szGetout[64], szFidget[64]; float flDelay; };	// V3e: fidget = played now and then while seated
 	CUtlVector<Seat_t> seats;
 	// V4e: where each crew role gets out ("hatches": role -> "turret x y z" in the turret model's space, or "hull x y z"
 	// in the hull's) = the roof his feet end up on, measured from the meshes. Roles at the same spot share a hatch
@@ -302,6 +313,7 @@ struct VehicleType_t
 	struct Hatch_t { bool bHas, bTurret; Vector vecPos; int iShare; };
 	Hatch_t	hatches[NUM_CREW_ROLES];
 };
+COMPILE_TIME_ASSERT( ARRAYSIZE( s_pszMGMount ) == VehicleType_t::NUM_MG_MOUNTS );
 static CUtlVector<VehicleType_t *> s_Types;
 static float s_flTypesLoaded = -1.0f;
 
@@ -424,15 +436,53 @@ static void LoadVehicleTypes( bool bForce )
 		t->gun.flRange = pGun ? pGun->GetFloat( "range", 6000.0f ) : 0.0f;
 		t->gun.flSpread = pGun ? pGun->GetFloat( "spread", 0.5f ) : 0.0f;
 		Q_strncpy( t->gun.szSound, pGun ? pGun->GetString( "sound", "DoDSP_Vehicle.GunFire1" ) : "", sizeof( t->gun.szSound ) );
-		KeyValues *pCoax = pType->FindKey( "coax" );
-		t->coax.bHas = pCoax != NULL;
-		t->coax.flDamage = pCoax ? pCoax->GetFloat( "damage", 12.0f ) : 0.0f;
-		t->coax.flRate = pCoax ? pCoax->GetFloat( "rate", 10.0f ) : 0.0f;
-		t->coax.flBurst = pCoax ? pCoax->GetFloat( "burst", 1.5f ) : 0.0f;
-		t->coax.flPause = pCoax ? pCoax->GetFloat( "pause", 1.2f ) : 0.0f;
-		t->coax.flRange = pCoax ? pCoax->GetFloat( "range", 2500.0f ) : 0.0f;
-		t->coax.flSpread = pCoax ? pCoax->GetFloat( "spread", 3.0f ) : 0.0f;
-		Q_strncpy( t->coax.szSound, pCoax ? pCoax->GetString( "sound", "Weapon_Mg42.Shoot" ) : "", sizeof( t->coax.szSound ) );
+		// V3e: the machine guns on their real mounts
+		t->nMGs = 0;
+		t->flMGRange = 0.0f;
+		if ( pType->FindKey( "coax" ) )
+			Warning( "INVARIANT DOD-SP vehicles: type '%s' has the old \"coax\" block (before V3e: it fired from the main gun's muzzle) - "
+					 "ignored, the type has no machine gun; use \"mgs\" (the script and server.dll come from one build)\n", t->szName );
+		KeyValues *pMGs = pType->FindKey( "mgs" );
+		for ( KeyValues *pMG = pMGs ? pMGs->GetFirstTrueSubKey() : NULL; pMG; pMG = pMG->GetNextTrueSubKey() )
+		{
+			if ( t->nMGs >= VEHICLE_MAX_MGS )
+			{
+				Warning( "INVARIANT DOD-SP vehicles: type '%s' has more than %d machine guns - the rest are ignored\n", t->szName, VEHICLE_MAX_MGS );
+				break;
+			}
+			VehicleType_t::MG_t &m = t->mgs[t->nMGs];
+			Q_strncpy( m.szName, pMG->GetName(), sizeof( m.szName ) );
+			m.eMount = -1;
+			for ( int k = 0; k < ARRAYSIZE( s_pszMGMount ); k++ )
+				if ( !Q_stricmp( pMG->GetString( "mount", "" ), s_pszMGMount[k] ) )
+					m.eMount = k;
+			if ( m.eMount < 0 || !pMG->FindKey( "muzzle" ) || ( m.eMount != VehicleType_t::MG_HULL && !t->szTurretModel[0] ) )
+			{
+				Warning( "INVARIANT DOD-SP vehicles: type '%s' machine gun '%s' needs \"mount\" turret / barrel / hull and a \"muzzle\"%s - ignored\n",
+						 t->szName, m.szName, t->szTurretModel[0] ? "" : " (no turret: hull only)" );
+				continue;
+			}
+			ParseVector( pMG->GetString( "muzzle" ), m.vecMuzzle );
+			ParseVector( pMG->GetString( "pivot", "0 0 0" ), m.vecPivot );
+			m.flArc = pMG->GetFloat( "arc", 15.0f );
+			float flLo = -10.0f, flHi = 20.0f;
+			sscanf( pMG->GetString( "pitch", "-10 20" ), "%f %f", &flLo, &flHi );
+			m.flPitchMin = MIN( flLo, flHi );
+			m.flPitchMax = MAX( flLo, flHi );
+			m.iCrew = -1;
+			for ( int k = 0; k < NUM_CREW_ROLES; k++ )
+				if ( !Q_stricmp( pMG->GetString( "crew", "" ), g_pszCrewRole[k] ) )
+					m.iCrew = k;
+			m.flDamage = pMG->GetFloat( "damage", 12.0f );
+			m.flRate = pMG->GetFloat( "rate", 10.0f );
+			m.flBurst = pMG->GetFloat( "burst", 1.5f );
+			m.flPause = pMG->GetFloat( "pause", 1.2f );
+			m.flRange = pMG->GetFloat( "range", 2500.0f );
+			m.flSpread = pMG->GetFloat( "spread", 3.0f );
+			Q_strncpy( m.szSound, pMG->GetString( "sound", "Weapon_Mg42.Shoot" ), sizeof( m.szSound ) );
+			t->flMGRange = MAX( t->flMGRange, m.flRange );
+			t->nMGs++;
+		}
 		KeyValues *pSnd = pType->FindKey( "sounds" );
 		Q_strncpy( t->szEngineIdle, pSnd ? pSnd->GetString( "engine_idle" ) : "", sizeof( t->szEngineIdle ) );
 		Q_strncpy( t->szEngineMove, pSnd ? pSnd->GetString( "engine_move" ) : "", sizeof( t->szEngineMove ) );
@@ -484,6 +534,7 @@ static void LoadVehicleTypes( bool bForce )
 			seat.flYaw = pSeat->GetFloat( "yaw" );
 			Q_strncpy( seat.szIdle, pSeat->GetString( "idle" ), sizeof( seat.szIdle ) );
 			Q_strncpy( seat.szGetout, pSeat->GetString( "getout" ), sizeof( seat.szGetout ) );
+			Q_strncpy( seat.szFidget, pSeat->GetString( "fidget", "" ), sizeof( seat.szFidget ) );
 			seat.flDelay = pSeat->GetFloat( "delay" );
 			if ( !seat.szIdle[0] || !seat.szGetout[0] )
 			{
@@ -752,10 +803,13 @@ static int VehicleSoundCheck( const char *pszName, char *pszWave, int nWave )
 #define VEHICLE_MAX_SOUNDS	16
 static int VehicleSoundNames( const VehicleType_t *pT, const char **ppszOut )
 {
-	const char *pszAll[] = { pT->gun.szSound, pT->coax.szSound, pT->szEngineIdle, pT->szEngineMove, pT->szTurretTurn,
+	const char *pszAll[] = { pT->gun.szSound, pT->szEngineIdle, pT->szEngineMove, pT->szTurretTurn,
 							 pT->szTurretStop, pT->szReload, pT->szExplode,
+							 pT->nMGs > 0 ? pT->mgs[0].szSound : "", pT->nMGs > 1 ? pT->mgs[1].szSound : "",
+							 pT->nMGs > 2 ? pT->mgs[2].szSound : "", pT->nMGs > 3 ? pT->mgs[3].szSound : "",
 							 s_pszHitSound[VHITFX_IN], s_pszHitSound[VHITFX_STOPPED], s_pszHitSound[VHITFX_RICOCHET] };
 	COMPILE_TIME_ASSERT( ARRAYSIZE( pszAll ) <= VEHICLE_MAX_SOUNDS );
+	COMPILE_TIME_ASSERT( VEHICLE_MAX_MGS == 4 );		// one slot per machine gun above
 	int n = 0;
 	for ( int k = 0; k < ARRAYSIZE( pszAll ); k++ )
 		if ( pszAll[k] && pszAll[k][0] )
@@ -1010,7 +1064,13 @@ private:
 	Vector			MuzzlePos( const Vector &vecDir );
 	bool			FriendlyInTheWay( const Vector &vecFrom, const Vector &vecDir, float flRange, float flRadius, CBaseEntity **ppWho );
 	void			FireMainGun( const Vector &vecDir );
-	void			FireCoax( const Vector &vecDir );
+	void			FireMG( int iMG, const Vector &vecSrc, const Vector &vecDir );
+	Vector			MGMuzzle( int iMG );				// V3e: the one owner of where a machine gun's bullets start
+	bool			MGManned( int iMG ) const;
+	bool			MGBurstShot( int iMG );				// its burst rhythm: true = a shot is due now
+	bool			AnyMGUsable( void ) const;
+	void			FireTurretMGs( CBaseEntity *pTarget, const Vector &vecAimPoint, const Vector &vecBarrel );
+	void			FireHullMGs( CBaseEntity *pTarget, const Vector &vecAimPoint );
 	void			UpdateSounds( float flTurretRate );
 	void			StopSounds( void );
 
@@ -1103,7 +1163,7 @@ private:
 	float			m_flTurretYaw;				// local to the hull, degrees (turret model's own front = 0)
 	float			m_flTurretPitch;			// degrees up
 	float			m_flNextGun;
-	float			m_flNextCoaxShot, m_flCoaxBurstEnd, m_flCoaxPauseUntil;
+	float			m_flNextMGShot[VEHICLE_MAX_MGS], m_flMGBurstEnd[VEHICLE_MAX_MGS], m_flMGPauseUntil[VEHICLE_MAX_MGS];
 	bool			m_bReloadSoundDone;
 	// measured from the turret model (CalibrateTurret), not saved
 	bool			m_bTurretCalibrated;
@@ -1281,7 +1341,8 @@ CDoDSPVehicle::CDoDSPVehicle()
 	m_flNextScan = 0.0f;
 	m_flTurretYaw = m_flTurretPitch = 0.0f;
 	m_flNextGun = 0.0f;
-	m_flNextCoaxShot = m_flCoaxBurstEnd = m_flCoaxPauseUntil = 0.0f;
+	for ( int k = 0; k < VEHICLE_MAX_MGS; k++ )
+		m_flNextMGShot[k] = m_flMGBurstEnd[k] = m_flMGPauseUntil[k] = 0.0f;
 	m_bReloadSoundDone = true;
 	m_bTurretCalibrated = false;
 	m_flTurretFwdOffset = 0.0f;
@@ -2314,7 +2375,7 @@ void CDoDSPVehicle::SetTactic( int eTactic, int eWhy )
 
 bool CDoDSPVehicle::InBand( float flDist, float *pflMin, float *pflMax )
 {
-	float flGun = m_pType->gun.bHas ? m_pType->gun.flRange : m_pType->coax.flRange;
+	float flGun = m_pType->gun.bHas ? m_pType->gun.flRange : m_pType->flMGRange;
 	if ( m_eBehavior == VBEHAVE_DEFENSIVE )
 	{
 		*pflMin = 1500.0f;
@@ -2606,9 +2667,16 @@ bool CDoDSPVehicle::CalibrateTurret( void )
 	pT->SetLocalAngles( angSave );
 	m_flPitchSign = ( vecHigh.z >= vecLow.z ) ? 1.0f : -1.0f;
 	Msg( "DOD-SP vehicle %s (%s, %s): turret barrel faces %.0f deg in its model, barrel_pitch %s%.0f..%.0f (%s = up), muzzle %s; "
-		 "main gun %s, coax %s\n", Label(), m_pType->szName, DoDSP_FactionName( m_eFaction ), m_flTurretFwdOffset,
+		 "main gun %s, %d machine gun%s\n", Label(), m_pType->szName, DoDSP_FactionName( m_eFaction ), m_flTurretFwdOffset,
 		 m_iPitchPose >= 0 ? "" : "MISSING ", m_flPoseMin, m_flPoseMax, m_flPitchSign > 0 ? "+" : "-",
-		 m_iMuzzleAttach > 0 ? "found" : "MISSING", m_pType->gun.bHas ? "yes" : "no", m_pType->coax.bHas ? "yes" : "no" );
+		 m_iMuzzleAttach > 0 ? "found" : "MISSING", m_pType->gun.bHas ? "yes" : "no", m_pType->nMGs, m_pType->nMGs == 1 ? "" : "s" );
+	for ( int k = 0; k < m_pType->nMGs; k++ )
+	{
+		const VehicleType_t::MG_t &m = m_pType->mgs[k];
+		Msg( "DOD-SP vehicle %s: machine gun '%s' on the %s at %.1f %.1f %.1f%s\n", Label(), m.szName, s_pszMGMount[m.eMount],
+			 m.vecMuzzle.x, m.vecMuzzle.y, m.vecMuzzle.z, m.eMount == VehicleType_t::MG_HULL ? CFmtStr( " (+-%.0f deg, %.0f..%.0f up, %s)",
+			 m.flArc, m.flPitchMin, m.flPitchMax, m.iCrew >= 0 ? g_pszCrewRole[m.iCrew] : "any crew" ).Access() : "" );
+	}
 	if ( m_iMuzzleAttach <= 0 )
 		Warning( "INVARIANT DOD-SP vehicle %s: turret model %s has no \"muzzle\" attachment - shots start at the turret's middle\n",
 				 Label(), m_pType->szTurretModel );
@@ -2718,7 +2786,7 @@ bool CDoDSPVehicle::TargetValid( CBaseEntity *pTarget, float flRange, bool bNeed
 
 CBaseEntity *CDoDSPVehicle::FindTarget( void )
 {
-	float flRange = MAX( m_pType->gun.bHas ? m_pType->gun.flRange : 0.0f, m_pType->coax.bHas ? m_pType->coax.flRange : 0.0f );
+	float flRange = MAX( m_pType->gun.bHas ? m_pType->gun.flRange : 0.0f, m_pType->flMGRange );
 	if ( m_hForcedTarget.Get() )
 		return TargetValid( m_hForcedTarget.Get(), flRange, false ) ? m_hForcedTarget.Get() : NULL;
 	// keep the one it has while it's still good
@@ -2877,28 +2945,128 @@ void CDoDSPVehicle::FireMainGun( const Vector &vecAim )
 			 VehicleWho( pTarget ), pszHit, flHitDist, m_iMagLeft, m_pType->gun.nRounds > 0 ? m_iRounds : -1 );
 }
 
-void CDoDSPVehicle::FireCoax( const Vector &vecDir )
+// V3e: THE one owner of where a machine gun's bullets start: its muzzle on its mount, in the world, now
+Vector CDoDSPVehicle::MGMuzzle( int iMG )
 {
-	Vector vecMuzzle = MuzzlePos( vecDir );
+	const VehicleType_t::MG_t &m = m_pType->mgs[iMG];
+	Vector p = m.vecMuzzle, vecWorld;
+	if ( m.eMount == VehicleType_t::MG_HULL || !m_hTurret.Get() )
+	{
+		VectorTransform( p, EntityToWorldTransform(), vecWorld );
+		return vecWorld;
+	}
+	if ( m.eMount == VehicleType_t::MG_BARREL )
+	{
+		// it rises with the gun: turned about the gun's pivot by the barrel's elevation (+ = up)
+		float c = cosf( DEG2RAD( m_flTurretPitch ) ), sn = sinf( DEG2RAD( m_flTurretPitch ) );
+		Vector d = p - m.vecPivot;
+		p = m.vecPivot + Vector( d.x * c - d.z * sn, d.y, d.x * sn + d.z * c );
+	}
+	VectorTransform( p, m_hTurret->EntityToWorldTransform(), vecWorld );
+	return vecWorld;
+}
+
+// a hull gun needs its own gunner (the Tiger's radio operator); turret guns need someone in the turret
+bool CDoDSPVehicle::MGManned( int iMG ) const
+{
+	const VehicleType_t::MG_t &m = m_pType->mgs[iMG];
+	if ( !m_pType->armour.bValid )
+		return true;
+	if ( m.eMount != VehicleType_t::MG_HULL )
+		return CanAim();
+	return m.iCrew >= 0 ? CrewHas( m.iCrew ) : m_iCrewAlive != 0;
+}
+
+bool CDoDSPVehicle::AnyMGUsable( void ) const
+{
+	for ( int k = 0; k < m_pType->nMGs; k++ )
+		if ( MGManned( k ) )
+			return true;
+	return false;
+}
+
+bool CDoDSPVehicle::MGBurstShot( int iMG )
+{
+	const VehicleType_t::MG_t &m = m_pType->mgs[iMG];
+	float now = gpGlobals->curtime;
+	if ( now >= m_flMGBurstEnd[iMG] && now >= m_flMGPauseUntil[iMG] )
+	{
+		m_flMGBurstEnd[iMG] = now + m.flBurst;
+		m_flMGPauseUntil[iMG] = m_flMGBurstEnd[iMG] + m.flPause;
+	}
+	if ( now < m_flMGBurstEnd[iMG] && now >= m_flNextMGShot[iMG] )
+	{
+		m_flNextMGShot[iMG] = now + 1.0f / MAX( m.flRate, 1.0f );
+		return true;
+	}
+	return false;
+}
+
+void CDoDSPVehicle::FireMG( int iMG, const Vector &vecSrc, const Vector &vecDir )
+{
+	const VehicleType_t::MG_t &m = m_pType->mgs[iMG];
 	FireBulletsInfo_t info;
 	info.m_iShots = 1;
-	info.m_vecSrc = vecMuzzle;
+	info.m_vecSrc = vecSrc;
 	info.m_vecDirShooting = vecDir;
-	float flHalf = sinf( DEG2RAD( m_pType->coax.flSpread ) * 0.5f );
+	float flHalf = sinf( DEG2RAD( m.flSpread ) * 0.5f );
 	info.m_vecSpread = Vector( flHalf, flHalf, flHalf );
-	info.m_flDistance = m_pType->coax.flRange;
+	info.m_flDistance = m.flRange;
 	info.m_iAmmoType = GetAmmoDef()->Index( "AR2" );
 	info.m_iTracerFreq = 2;
-	info.m_flDamage = m_pType->coax.flDamage;
+	info.m_flDamage = m.flDamage;
 	info.m_pAttacker = this;
 	FireBullets( info );
-	if ( m_pType->coax.szSound[0] )
-		EmitSound( m_pType->coax.szSound );
+	if ( m.szSound[0] )
+		EmitSound( m.szSound );
+}
+
+// turret / barrel guns: they fire where the gun points, from their own muzzle (infantry only - they can't hurt armour)
+void CDoDSPVehicle::FireTurretMGs( CBaseEntity *pTarget, const Vector &vecAimPoint, const Vector &vecBarrel )
+{
+	if ( dynamic_cast<CDoDSPVehicle *>( pTarget ) )
+		return;
+	for ( int k = 0; k < m_pType->nMGs; k++ )
+	{
+		const VehicleType_t::MG_t &m = m_pType->mgs[k];
+		if ( m.eMount == VehicleType_t::MG_HULL || !MGManned( k ) )
+			continue;
+		Vector vecMuzzle = MGMuzzle( k ), vecTo = vecAimPoint - vecMuzzle;
+		float flDist = VectorNormalize( vecTo );
+		float flErr = RAD2DEG( acosf( clamp( DotProduct( vecBarrel, vecTo ), -1.0f, 1.0f ) ) );
+		if ( flErr > VEHICLE_COAX_CONE || flDist > m.flRange || !MGBurstShot( k ) )
+			continue;
+		CBaseEntity *pFriend = NULL;
+		if ( LineOfFire( vecMuzzle, vecAimPoint, pTarget, 0.0f ) && !FriendlyInTheWay( vecMuzzle, vecBarrel, flDist + 64.0f, 0.0f, &pFriend ) )
+			FireMG( k, vecMuzzle, vecBarrel );
+	}
+}
+
+// hull guns (a ball mount: the Tiger's bow MG): the gunner aims on his own, inside the mount's arc
+void CDoDSPVehicle::FireHullMGs( CBaseEntity *pTarget, const Vector &vecAimPoint )
+{
+	if ( dynamic_cast<CDoDSPVehicle *>( pTarget ) )
+		return;
+	for ( int k = 0; k < m_pType->nMGs; k++ )
+	{
+		const VehicleType_t::MG_t &m = m_pType->mgs[k];
+		if ( m.eMount != VehicleType_t::MG_HULL || !MGManned( k ) )
+			continue;
+		Vector vecMuzzle = MGMuzzle( k ), vecTo = vecAimPoint - vecMuzzle, vecLocal;
+		float flDist = VectorNormalize( vecTo );
+		VectorIRotate( vecTo, EntityToWorldTransform(), vecLocal );
+		float flYaw = RAD2DEG( atan2f( vecLocal.y, vecLocal.x ) ), flPitch = RAD2DEG( atan2f( vecLocal.z, vecLocal.Length2D() ) );
+		if ( fabs( flYaw ) > m.flArc || flPitch < m.flPitchMin || flPitch > m.flPitchMax || flDist > m.flRange || !MGBurstShot( k ) )
+			continue;
+		CBaseEntity *pFriend = NULL;
+		if ( LineOfFire( vecMuzzle, vecAimPoint, pTarget, 0.0f ) && !FriendlyInTheWay( vecMuzzle, vecTo, flDist + 64.0f, 0.0f, &pFriend ) )
+			FireMG( k, vecMuzzle, vecTo );
+	}
 }
 
 void CDoDSPVehicle::WeaponThink( float dt )
 {
-	if ( !m_pType->gun.bHas && !m_pType->coax.bHas )
+	if ( !m_pType->gun.bHas && !m_pType->nMGs )
 		return;
 	if ( m_hTurret.Get() && !m_bTurretCalibrated )
 		CalibrateTurret();
@@ -2959,6 +3127,9 @@ void CDoDSPVehicle::WeaponThink( float dt )
 		EmitSound( m_pType->szReload );
 	}
 
+	// V3e: hull guns have their own gunner and their own aim (the turret crew may be gone, the turret elsewhere)
+	if ( pTarget && !m_bHoldFire && bSeen )
+		FireHullMGs( pTarget, vecAimPoint );
 	if ( !pTarget || m_bHoldFire || !CanAim() )
 		return;
 	Vector vecBarrel = BarrelDir();
@@ -2968,7 +3139,7 @@ void CDoDSPVehicle::WeaponThink( float dt )
 	if ( !bSeen )
 		return;
 	// the line from the MUZZLE (it sits forward of and below the pivot the turret sees from): the shell must
-	// reach the target or land within half its blast radius of it; the coax must reach it
+	// reach the target or land within half its blast radius of it (each machine gun tests its own line: FireTurretMGs)
 	Vector vecMuzzleNow = MuzzlePos( vecBarrel );
 	trace_t trShot;
 	const DoDSPShell_t *pShell = ShellFor( pTarget );
@@ -2976,7 +3147,6 @@ void CDoDSPVehicle::WeaponThink( float dt )
 	if ( pShell && pShell->flFiller > 0.0f && !dynamic_cast<CDoDSPVehicle *>( pTarget ) )
 		DoDSP_HERadiiPeople( pShell->flFiller, &flShellKill, &flShellWound );
 	bool bShellClear = LineOfFire( vecMuzzleNow, vecAimPoint, pTarget, flShellKill, &trShot );
-	bool bBulletClear = bShellClear && LineOfFire( vecMuzzleNow, vecAimPoint, pTarget, 0.0f );
 	CBaseEntity *pFriend = NULL;
 	// main gun: at anything hostile, when the barrel is on it. A defensive vehicle stops to shoot; an offensive
 	// one shoots on the move too (FireMainGun spreads moving shots wider)
@@ -3004,21 +3174,8 @@ void CDoDSPVehicle::WeaponThink( float dt )
 			FireMainGun( vecBarrel );
 		return;
 	}
-	// coax: bursts at infantry (not at vehicles - it can't hurt them)
-	if ( m_pType->coax.bHas && !dynamic_cast<CDoDSPVehicle *>( pTarget ) && flErr <= VEHICLE_COAX_CONE && flDist <= m_pType->coax.flRange )
-	{
-		if ( now >= m_flCoaxBurstEnd && now >= m_flCoaxPauseUntil )
-		{
-			m_flCoaxBurstEnd = now + m_pType->coax.flBurst;
-			m_flCoaxPauseUntil = m_flCoaxBurstEnd + m_pType->coax.flPause;
-		}
-		if ( now < m_flCoaxBurstEnd && now >= m_flNextCoaxShot )
-		{
-			m_flNextCoaxShot = now + 1.0f / MAX( m_pType->coax.flRate, 1.0f );
-			if ( bBulletClear && !FriendlyInTheWay( MuzzlePos( vecBarrel ), vecBarrel, flDist + 64.0f, 0.0f, &pFriend ) )
-				FireCoax( vecBarrel );
-		}
-	}
+	// turret / barrel machine guns: bursts at infantry (not at vehicles - they can't hurt them)
+	FireTurretMGs( pTarget, vecAimPoint, vecBarrel );
 }
 
 //-----------------------------------------------------------------------------
@@ -3715,7 +3872,7 @@ void CDoDSPVehicle::SpawnRiders( void )
 		pNPC->SetAbsAngles( QAngle( 0.0f, GetAbsAngles().y + seat.flYaw, 0.0f ) );
 		DispatchSpawn( pNPC );
 		pNPC->Activate();
-		if ( !GermanSoldier_BeginRide( pNPC, this, seat.vecOrigin, seat.flYaw, seat.szIdle, seat.szGetout ) )
+		if ( !GermanSoldier_BeginRide( pNPC, this, seat.vecOrigin, seat.flYaw, seat.szIdle, seat.szGetout, seat.szFidget ) )
 		{
 			UTIL_Remove( pNPC );		// the soldier said why (once per map)
 			break;
@@ -3858,7 +4015,7 @@ void CDoDSPVehicle::CheckMorale( CBaseEntity *pAttacker )
 		SetState( VSTATE_ABANDONED, pAttacker );
 		return;
 	}
-	bool bCanFight = MainGunUsable() || ( m_pType->coax.bHas && CanAim() );
+	bool bCanFight = MainGunUsable() || AnyMGUsable();
 	bool bTwoPens = gpGlobals->curtime - m_flPenTimes[1] < VEHICLE_PEN_MEMORY;
 	bool bJustPenetrated = gpGlobals->curtime - m_flPenTimes[0] < 0.5f;
 	// V4d (first V4c runs, 2026-11-20): a Panzer II hit by a Sherman was immobilised, lost its driver and was left at

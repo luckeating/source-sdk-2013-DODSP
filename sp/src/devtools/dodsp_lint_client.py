@@ -283,6 +283,21 @@ def check_vehicle_fgd():
     return bad
 
 
+COD2_TAGS = os.path.join(ROOT, "..", "..", "dodsp_tools", "generated", "cod2_vehicle_tags.txt")
+def _cod2_turret_tags():
+    out, veh = {}, None
+    if os.path.exists(COD2_TAGS):
+        for line in open(COD2_TAGS, encoding="utf-8"):
+            m = re.match(r"^(\w+) \(CoD2 ", line)
+            if m:
+                veh = m.group(1)
+            m = re.match(r"^\s+tag_turret\s+hull\s+game\s+(\S+)\s+(\S+)\s+(\S+)", line)
+            if m and veh:
+                out[veh] = [float(v) for v in m.groups()]
+    return out
+COD2_TURRET_TAGS = _cod2_turret_tags()
+
+
 def check_vehicle_types():
     """V4: every vehicle type has armour, a wreck and real ammunition (no V2 flat damage) - the C++ loader prints
     the same as INVARIANTs at map load, this catches them before a build."""
@@ -339,6 +354,39 @@ def check_vehicle_types():
                     bad.append("%s: hatch '%s' is '%s' - want a crew role and \"turret x y z\" / \"hull x y z\"" % (name, r, v))
                 elif parts[0] == "turret" and "turret_model" not in t:
                     bad.append("%s: hatch '%s' is on a turret it hasn't got" % (name, r))
+        # V3e: machine guns on their real mounts; no pre-V3e "coax" (it fired from the main gun's muzzle)
+        if "coax" in t:
+            bad.append("%s: has the old \"coax\" block - V3e machine guns go in \"mgs\" on their mounts" % name)
+        mgs = t.get("mgs")
+        for mname, mg in (mgs if isinstance(mgs, list) else []):
+            m = dict(mg) if isinstance(mg, list) else {}
+            mount = m.get("mount")
+            if mount not in ("turret", "barrel", "hull"):
+                bad.append("%s: machine gun '%s' mount '%s' - want turret / barrel / hull" % (name, mname, mount))
+                continue
+            if mount != "hull" and "turret_model" not in t:
+                bad.append("%s: machine gun '%s' is on a turret it hasn't got" % (name, mname))
+            need = ["muzzle"] + (["pivot"] if mount == "barrel" else []) + (["arc", "pitch", "crew"] if mount == "hull" else [])
+            for k in need:
+                if k not in m:
+                    bad.append("%s: machine gun '%s' (%s) has no \"%s\"" % (name, mname, mount, k))
+            for k in ("muzzle", "pivot"):
+                if k in m and len(m[k].split()) != 3:
+                    bad.append("%s: machine gun '%s' %s is '%s' - want x y z" % (name, mname, k, m[k]))
+            if "crew" in m and m["crew"] not in roles:
+                bad.append("%s: machine gun '%s' crew '%s' isn't a crew role" % (name, mname, m["crew"]))
+            if "crew" in m and isinstance(ar, list) and m["crew"] not in dict(ar).get("crew", "").split():
+                bad.append("%s: machine gun '%s' is manned by '%s', who isn't in its crew" % (name, mname, m["crew"]))
+        # V3e: the turret sits on CoD2's tag_turret x 1.028 (exact - dodsp_tools/generated/cod2_vehicle_tags.txt)
+        root = name
+        while kv_get(types[root], "base") in types:
+            root = kv_get(types[root], "base")
+        if "turret_offset" in t and root in COD2_TURRET_TAGS:
+            got = [float(x) for x in t["turret_offset"].split()]
+            want = COD2_TURRET_TAGS[root]
+            if max(abs(a_ - b_) for a_, b_ in zip(got, want)) > 0.15:
+                bad.append("%s: turret_offset %s, but CoD2's tag_turret puts the turret model at %s (cod2_vehicle_tags.txt)"
+                           % (name, t["turret_offset"], " ".join("%.1f" % v for v in want)))
         gun = t.get("gun")
         if isinstance(gun, list):
             g = dict(gun)

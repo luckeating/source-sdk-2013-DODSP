@@ -10,9 +10,12 @@
 //   tracked 1        pivots on the spot; 0 = turns like a car (min_turn_radius)
 //   turret_offset    where the turret model sits on the hull, model space as in game (x along - front is +x,
 //                    y sideways - +y is the vehicle's left, z up).
-//                    ESTIMATED from the models (deck height + the turret ring hole): fine-tune in game with
-//                    dodsp_vehicle_turret x y z, which prints the line to paste here.
+//                    V3e: CoD2's own tag_turret x 1.028 (exact: every turret model's origin sits on it; the first
+//                    values were estimates, off by up to 20 units). The lint checks them against
+//                    dodsp_tools/generated/cod2_vehicle_tags.txt. dodsp_vehicle_turret x y z still prints a line.
 //   seats            riders (stage V3), model space, yaw relative to the vehicle's front (+90 = facing its left).
+//                    "fidget" (V3e, optional): a sequence he plays ONCE now and then while seated (8-20 s apart),
+//                    then back to his idle - the tanks use CoD2's lean-and-look (ww2_ride1_idle).
 //                    Each seat: "origin", "yaw", "idle" (looping sequence while he rides) and "getout" (the dismount),
 //                    both from npc_ww2_anims_ride.mdl, and "delay" (seconds after the order before this man goes).
 //                    MEASURED against the meshes and PREVIEWED (dodsp_tools/vehicle_preview/rider_preview.py reads these
@@ -55,8 +58,14 @@
 //                    the turret, rim height for open compartments. Roles at the same point share the hatch and come
 //                    out one after the other. A crew role without one gets out beside the vehicle (the load warns).
 //   1 m = 40 units (a 72-unit player ~ 1.8 m). "est." below = not found in a source, an estimate - correct freely.
-//   coax             machine gun beside the main gun, fires bursts at infantry: damage per bullet, rate (shots/s),
-//                    burst / pause (seconds), range, spread (degrees), sound (DoD:S's own MG sounds)
+//   mgs              V3e: the machine guns, each on its REAL mount, fires bursts at infantry. Positions from CoD2's own
+//                    tags (dodsp_tools/generated/cod2_vehicle_tags.txt: the MG tag + the MG model's 19-unit flash, x 1.028)
+//                    unless marked otherwise. Per gun (any name): "mount" turret = turret model space, turns with it;
+//                    barrel = also rises with the gun, turned about "pivot" (tag_barrel); hull = hull model space, a ball
+//                    mount that aims on its own within "arc" degrees each side and "pitch" min..max, manned by "crew"
+//                    (a crew role). "muzzle" = where the bullets start (at yaw / elevation 0). Then: damage per bullet,
+//                    rate (shots/s), burst / pause (seconds), range, spread (degrees), sound (DoD:S's own MG sounds).
+//                    (Before V3e one "coax" block fired from the main gun's muzzle - the game warns if it finds one.)
 //   sounds           engine_idle / engine_move (looped; idle fades into move with speed), turret_turn (loop) /
 //                    turret_stop, reload, explode (shell impact). Entries: scripts/game_sounds_dodsp_vehicles.txt.
 //                    Which engine sound fits which vehicle is a GUESS (engine1 light, 2 medium, 3 heavy, truck for
@@ -65,6 +74,7 @@
 //                    wheeled 1.0); susp_freq (Hz, 1.6) / susp_damp (0..1, 0.35) its spring; recoil: degrees the main gun
 //                    kicks the hull (2). The models have no lurch animation (only 'idle' / turret 'aim') - it's code.
 //   Halftracks and the carrier have no weapons yet (their MG mounts are V2b).
+//   turret_offset    (V3e) = CoD2's tag_turret x 1.028 - exact (the turret models' origins sit on it); the lint checks it.
 // Sources (2026-11-20): Wikipedia (Panzer II, 2 cm KwK 30, Tiger I, 8.8 cm KwK 36, M4 Sherman, Crusader tank, Ordnance QF
 // 6-pounder, Sd.Kfz. 222, Sd.Kfz. 251, Universal Carrier, SU-152, ML-20), theshermantank.com M3 gun data (FM data),
 // miniatures.de AT weapon tables.
@@ -72,14 +82,14 @@
 "DoDSP_Vehicles"
 {
 	// Must match DODSP_VEHICLE_SCRIPT_VERSION in server.dll (dodsp_vehicle.cpp): use this file with the server.dll of the same build.
-	"script_version"	"V3"
+	"script_version"	"V3e"
 
 	"panzer2"
 	{
 		"display"			"Panzer II"
 		"model"				"models/cod2/vehicles/panzer2_hull.mdl"
 		"turret_model"		"models/cod2/vehicles/panzer2_turret.mdl"
-		"turret_offset"		"20 0 97"
+		"turret_offset"		"19.8 6.0 95.4"
 		"forward_yaw"		"0"
 		"faction"			"axis"
 		"tracked"			"1"
@@ -99,7 +109,12 @@
 			"ap"		{ "calibre" "20"	"pen" "100 46  500 23  1000 12"	"effect" "12"	"filler" "0" }
 			"he"		{ "calibre" "20"	"filler" "0.011" }
 		}
-		"coax"		{ "damage" "12"		"rate" "15"		"burst" "1.5"	"pause" "1.2"	"range" "2500"	"spread" "3"	"sound" "Weapon_Mg42.Shoot" }
+		"mgs"
+		{
+			// MG34 in the mantlet, right of the 2 cm (CoD2 tag_turret2); rises with the gun
+			"coax"	{ "mount" "barrel"	"pivot" "25.1 8.1 -13.5"	"muzzle" "46.4 -13.5 -13.5"
+					  "damage" "12"	"rate" "15"	"burst" "1.5"	"pause" "1.2"	"range" "2500"	"spread" "3"	"sound" "Weapon_Mg42.Shoot" }
+		}
 		// Ausf. F: hull front 35 (flat), superstructure / turret front 30, sides and rear 15; top / bottom est.
 		"armour"
 		{
@@ -119,10 +134,10 @@
 					  "turret_stop" "DoDSP_Vehicle.TurretStop"	"reload" "DoDSP_Vehicle.Reload"	"explode" "DoDSP_Vehicle.ShellExplode" }
 		"seats"
 		{
-			"seat"	{ "origin" "-50 50 68"	"yaw" "90"	"idle" "ww2_ride3_idle"	"getout" "ww2_jump_ride1"	"delay" "0.00" }	// front left
-			"seat"	{ "origin" "-90 50 68"	"yaw" "90"	"idle" "ww2_ride3_idle"	"getout" "ww2_jump_ride6"	"delay" "0.25" }	// rear left
-			"seat"	{ "origin" "-48 -55 56"	"yaw" "-90"	"idle" "ww2_ride3_idle"	"getout" "ww2_jump_ride1"	"delay" "0.10" }	// front right
-			"seat"	{ "origin" "-86 -50 66"	"yaw" "-90"	"idle" "ww2_ride3_idle"	"getout" "ww2_jump_ride6"	"delay" "0.35" }	// rear right
+			"seat"	{ "origin" "-50 50 68"	"yaw" "90"	"idle" "ww2_ride3_idle"	"fidget" "ww2_ride1_idle"	"getout" "ww2_jump_ride1"	"delay" "0.00" }	// front left
+			"seat"	{ "origin" "-90 50 68"	"yaw" "90"	"idle" "ww2_ride3_idle"	"fidget" "ww2_ride1_idle"	"getout" "ww2_jump_ride6"	"delay" "0.25" }	// rear left
+			"seat"	{ "origin" "-48 -55 56"	"yaw" "-90"	"idle" "ww2_ride3_idle"	"fidget" "ww2_ride1_idle"	"getout" "ww2_jump_ride1"	"delay" "0.10" }	// front right
+			"seat"	{ "origin" "-86 -50 66"	"yaw" "-90"	"idle" "ww2_ride3_idle"	"fidget" "ww2_ride1_idle"	"getout" "ww2_jump_ride6"	"delay" "0.35" }	// rear right
 		}
 	}
 	"panzer2_winter"
@@ -138,7 +153,7 @@
 		"display"			"Tiger"
 		"model"				"models/cod2/vehicles/tiger_hull.mdl"
 		"turret_model"		"models/cod2/vehicles/tiger_turret.mdl"
-		"turret_offset"		"11 0 108"
+		"turret_offset"		"10.9 0 108.3"
 		"forward_yaw"		"0"
 		"faction"			"axis"
 		"tracked"			"1"
@@ -158,7 +173,14 @@
 			"ap"		{ "calibre" "88"	"pen" "100 162  500 151  1000 138  1500 126  2000 116"	"effect" "180"	"filler" "0.059" }
 			"he"		{ "calibre" "88"	"filler" "0.9" }
 		}
-		"coax"		{ "damage" "12"		"rate" "15"		"burst" "1.5"	"pause" "1.2"	"range" "2500"	"spread" "3"	"sound" "Weapon_Mg42.Shoot" }
+		"mgs"
+		{
+			// bow MG34 in the Kugelblende, hull front right (CoD2 tag_turret2), radio operator; ball mount +-15, -10..+20
+			// (the real Tiger also had a coax MG34 in the mantlet - CoD2's model has none, the mantlet mesh only the 8.8:
+			// left out rather than guessed)
+			"bow"	{ "mount" "hull"	"muzzle" "119.1 -23.6 65.0"	"arc" "15"	"pitch" "-10 20"	"crew" "radio"
+					  "damage" "12"	"rate" "15"	"burst" "1.5"	"pause" "1.2"	"range" "2500"	"spread" "3"	"sound" "Weapon_Mg42.Shoot" }
+		}
 		// hull front 100, sides 60 lower / 80 upper, turret front 100 (mantlet 110-200), turret sides / rear 80, top 25
 		// (40 from March 1944). Plates mostly flat. Rear 80 (est. - the source doesn't say).
 		"armour"
@@ -181,10 +203,10 @@
 					  "turret_stop" "DoDSP_Vehicle.TurretStop"	"reload" "DoDSP_Vehicle.Reload"	"explode" "DoDSP_Vehicle.ShellExplode" }
 		"seats"
 		{
-			"seat"	{ "origin" "-45 60 75"	"yaw" "90"	"idle" "ww2_ride3_idle"	"getout" "ww2_jump_ride1"	"delay" "0.00" }	// front left
-			"seat"	{ "origin" "-95 60 76"	"yaw" "90"	"idle" "ww2_ride3_idle"	"getout" "ww2_jump_ride6"	"delay" "0.25" }	// rear left
-			"seat"	{ "origin" "-45 -60 75"	"yaw" "-90"	"idle" "ww2_ride3_idle"	"getout" "ww2_jump_ride1"	"delay" "0.10" }	// front right
-			"seat"	{ "origin" "-95 -60 76"	"yaw" "-90"	"idle" "ww2_ride3_idle"	"getout" "ww2_jump_ride6"	"delay" "0.35" }	// rear right
+			"seat"	{ "origin" "-45 60 75"	"yaw" "90"	"idle" "ww2_ride3_idle"	"fidget" "ww2_ride1_idle"	"getout" "ww2_jump_ride1"	"delay" "0.00" }	// front left
+			"seat"	{ "origin" "-95 60 76"	"yaw" "90"	"idle" "ww2_ride3_idle"	"fidget" "ww2_ride1_idle"	"getout" "ww2_jump_ride6"	"delay" "0.25" }	// rear left
+			"seat"	{ "origin" "-45 -60 75"	"yaw" "-90"	"idle" "ww2_ride3_idle"	"fidget" "ww2_ride1_idle"	"getout" "ww2_jump_ride1"	"delay" "0.10" }	// front right
+			"seat"	{ "origin" "-95 -60 76"	"yaw" "-90"	"idle" "ww2_ride3_idle"	"fidget" "ww2_ride1_idle"	"getout" "ww2_jump_ride6"	"delay" "0.35" }	// rear right
 		}
 	}
 	"tiger_brush"
@@ -200,7 +222,7 @@
 		"display"			"Sherman"
 		"model"				"models/cod2/vehicles/sherman_hull.mdl"
 		"turret_model"		"models/cod2/vehicles/sherman_turret.mdl"
-		"turret_offset"		"15 0 116"
+		"turret_offset"		"9.1 0 112.3"
 		"forward_yaw"		"0"
 		"faction"			"allies"
 		"tracked"			"1"
@@ -220,7 +242,13 @@
 			"ap"		{ "calibre" "75"	"pen" "100 80  457 76  914 70  1372 65  1829 59"	"effect" "110"	"filler" "0.07" }
 			"he"		{ "calibre" "75"	"filler" "0.68" }
 		}
-		"coax"		{ "damage" "12"		"rate" "9"		"burst" "1.8"	"pause" "1.0"	"range" "2500"	"spread" "3"	"sound" "Weapon_30cal.Shoot" }
+		"mgs"
+		{
+			// .30 cal M1919 coaxial, left of the 75 on the gun mount (CoD2 tag_turret2 rides tag_barrel); rises with the gun.
+			// (the bow .30 and the roof .50 have no CoD2 tags - future plan)
+			"coax"	{ "mount" "barrel"	"pivot" "29.3 0 -19.4"	"muzzle" "58.5 13.9 -19.3"
+					  "damage" "12"	"rate" "9"	"burst" "1.8"	"pause" "1.0"	"range" "2500"	"spread" "3"	"sound" "Weapon_30cal.Shoot" }
+		}
 		// glacis 50.8 at 56 degrees (90.8 effective), hull sides 38 vertical, rear 38 (0-22 degrees), top 25, floor 25..13;
 		// turret front 76 at 30, sides 51 at 5, rear 51, roof 25. Early (dry) stowage: 60-80% burned when penetrated.
 		"armour"
@@ -243,10 +271,10 @@
 					  "turret_stop" "DoDSP_Vehicle.TurretStop"	"reload" "DoDSP_Vehicle.Reload"	"explode" "DoDSP_Vehicle.ShellExplode" }
 		"seats"
 		{
-			"seat"	{ "origin" "-62 46 69"	"yaw" "90"	"idle" "ww2_ride3_idle"	"getout" "ww2_jump_ride1"	"delay" "0.00" }	// front left
-			"seat"	{ "origin" "-100 46 65"	"yaw" "90"	"idle" "ww2_ride3_idle"	"getout" "ww2_jump_ride6"	"delay" "0.25" }	// rear left
-			"seat"	{ "origin" "-62 -46 69"	"yaw" "-90"	"idle" "ww2_ride3_idle"	"getout" "ww2_jump_ride1"	"delay" "0.10" }	// front right
-			"seat"	{ "origin" "-100 -46 65"	"yaw" "-90"	"idle" "ww2_ride3_idle"	"getout" "ww2_jump_ride6"	"delay" "0.35" }	// rear right
+			"seat"	{ "origin" "-62 46 69"	"yaw" "90"	"idle" "ww2_ride3_idle"	"fidget" "ww2_ride1_idle"	"getout" "ww2_jump_ride1"	"delay" "0.00" }	// front left
+			"seat"	{ "origin" "-100 46 65"	"yaw" "90"	"idle" "ww2_ride3_idle"	"fidget" "ww2_ride1_idle"	"getout" "ww2_jump_ride6"	"delay" "0.25" }	// rear left
+			"seat"	{ "origin" "-62 -46 69"	"yaw" "-90"	"idle" "ww2_ride3_idle"	"fidget" "ww2_ride1_idle"	"getout" "ww2_jump_ride1"	"delay" "0.10" }	// front right
+			"seat"	{ "origin" "-100 -46 65"	"yaw" "-90"	"idle" "ww2_ride3_idle"	"fidget" "ww2_ride1_idle"	"getout" "ww2_jump_ride6"	"delay" "0.35" }	// rear right
 		}
 	}
 	"sherman_desert"
@@ -262,7 +290,7 @@
 		"display"			"Crusader"
 		"model"				"models/cod2/vehicles/crusader_hull.mdl"
 		"turret_model"		"models/cod2/vehicles/crusader_turret.mdl"
-		"turret_offset"		"18 0 109"
+		"turret_offset"		"24.2 0 102.4"
 		"forward_yaw"		"0"
 		"faction"			"allies"
 		"tracked"			"1"
@@ -283,7 +311,13 @@
 			"ap"		{ "calibre" "57"	"pen" "100 113  500 94  1000 75  1500 59  2000 46"	"effect" "70"	"filler" "0" }
 			"he"		{ "calibre" "57"	"filler" "0.2" }
 		}
-		"coax"		{ "damage" "12"		"rate" "10"		"burst" "1.5"	"pause" "1.2"	"range" "2500"	"spread" "3"	"sound" "Weapon_30cal.Shoot" }
+		"mgs"
+		{
+			// Besa coaxial, right of the 6-pdr (CoD2 tag_turret3); rises with the gun. (CoD2's model also has the Mk II's
+			// hull mini-turret mount, tag_turret2 - our Crusader is a Mk III, which had none)
+			"coax"	{ "mount" "barrel"	"pivot" "33.7 0 -21.1"	"muzzle" "57.7 -13.0 -21.3"
+					  "damage" "12"	"rate" "10"	"burst" "1.5"	"pause" "1.2"	"range" "2500"	"spread" "3"	"sound" "Weapon_30cal.Shoot" }
+		}
 		// Mk III: 51 mm (the source gives one figure); sides / rear / top est. Notorious for brewing up (unprotected racks).
 		"armour"
 		{
@@ -307,7 +341,7 @@
 		"display"			"Armoured car (Sd.Kfz. 222)"
 		"model"				"models/cod2/vehicles/armoredcar_hull.mdl"
 		"turret_model"		"models/cod2/vehicles/armoredcar_turret.mdl"
-		"turret_offset"		"7 0 82"
+		"turret_offset"		"-4.8 0 61.4"
 		"forward_yaw"		"0"
 		"faction"			"axis"
 		"tracked"			"0"
@@ -327,7 +361,13 @@
 			"ap"		{ "calibre" "20"	"pen" "100 46  500 23  1000 12"	"effect" "12"	"filler" "0" }
 			"he"		{ "calibre" "20"	"filler" "0.011" }
 		}
-		"coax"		{ "damage" "12"		"rate" "15"		"burst" "1.5"	"pause" "1.2"	"range" "2500"	"spread" "3"	"sound" "Weapon_Mg42.Shoot" }
+		"mgs"
+		{
+			// MG34 coaxial, left of the 2 cm - no CoD2 tag: its tube MEASURED in CoD2's mantlet mesh (2026-11-20,
+			// tube end 13.7 10.1 16.8 in the turret's space); rises with the gun about tag_barrel
+			"coax"	{ "mount" "barrel"	"pivot" "-2.3 0.1 19.4"	"muzzle" "13.7 10.1 16.8"
+					  "damage" "12"	"rate" "15"	"burst" "1.5"	"pause" "1.2"	"range" "2500"	"spread" "3"	"sound" "Weapon_Mg42.Shoot" }
+		}
 		// front 14.5 (30 on the 1942 Ausf. B), sides 8, rear 5, top 5; open-topped turret with a wire anti-grenade screen.
 		// Plate leans est.
 		"armour"

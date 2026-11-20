@@ -104,6 +104,8 @@ void DoDSP_SetWeaponDeployed( CBaseCombatWeapon *pWeapon, bool bDeployed );		// 
 // same run as the model; the frame counts are checked against the model before a ride starts.
 enum GermanRide_t { GERMAN_RIDE_NONE, GERMAN_RIDE_SEATED, GERMAN_RIDE_GETOUT };
 #define GERMAN_RIDE_PATHS		"scripts/dodsp_ride_paths.txt"
+#define GERMAN_RIDE_FIDGET_MIN	8.0f		// V3e: a seated rider's lean-and-look comes this often (random between)
+#define GERMAN_RIDE_FIDGET_MAX	20.0f
 #define GERMAN_RIDE_RUN			200.0f		// once down, he runs on this far the way he jumped
 #define GERMAN_RIDE_JUMP_LIFT	18.0f		// V3d: the landing is reached from the seat at this height above it (a step: what he clears on the way out)
 #define GERMAN_RIDE_GROUND_DOWN	512.0f		// V3d: how far below the seat the landing's ground may be
@@ -303,7 +305,7 @@ public:
 	Vector		BailPosition( float flNow ) const;
 	// V3 riders (one owner of where a rider is: RidePosition)
 public:
-	bool		BeginRide( CBaseEntity *pVehicle, const Vector &vecSeat, float flYaw, const char *pszIdle, const char *pszGetout );
+	bool		BeginRide( CBaseEntity *pVehicle, const Vector &vecSeat, float flYaw, const char *pszIdle, const char *pszGetout, const char *pszFidget );
 	int			RideGetOut( bool bForce );		// 1 off he goes, 0 can't, -1 someone stands where he'd land
 	void		EndRide( bool bLanded );
 	int			RideState( void ) const { return m_eRide; }
@@ -849,6 +851,8 @@ private:
 	Vector				m_vecRideSeat;			// the seat on the vehicle (its model space)
 	float				m_flRideYaw;			// the seat's yaw on the vehicle
 	string_t			m_iszRideIdle, m_iszRideGetout;
+	string_t			m_iszRideFidget;		// V3e: the seat's lean-and-look, played once now and then (NULL = none)
+	float				m_flRideFidgetAt, m_flRideFidgetEnd;
 	Vector				m_vecRideTag;			// getting out: the seat in the world when he started
 	float				m_flRideTagYaw, m_flRideStart;
 	float				m_flRideFps;			// V3e: the get-out's real frame rate (SequenceFps) = RidePosition's frame clock
@@ -887,6 +891,9 @@ BEGIN_DATADESC( CNPC_GermanSoldier )
 	DEFINE_FIELD( m_vecRideSeat, FIELD_VECTOR ),
 	DEFINE_FIELD( m_flRideYaw, FIELD_FLOAT ),
 	DEFINE_FIELD( m_iszRideIdle, FIELD_STRING ),
+	DEFINE_FIELD( m_iszRideFidget, FIELD_STRING ),
+	DEFINE_FIELD( m_flRideFidgetAt, FIELD_TIME ),
+	DEFINE_FIELD( m_flRideFidgetEnd, FIELD_TIME ),
 	DEFINE_FIELD( m_iszRideGetout, FIELD_STRING ),
 	DEFINE_FIELD( m_vecRideTag, FIELD_POSITION_VECTOR ),
 	DEFINE_FIELD( m_flRideTagYaw, FIELD_FLOAT ),
@@ -906,7 +913,8 @@ CNPC_GermanSoldier::CNPC_GermanSoldier() : m_AnimMap( DefLessFunc( int ) )
 	m_vecRideSeat = m_vecRideTag = vec3_origin;
 	m_flRideYaw = m_flRideTagYaw = m_flRideStart = m_flRideFps = 0.0f;
 	m_vecRideFix = m_vecRideLand = vec3_origin;
-	m_iszRideIdle = m_iszRideGetout = NULL_STRING;
+	m_iszRideIdle = m_iszRideGetout = m_iszRideFidget = NULL_STRING;
+	m_flRideFidgetAt = m_flRideFidgetEnd = 0.0f;
 	m_iBailPhase = 0;
 	m_flBailPhaseEnd = m_flBailPhaseDur = 0.0f;
 	m_iszAnimMapWeapon = NULL_STRING;
@@ -5642,6 +5650,28 @@ void CNPC_GermanSoldier::RunTask( const Task_t *pTask )
 	{
 		if ( m_eRide == GERMAN_RIDE_NONE )
 			TaskComplete();		// off the vehicle (EndRide): his own AI from here
+		else if ( m_eRide == GERMAN_RIDE_SEATED && m_iszRideFidget != NULL_STRING )
+		{
+			// V3e: now and then he leans out and looks around once (the seat's "fidget"), then back to his idle
+			float now = gpGlobals->curtime;
+			int iIdle = LookupSequence( STRING( m_iszRideIdle ) ), iFidget = LookupSequence( STRING( m_iszRideFidget ) );
+			if ( m_flRideFidgetEnd > 0.0f && now >= m_flRideFidgetEnd )
+			{
+				m_flRideFidgetEnd = 0.0f;
+				m_flRideFidgetAt = now + random->RandomFloat( GERMAN_RIDE_FIDGET_MIN, GERMAN_RIDE_FIDGET_MAX );
+				if ( iIdle >= 0 )
+				{
+					SetSequenceById( iIdle );
+					SetCycle( random->RandomFloat( 0.0f, 1.0f ) );
+				}
+			}
+			else if ( m_flRideFidgetEnd <= 0.0f && now >= m_flRideFidgetAt && iFidget >= 0 )
+			{
+				SetSequenceById( iFidget );
+				SetCycle( 0.0f );
+				m_flRideFidgetEnd = now + MAX( SequenceDuration( iFidget ), 0.5f );		// once (the sequence itself loops)
+			}
+		}
 		else if ( m_eRide == GERMAN_RIDE_GETOUT && GetModelPtr() )
 		{
 			// V3e watchdog: the pose's frame (the animation's own clock) and the path's frame (RidePosition) agree
@@ -7494,7 +7524,7 @@ static void RideWarnOnce( const char *pszWhat, const char *pszDetail )
 	Warning( "INVARIANT npc_german_soldier: %s (%s)\n", pszWhat, pszDetail );
 }
 
-bool CNPC_GermanSoldier::BeginRide( CBaseEntity *pVehicle, const Vector &vecSeat, float flYaw, const char *pszIdle, const char *pszGetout )
+bool CNPC_GermanSoldier::BeginRide( CBaseEntity *pVehicle, const Vector &vecSeat, float flYaw, const char *pszIdle, const char *pszGetout, const char *pszFidget )
 {
 	if ( !pVehicle || !GetModelPtr() )
 		return false;
@@ -7520,6 +7550,17 @@ bool CNPC_GermanSoldier::BeginRide( CBaseEntity *pVehicle, const Vector &vecSeat
 	m_vecRideSeat = vecSeat;
 	m_flRideYaw = flYaw;
 	m_iszRideIdle = AllocPooledString( pszIdle );
+	// V3e: the seat's lean-and-look, now and then (GERMAN_RIDE_FIDGET_MIN..MAX s apart, each rider on his own clock)
+	m_iszRideFidget = NULL_STRING;
+	m_flRideFidgetEnd = 0.0f;
+	if ( pszFidget && pszFidget[0] )
+	{
+		if ( LookupSequence( pszFidget ) >= 0 )
+			m_iszRideFidget = AllocPooledString( pszFidget );
+		else
+			RideWarnOnce( "a seat's \"fidget\" isn't in the model (the ride pack) - that rider only idles", pszFidget );
+	}
+	m_flRideFidgetAt = gpGlobals->curtime + random->RandomFloat( GERMAN_RIDE_FIDGET_MIN, GERMAN_RIDE_FIDGET_MAX );
 	m_iszRideGetout = AllocPooledString( pszGetout );
 	m_bBailOut = m_bBailRun = false;
 	SetMoveType( MOVETYPE_NONE );
@@ -7682,10 +7723,10 @@ void CNPC_GermanSoldier::EndRide( bool bLanded )
 	}
 }
 
-bool GermanSoldier_BeginRide( CBaseEntity *pEnt, CBaseEntity *pVehicle, const Vector &vecSeat, float flYaw, const char *pszIdle, const char *pszGetout )
+bool GermanSoldier_BeginRide( CBaseEntity *pEnt, CBaseEntity *pVehicle, const Vector &vecSeat, float flYaw, const char *pszIdle, const char *pszGetout, const char *pszFidget )
 {
 	CNPC_GermanSoldier *pG = dynamic_cast<CNPC_GermanSoldier *>( pEnt );
-	return pG && pG->BeginRide( pVehicle, vecSeat, flYaw, pszIdle, pszGetout );
+	return pG && pG->BeginRide( pVehicle, vecSeat, flYaw, pszIdle, pszGetout, pszFidget );
 }
 int GermanSoldier_RideGetOut( CBaseEntity *pEnt, bool bForce )
 {

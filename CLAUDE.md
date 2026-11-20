@@ -906,6 +906,59 @@ If you learn something like this, add it here in the same commit as the fix.
   tag_guy0..10 (CoD's own rider seats, matching the tankride_guyN animations), tag_walker0..5 (escort infantry spots),
   tag_engine_left/right, tag_firefx, tag_climbnode (Blitz rear), wreck pieces (prop_tiger_part_1..3,
   prop_german_panzer_part_1..3, crusader parts 1-4, armored car pieces + tire, carrier blow pieces 1-13, thrown treads).
+- **V3e BUILT 2026-11-20 (from the CoD2 pack: real turret positions, real MG mounts, lean-and-look).** Owner: "build what you
+  find most important" + every CoD2 finding into the future plan (below). (1) turret_offset = CoD2 tag_turret x 1.028 on
+  every turreted type (panzer2/sherman/crusader/armoredcar moved; lint compares each against cod2_vehicle_tags.txt within
+  0.15). Hammer previews regenerated (deliver/dodsp_editor_previews_v3e.zip - the owner recompiles with Crowbar). (2) One
+  "coax" block fired from the MAIN GUN's muzzle (the Tiger's 3.7 m out). Now "mgs": named guns, each mount turret / barrel
+  (rises with the gun about "pivot" = tag_barrel) / hull (ball mount: own aim inside "arc" and "pitch", manned by "crew").
+  Data: panzer2 coax (tag_turret2), sherman coax on the barrel (tag_turret2 rides tag_barrel), crusader coax (tag_turret3),
+  armoredcar coax MEASURED from its mantlet mesh (no tag: a second tube left of the 2 cm, end 13.7 10.1 16.8), tiger BOW
+  MG (hull, +-15, -10..20, radio operator). NOT in: the Tiger's coax (CoD2's mantlet mesh has only the 8.8 - left out,
+  not guessed), the Sherman bow .30 / roof .50 and the Crusader Mk II hull mini-turret (no tags / not a Mk III part),
+  halftrack + carrier MGs (V2b, with gunners). Muzzles = MG tag + the separate MG model's 19-unit flash, so bullets start
+  ~11-15 units in front of the mantlet (that barrel model isn't on our tanks yet - future plan). Code (dodsp_vehicle.cpp):
+  MGMuzzle = THE owner of where MG bullets start; FireTurretMGs (fire along the barrel, each from its own muzzle and own
+  line of fire) / FireHullMGs (independent of the turret crew; runs before the turret-crew check); MGManned; AnyMGUsable
+  in the morale check; burst timers per gun. Guards: loader INVARIANTs (old "coax" block, bad mount, no muzzle, turret
+  gun on a turretless type, > VEHICLE_MAX_MGS), lint (mount/muzzle/pivot/arc/pitch/crew present and valid, the crew role in
+  the type's crew, no "coax"), COMPILE_TIME_ASSERT on the mount name table, load lines per gun. script_version V3e.
+  (3) Seat key "fidget": the tank seats play ww2_ride1_idle (CoD2's lean-and-look, 62 frames) ONCE every 8-20 s
+  (GERMAN_RIDE_FIDGET_MIN/MAX, each rider on his own clock), then back to ww2_ride3_idle at a random frame; checked for
+  clipping on every tank seat (<= 5 units into the deck, as the idle). Missing sequence -> RideWarnOnce, he only idles.
+  Files: dodsp_vehicle.cpp, npc_german_soldier.cpp, dodsp_vehicles.txt, dodsp_lint_client.py. Undo: the V3d server.dll +
+  its script (script_version V3).
+- **FUTURE PLAN from the CoD2 pack (owner 2026-11-20: "lets add all the bullet points ... this is all good stuff").** One
+  stage at a time; every position comes from dodsp_tools/generated/cod2_vehicle_tags.txt (exact), every new code-moved
+  animation through CDoDSPNpcMotion + motion_sim.py, every crew/rider animation previewed first.
+  - Visible machine guns: convert CoD2's weapon_machinegun_panzer2 / _tiger / _crusader2, weapon_miniturret_crusader2 and
+    vehicle_sherman_tank_machinegun (xmodel -> SMD, the owner compiles), mounted at their tags and swinging to aim; the
+    muzzle then = the model's own flash.
+  - More MGs: the Tiger's coax (find its real spot), the Sherman bow .30 (ball mount, front right) and roof .50, the
+    halftrack front MG42 (tag_turret) and the carrier's Bren (V2b, with visible gunners), the Buffalo 30-cal (tag_ai_30cal).
+  - Hatch lids that open: panzer2 / tiger (hatch_open, 1 lid), sherman / crusader (2 lids), the armoured car's grenade
+    screens (2) - rigged like the halftrack doors (halftrack_doors.py generalised: the port's triangles onto the lid bones,
+    a pose parameter); the bail-out crew opens the hatch before climbing out. CoD2 also has crusader_tankride_tank_closehatch
+    / crusader_tankride_guy0_closehatch and armoredcar_hatch_open_pose (xanim - needs a reader, or a procedural hinge).
+  - Gun recoil: barrel_recoil carries mesh on every tank gun (panzer2 126 tris, tiger 330, sherman 34, crusader 58,
+    armoredcar 38) - the barrel slides back on firing (re-rig the turret models: barrel_recoil separate from tag_barrel).
+  - Antennas that sway: crusader anntena_long/short_jjj, carrier antanna_jnt.
+  - Transports, moving parts: Opel Blitz cab doors (leftdoor/rightdoor_jjj), tailgate flaps (rear_left/right_flop_jjj),
+    canopy supports, chassis flex (body_bend_front/back_jnt), tag_climbnode (rear climb-in), 8 seats tag_guy01-08 (the
+    germantruck get-outs exist in the officer port); Kubelwagen 4 doors, steering wheel, fold-down windshield, seats
+    tag_driver/passenger/guy0-1; Buffalo rear ramp (ramp_open) + 30-cal with animated belt bones, 10 seats; the halftrack's
+    tag_firefx, tag_out, tag_mgguy.
+  - CoD2's own rider seats: tag_guy0..10 on every tank (turret seats too), each made for its tankride_guyN animation -
+    up to 10 riders, exact pairing instead of hand-placed seats; plus the extra per-seat idles (crusader_tankride guy0-6
+    leanleft/right/lookingaround/reactiontwitch/driving_idle) and other dismounts (combatdismount, jumptocrouchrun, _far).
+  - Escort infantry: tag_walker0..5 = CoD2's spots for soldiers walking alongside a tank.
+  - Effects points: tag_engine_left/right (engine fire / smoke), tag_gastank_left (Tiger), tag_firefx, tag_detach.
+  - Wreck debris from CoD2 itself instead of HL2's MetalChunks: prop_tiger_part_1..3, prop_german_panzer_part_1..3,
+    prop_vehicle_crusader2_part1..4, prop_german_armored_car_piece1..3 + tire, uni_carrier_blow_piece01..13, the thrown
+    treads (vehicle_tiger_left/righttread_d, vehicle_panzer_ii_l/r_tread_d).
+  - Player positions: tag_playerride / tag_player (the player riding a tank / at a gun) - if the owner wants them.
+  - Artillery crews (flak88_antitank/antiair aimer/loader/ejecter/leader animations) and the flakvierling, jeeps,
+    Higgins boat, planes: in the pack, not looked at yet.
 - CoD1 set (owner's vehicles_part2.zip, 2026-11-19): REFERENCE ONLY except the **SU-152, which we keep**. One model per
   vehicle, turret/gun as BONES (tag_turret, tag_barrel, tag_flash = muzzle, tag_coaxel), faces +X (forward_yaw 0),
   CoD's rider tags tag_guy01..06 (Sherman, Elefant, SU-152: 6; Opel truck driver/passenger + 4), NO .phy (needs a
