@@ -372,6 +372,8 @@ static void LoadVehicleTypes( bool bForce )
 		Warning( "INVARIANT DOD-SP vehicles: %s is version %s, this server.dll needs %s - copy scripts\\dodsp_vehicles.txt from "
 				 "the same build as server.dll (missing keys fall back: crews get out beside the vehicle, ...)\n",
 				 DODSP_VEHICLE_SCRIPT, s_szVehicleScriptVersion, DODSP_VEHICLE_SCRIPT_VERSION );
+	else
+		Msg( "DOD-SP vehicles: server.dll and %s are both %s (one build)\n", DODSP_VEHICLE_SCRIPT, DODSP_VEHICLE_SCRIPT_VERSION );
 	for ( KeyValues *pRawType = pKV->GetFirstTrueSubKey(); pRawType; pRawType = pRawType->GetNextTrueSubKey() )
 	{
 		KeyValues *pType = MergedVehicleType( pKV, pRawType, 0 );
