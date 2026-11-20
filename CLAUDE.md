@@ -749,6 +749,10 @@ If you learn something like this, add it here in the same commit as the fix.
   client-side, bounce and fade; 14 for a cook-off, 7 for a burn-out). FinishWreck() swaps in the wreck model
   VEHICLE_WRECK_SWAP_DELAY (0.15 s) later, under the fireball (m_flWreckAt, saved; DamageStateThink calls it). A second
   Wreck() while the swap is pending does nothing. INVARIANT once per map if propdata has no MetalChunks.
+  TESTED 2026-11-20 (build 44794653348, V4g+V4h+V4i together): owner "muuuch better" - penetrating hits' sound +
+  explosion "actually intense", the bail-out animations "work perfect", survivors emerge from the hatches and hop down.
+  KNOWN-GOOD for V4 (damage, crews, bail-outs, hit feedback, wrecks). Next by the owner's order: V2b, then V3 riders
+  (preview every get-out against the vehicle mesh first - dodsp_tools/vehicle_preview).
 - CoD1 set (owner's vehicles_part2.zip, 2026-11-19): REFERENCE ONLY except the **SU-152, which we keep**. One model per
   vehicle, turret/gun as BONES (tag_turret, tag_barrel, tag_flash = muzzle, tag_coaxel), faces +X (forward_yaw 0),
   CoD's rider tags tag_guy01..06 (Sherman, Elefant, SU-152: 6; Opel truck driver/passenger + 4), NO .phy (needs a
