@@ -742,6 +742,13 @@ If you learn something like this, add it here in the same commit as the fix.
   map-load sound check covers them (VehicleSoundNames = ONE list for precache and the check, it was two copies) and
   the lint checks every DoDSP_Vehicle.* name in dodsp_vehicle.cpp exists in the sound script. Known: a knock-out's
   jolt is cancelled by HaltMotion (the flash, clang, fire burst and smoke still show).
+  V4i (owner, same day): "a secondary explosion just before the tank switches models, to mask the sudden model change,
+  and HL2's metal debris". Wreck() is now the burst: crew lost, state -> burning (out of the fight), DoDSP_ShellBlast at
+  the centre (cook-off VEHICLE_COOKOFF_KG 2.0, burn-out VEHICLE_BURNOUT_KG 0.4 = fuel / last rounds) and HL2's metal
+  debris (ThrowWreckDebris: te->BreakModel pieces from propdata.txt's "MetalChunks" - what metal breakables throw,
+  client-side, bounce and fade; 14 for a cook-off, 7 for a burn-out). FinishWreck() swaps in the wreck model
+  VEHICLE_WRECK_SWAP_DELAY (0.15 s) later, under the fireball (m_flWreckAt, saved; DamageStateThink calls it). A second
+  Wreck() while the swap is pending does nothing. INVARIANT once per map if propdata has no MetalChunks.
 - CoD1 set (owner's vehicles_part2.zip, 2026-11-19): REFERENCE ONLY except the **SU-152, which we keep**. One model per
   vehicle, turret/gun as BONES (tag_turret, tag_barrel, tag_flash = muzzle, tag_coaxel), faces +X (forward_yaw 0),
   CoD's rider tags tag_guy01..06 (Sherman, Elefant, SU-152: 6; Opel truck driver/passenger + 4), NO .phy (needs a

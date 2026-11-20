@@ -45,6 +45,7 @@
 #include "soundchars.h"
 #include "smoke_trail.h"
 #include "itempents.h"
+#include "props_shared.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -924,6 +925,8 @@ private:
 	void			UpdateDamageSmoke( void );
 	void			KnockOut( bool bCatastrophic, CBaseEntity *pAttacker, const char *pszWhy );
 	void			Wreck( bool bBlowUp, CBaseEntity *pAttacker );
+	void			FinishWreck( void );
+	void			ThrowWreckDebris( int nPieces, float flUp );
 	void			DamageStateThink( void );
 	int				CrewAlive( void ) const;
 	bool			CrewHas( int eRole ) const;
@@ -1073,6 +1076,8 @@ private:
 	int				m_iCrewAlive;				// bit per crew seat (DoDSPArmour_t::eCrew)
 	bool			m_bImmobile, m_bTurretJammed, m_bGunOut;
 	float			m_flBailAt, m_flCookOffAt, m_flBurnOutAt;
+	float			m_flWreckAt;				// V4i: the secondary explosion went off; the wreck model goes in then
+	bool			m_bWreckBlowUp;
 	EHANDLE			m_hFire;
 	CHandle<SmokeTrail>	m_hDamageSmoke;			// V4h: grey / black smoke while it's hurt (UpdateDamageSmoke)
 	int				m_iDamageSmoke;				// 0 none, 1 light, 2 heavy
@@ -1149,6 +1154,8 @@ BEGIN_DATADESC( CDoDSPVehicle )
 	DEFINE_FIELD( m_flBailAt, FIELD_TIME ),
 	DEFINE_FIELD( m_flCookOffAt, FIELD_TIME ),
 	DEFINE_FIELD( m_flBurnOutAt, FIELD_TIME ),
+	DEFINE_FIELD( m_flWreckAt, FIELD_TIME ),
+	DEFINE_FIELD( m_bWreckBlowUp, FIELD_BOOLEAN ),
 	DEFINE_FIELD( m_hFire, FIELD_EHANDLE ),
 	DEFINE_FIELD( m_hDamageSmoke, FIELD_EHANDLE ),
 	DEFINE_FIELD( m_iDamageSmoke, FIELD_INTEGER ),
@@ -1232,7 +1239,8 @@ CDoDSPVehicle::CDoDSPVehicle()
 	m_flStructure = 0.0f;
 	m_iCrewAlive = 0;
 	m_bImmobile = m_bTurretJammed = m_bGunOut = false;
-	m_flBailAt = m_flCookOffAt = m_flBurnOutAt = 0.0f;
+	m_flBailAt = m_flCookOffAt = m_flBurnOutAt = m_flWreckAt = 0.0f;
+	m_bWreckBlowUp = false;
 	m_iRounds = m_iMagLeft = 0;
 	m_flPenTimes[0] = m_flPenTimes[1] = -100.0f;
 	m_bOutputKO = m_bOutOfAmmoSaid = false;
@@ -3762,9 +3770,17 @@ void CDoDSPVehicle::KnockOut( bool bCatastrophic, CBaseEntity *pAttacker, const 
 }
 
 // The dead model, the fire, and whoever was still inside. A cook-off goes up like VEHICLE_COOKOFF_KG of explosive.
+// V4i (owner 2026-11-20: "a secondary explosion just before the tank switches models, to mask the sudden model change",
+// and HL2's metal debris): the burst and the debris go off FIRST, the wreck model goes in VEHICLE_WRECK_SWAP_DELAY later
+// (FinishWreck, from DamageStateThink), under the fireball. An ammunition cook-off is VEHICLE_COOKOFF_KG; a burnt-out
+// vehicle ends with its fuel / last rounds going up (VEHICLE_BURNOUT_KG). Called again while the swap is pending, it
+// does nothing (the cook-off and burn-out timers can both fire).
+#define VEHICLE_WRECK_SWAP_DELAY	0.15f
+#define VEHICLE_BURNOUT_KG			0.4f
+#define VEHICLE_DEBRIS_CHUNKS		"MetalChunks"		// HL2's propdata.txt: what metal breakables throw (models/gibs/metal_gib*)
 void CDoDSPVehicle::Wreck( bool bBlowUp, CBaseEntity *pAttacker )
 {
-	if ( m_eState == VSTATE_WRECKED )
+	if ( m_eState == VSTATE_WRECKED || m_flWreckAt > 0.0f )
 		return;
 	float now = gpGlobals->curtime;
 	if ( CrewAlive() + m_nBailPending )
@@ -3772,9 +3788,52 @@ void CDoDSPVehicle::Wreck( bool bBlowUp, CBaseEntity *pAttacker )
 	m_iCrewAlive = 0;
 	m_nBailPending = 0;
 	m_iBailMask = 0;
-	SetState( VSTATE_WRECKED, pAttacker );
-	if ( bBlowUp )
-		DoDSP_ShellBlast( WorldSpaceCenter() + Vector( 0.0f, 0.0f, 16.0f ), VEHICLE_COOKOFF_KG, pAttacker ? pAttacker : this, this, m_pType->szExplode );
+	if ( pAttacker )
+		m_hKiller = pAttacker;
+	SetState( VSTATE_BURNING, pAttacker );		// out of the fight now (halted, nobody shoots it) - wrecked at the swap
+	m_bWreckBlowUp = bBlowUp;
+	m_flWreckAt = now + VEHICLE_WRECK_SWAP_DELAY;
+	Vector vecBurst = WorldSpaceCenter() + Vector( 0.0f, 0.0f, 16.0f );
+	DoDSP_ShellBlast( vecBurst, bBlowUp ? VEHICLE_COOKOFF_KG : VEHICLE_BURNOUT_KG, pAttacker ? pAttacker : this, this, m_pType->szExplode );
+	ThrowWreckDebris( bBlowUp ? 14 : 7, bBlowUp ? 420.0f : 260.0f );
+	SetNextThink( m_flWreckAt );
+}
+
+// HL2's metal debris (client-side pieces that bounce and fade, like a broken metal breakable's)
+void CDoDSPVehicle::ThrowWreckDebris( int nPieces, float flUp )
+{
+	Vector vecMins = CollisionProp()->OBBMins(), vecMaxs = CollisionProp()->OBBMaxs();
+	Vector vecSize = ( vecMaxs - vecMins ) * 0.5f;
+	Vector vecSpot = WorldSpaceCenter() + Vector( 0.0f, 0.0f, m_flBodyHeight * 0.3f );
+	CPVSFilter filter( vecSpot );
+	int nThrown = 0;
+	for ( int i = 0; i < nPieces; i++ )
+	{
+		const char *pszModel = g_PropDataSystem.GetRandomChunkModel( VEHICLE_DEBRIS_CHUNKS );
+		int iModel = pszModel ? modelinfo->GetModelIndex( pszModel ) : -1;
+		if ( iModel < 0 )
+			continue;
+		Vector vecVel( random->RandomFloat( -1.0f, 1.0f ), random->RandomFloat( -1.0f, 1.0f ), 0.0f );
+		vecVel = vecVel * ( flUp * 0.6f ) + Vector( 0.0f, 0.0f, flUp * random->RandomFloat( 0.7f, 1.2f ) );
+		te->BreakModel( filter, 0.0f, vecSpot, GetAbsAngles(), vecSize, vecVel, iModel, 100, 1, random->RandomFloat( 12.0f, 20.0f ),
+						BREAK_METAL | ( nThrown ? BREAK_SLAVE : 0 ) );
+		nThrown++;
+	}
+	static char s_szWarnedMap[64] = "";
+	if ( nPieces > 0 && !nThrown && Q_strcmp( s_szWarnedMap, STRING( gpGlobals->mapname ) ) )
+	{
+		Q_strncpy( s_szWarnedMap, STRING( gpGlobals->mapname ), sizeof( s_szWarnedMap ) );
+		Warning( "INVARIANT DOD-SP vehicle %s: no \"%s\" debris models in scripts/propdata.txt - wrecks throw no debris\n", Label(), VEHICLE_DEBRIS_CHUNKS );
+	}
+}
+
+// The wreck model, the fire - under the secondary explosion's fireball (Wreck set it off VEHICLE_WRECK_SWAP_DELAY ago)
+void CDoDSPVehicle::FinishWreck( void )
+{
+	float now = gpGlobals->curtime;
+	bool bBlowUp = m_bWreckBlowUp;
+	m_flWreckAt = 0.0f;
+	SetState( VSTATE_WRECKED, m_hKiller.Get() );
 	if ( m_hTurret.Get() )
 	{
 		UTIL_Remove( m_hTurret.Get() );
@@ -3836,6 +3895,11 @@ void CDoDSPVehicle::DamageStateThink( void )
 {
 	float now = gpGlobals->curtime;
 	CheckHalted();
+	if ( m_flWreckAt > 0.0f && now >= m_flWreckAt )
+	{
+		FinishWreck();		// V4i: the wreck model goes in under the secondary explosion
+		return;
+	}
 	UpdateDamageSmoke();
 	if ( m_hLastCrewman.Get() && m_flCrewRunAt > 0.0f && now >= m_flCrewRunAt )
 	{
