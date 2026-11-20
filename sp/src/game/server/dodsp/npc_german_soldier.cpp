@@ -148,6 +148,7 @@ public:
 		SCHED_GERMAN_CLEAR,									// A3d-2: in through the way in, at a walk with the rifle up, toward where he was
 		SCHED_GERMAN_DRILL_STACK,							// A3e: at the door for the drill - fires from it if he shows; only the squad's go moves him
 		SCHED_GERMAN_MG,									// A4b: the MG42 gunner, deployed on a wall or prone: the MG loop owns him
+		SCHED_GERMAN_BAILOUT,								// V4b: climbing out of a knocked-out tank and jumping off it
 		NEXT_SCHEDULE
 	};
 	enum
@@ -160,6 +161,7 @@ public:
 		TASK_GERMAN_CLEAR_PATH,
 		TASK_GERMAN_CLEAR_DONE,
 		TASK_GERMAN_MG_LOOP,
+		TASK_GERMAN_BAILOUT,
 		NEXT_TASK
 	};
 	enum
@@ -207,6 +209,8 @@ public:
 
 	// Death animations
 	void		Event_Killed( const CTakeDamageInfo &info );
+	bool		BeginBailOut( const Vector &vecHatch, const Vector &vecGround, const Vector &vecRun, float flYaw );
+	void		EndBailOut( bool bRun );
 	bool		BecomeRagdoll( const CTakeDamageInfo &info, const Vector &forceVector );
 	bool		CanBecomeRagdoll( void );
 	Activity	GetDeathActivity( void );
@@ -727,6 +731,13 @@ private:
 	float				m_flTestPainAllTime;
 	bool				m_bTestCrouch;			// npc_german_test_crouch: hold a crouch whatever the AI wants
 
+	// V4b: bailing out of a knocked-out tank (saved: a load mid-climb puts him on the ground)
+	bool				m_bBailOut, m_bBailRun;
+	Vector				m_vecBailHatch, m_vecBailGround, m_vecBailRun;
+	float				m_flBailYaw;
+	int					m_iBailPhase;			// 0 climbing out of the hatch, 1 jumping off (not saved)
+	float				m_flBailPhaseEnd;
+
 	// Networked to the client for the procedural hit kick
 	CNetworkVector( m_vecHitDir );			// horizontal direction the bullet travelled
 	CNetworkVar( int, m_nHitGroup );
@@ -747,11 +758,22 @@ LINK_ENTITY_TO_CLASS( npc_german_soldier, CNPC_GermanSoldier );
 // rest of his state isn't saved yet: after a load he starts his tactics fresh.)
 BEGIN_DATADESC( CNPC_GermanSoldier )
 	DEFINE_EMBEDDED( m_Chatter ),
+	DEFINE_FIELD( m_bBailOut, FIELD_BOOLEAN ),
+	DEFINE_FIELD( m_bBailRun, FIELD_BOOLEAN ),
+	DEFINE_FIELD( m_vecBailHatch, FIELD_POSITION_VECTOR ),
+	DEFINE_FIELD( m_vecBailGround, FIELD_POSITION_VECTOR ),
+	DEFINE_FIELD( m_vecBailRun, FIELD_POSITION_VECTOR ),
+	DEFINE_FIELD( m_flBailYaw, FIELD_FLOAT ),
 END_DATADESC()
 
 CNPC_GermanSoldier::CNPC_GermanSoldier() : m_AnimMap( DefLessFunc( int ) )
 {
 	m_iAnimMapVersion = -1;
+	m_bBailOut = m_bBailRun = false;
+	m_vecBailHatch = m_vecBailGround = m_vecBailRun = vec3_origin;
+	m_flBailYaw = 0.0f;
+	m_iBailPhase = 0;
+	m_flBailPhaseEnd = 0.0f;
 	m_iszAnimMapWeapon = NULL_STRING;
 	m_actFireGesture = ACT_INVALID;
 	m_actReloadGesture = ACT_INVALID;
@@ -970,6 +992,8 @@ void CNPC_GermanSoldier::OnRestore( void )
 {
 	BaseClass::OnRestore();
 	m_Chatter.Init( this, m_SquadName != NULL_STRING ? STRING( m_SquadName ) : NULL, true );
+	if ( m_bBailOut )
+		EndBailOut( true );		// loaded mid-climb: he's off the tank
 }
 
 // A4a: every live soldier, for the bullet-path test (a few dozen at most - cheaper than a
@@ -5148,6 +5172,26 @@ void CNPC_GermanSoldier::StartTask( const Task_t *pTask )
 {
 	switch ( pTask->iTask )
 	{
+	case TASK_GERMAN_BAILOUT:
+		{
+			int iClimb = LookupSequence( "c1_tank_climb_out" );
+			if ( !m_bBailOut || iClimb < 0 )
+			{
+				EndBailOut( true );
+				TaskComplete();
+				break;
+			}
+			SetMoveType( MOVETYPE_NONE );
+			RemoveEffects( EF_NODRAW );
+			SetAbsOrigin( m_vecBailHatch );
+			SetAbsAngles( QAngle( 0.0f, m_flBailYaw, 0.0f ) );
+			SetIdealActivity( ACT_DO_NOT_DISTURB );
+			SetSequenceById( iClimb );
+			SetCycle( 0.0f );
+			m_iBailPhase = 0;
+			m_flBailPhaseEnd = gpGlobals->curtime + SequenceDuration( iClimb );
+		}
+		break;
 	case TASK_RANGE_ATTACK1:
 		{
 			BaseClass::StartTask( pTask );	// base bookkeeping (attack time, activity)
@@ -5397,6 +5441,43 @@ void CNPC_GermanSoldier::StartTask( const Task_t *pTask )
 
 void CNPC_GermanSoldier::RunTask( const Task_t *pTask )
 {
+	// V4b: out of the hatch, then the jump: the animation is made in place, the code carries him from the deck to
+	// the ground (a short hop, then a fall)
+	if ( pTask->iTask == TASK_GERMAN_BAILOUT )
+	{
+		float now = gpGlobals->curtime;
+		if ( m_iBailPhase == 0 )
+		{
+			SetAbsOrigin( m_vecBailHatch );
+			if ( now >= m_flBailPhaseEnd )
+			{
+				int iJump = LookupSequence( "c1_tank_jump_off" );
+				if ( iJump < 0 )
+				{
+					EndBailOut( true );
+					TaskComplete();
+					return;
+				}
+				SetSequenceById( iJump );
+				SetCycle( 0.0f );
+				m_iBailPhase = 1;
+				m_flBailPhaseEnd = now + SequenceDuration( iJump );
+			}
+			return;
+		}
+		int iJump = GetSequence();
+		float flDur = MAX( SequenceDuration( iJump ), 0.1f );
+		float t = clamp( 1.0f - ( m_flBailPhaseEnd - now ) / flDur, 0.0f, 1.0f );
+		Vector p = m_vecBailHatch + ( m_vecBailGround - m_vecBailHatch ) * t;
+		p.z = m_vecBailHatch.z + ( m_vecBailGround.z - m_vecBailHatch.z ) * t * t + 10.0f * sinf( M_PI_F * t ) * ( 1.0f - t );
+		SetAbsOrigin( p );
+		if ( t >= 1.0f )
+		{
+			EndBailOut( true );
+			TaskComplete();
+		}
+		return;
+	}
 	// A3e: clearing - he's in sight in there: keep the route on him as he moves, and once he's
 	// within a few steps stop and fight him in the room (no walking into him).
 	if ( pTask->iTask == TASK_WAIT_FOR_MOVEMENT && IsCurSchedule( SCHED_GERMAN_CLEAR, false ) && GetEnemy() && HasCondition( COND_SEE_ENEMY ) )
@@ -6012,6 +6093,8 @@ Activity CNPC_GermanSoldier::PickDeathActivity( void )
 
 void CNPC_GermanSoldier::Event_Killed( const CTakeDamageInfo &info )
 {
+	if ( m_bBailOut )
+		EndBailOut( false );	// shot on the tank: he falls from where he is
 	m_Chatter.OnDeath();
 	CNPC_GermanSoldier *pWitness = NearestSquadmate( 800.0f, true );
 	if ( pWitness )
@@ -6418,6 +6501,15 @@ int CNPC_GermanSoldier::SelectSchedule( void )
 
 int CNPC_GermanSoldier::SelectScheduleInner( void )
 {
+	// V4b: out of a knocked-out tank first, then away from it
+	if ( m_bBailOut && IsAlive() )
+		return SCHED_GERMAN_BAILOUT;
+	if ( m_bBailRun && IsAlive() )
+	{
+		m_bBailRun = false;
+		m_vecLastPosition = m_vecBailRun;
+		return SCHED_FORCED_GO_RUN;
+	}
 	if ( m_flWantFullFlinch > 0.0f )
 	{
 		bool bFresh = gpGlobals->curtime - m_flWantFullFlinch < 0.5f;
@@ -7029,6 +7121,60 @@ CON_COMMAND( npc_german_test_crouch, "Toggle forced crouching on the German sold
 //-----------------------------------------------------------------------------
 // Schedules
 //-----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
+// V4b: a crewman bailing out of a knocked-out tank (dodsp_vehicle.cpp asks, through GermanSoldier_BailOut below).
+// He starts in the hatch (vecHatch = the roof where his feet end up), climbs out (CoD1 tank_climb_out), jumps off
+// (tank_jump_off) to vecGround on the far side from the attacker, then runs to vecRun. The animations are in the
+// CoD1 pack (npc_ww2_anims_cod1, build_cod1_pack.py); a model without them can't, and the vehicle falls back to
+// putting him on the ground (the console says so once per map).
+//-----------------------------------------------------------------------------
+bool CNPC_GermanSoldier::BeginBailOut( const Vector &vecHatch, const Vector &vecGround, const Vector &vecRun, float flYaw )
+{
+	if ( LookupSequence( "c1_tank_climb_out" ) < 0 || LookupSequence( "c1_tank_jump_off" ) < 0 )
+	{
+		static char s_szWarnedMap[64] = "";
+		if ( Q_strcmp( s_szWarnedMap, STRING( gpGlobals->mapname ) ) )
+		{
+			Q_strncpy( s_szWarnedMap, STRING( gpGlobals->mapname ), sizeof( s_szWarnedMap ) );
+			Warning( "INVARIANT npc_german_soldier: %s has no c1_tank_climb_out / c1_tank_jump_off - tank crews appear beside the "
+					 "tank (recompile npc_ww2_anims_cod1 from the V4b pack)\n", STRING( GetModelName() ) );
+		}
+		return false;
+	}
+	m_bBailOut = true;
+	m_bBailRun = false;
+	m_vecBailHatch = vecHatch;
+	m_vecBailGround = vecGround;
+	m_vecBailRun = vecRun;
+	m_flBailYaw = flYaw;
+	m_iBailPhase = 0;
+	SetMoveType( MOVETYPE_NONE );
+	AddEffects( EF_NODRAW );		// until the climb starts (his first think): never seen standing on the ground first
+	SetAbsOrigin( vecHatch );
+	SetAbsAngles( QAngle( 0.0f, flYaw, 0.0f ) );
+	ClearSchedule( "bailing out of a tank" );
+	return true;
+}
+
+void CNPC_GermanSoldier::EndBailOut( bool bRun )
+{
+	m_bBailOut = false;
+	RemoveEffects( EF_NODRAW );
+	SetMoveType( MOVETYPE_STEP );
+	if ( bRun )
+	{
+		SetAbsOrigin( m_vecBailGround );
+		SetIdealActivity( ACT_IDLE );
+		m_bBailRun = true;
+	}
+}
+
+bool GermanSoldier_BailOut( CBaseEntity *pEnt, const Vector &vecHatch, const Vector &vecGround, const Vector &vecRun, float flYaw )
+{
+	CNPC_GermanSoldier *pG = dynamic_cast<CNPC_GermanSoldier *>( pEnt );
+	return pG && pG->BeginBailOut( vecHatch, vecGround, vecRun, flYaw );
+}
+
 AI_BEGIN_CUSTOM_NPC( npc_german_soldier, CNPC_GermanSoldier )
 
 	DECLARE_TASK( TASK_GERMAN_COVER_LOOP )
@@ -7039,6 +7185,7 @@ AI_BEGIN_CUSTOM_NPC( npc_german_soldier, CNPC_GermanSoldier )
 	DECLARE_TASK( TASK_GERMAN_CLEAR_PATH )
 	DECLARE_TASK( TASK_GERMAN_CLEAR_DONE )
 	DECLARE_TASK( TASK_GERMAN_MG_LOOP )
+	DECLARE_TASK( TASK_GERMAN_BAILOUT )
 	DECLARE_SQUADSLOT( SQUAD_SLOT_GERMAN_FIRE1 )
 	DECLARE_SQUADSLOT( SQUAD_SLOT_GERMAN_FIRE2 )
 	DECLARE_SQUADSLOT( SQUAD_SLOT_GERMAN_FIRE3 )
@@ -7200,6 +7347,20 @@ AI_BEGIN_CUSTOM_NPC( npc_german_soldier, CNPC_GermanSoldier )
 		"		COND_ENEMY_DEAD"
 		"		COND_HEAVY_DAMAGE"
 		"		COND_HEAR_DANGER"
+	)
+
+	//=========================================================
+	// SCHED_GERMAN_BAILOUT (V4b): out of the hatch (c1_tank_climb_out) and off the tank
+	// (c1_tank_jump_off) - the bail-out owns him; nothing interrupts it.
+	//=========================================================
+	DEFINE_SCHEDULE
+	(
+		SCHED_GERMAN_BAILOUT,
+
+		"	Tasks"
+		"		TASK_GERMAN_BAILOUT			0"
+		""
+		"	Interrupts"
 	)
 
 AI_END_CUSTOM_NPC()

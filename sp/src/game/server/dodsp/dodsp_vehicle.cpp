@@ -206,6 +206,9 @@ static const char *s_pszBail[] = { "", "it's burning", "too few crew left to fig
 	"it can't move and keeps getting penetrated", "knocked out" };
 COMPILE_TIME_ASSERT( ARRAYSIZE( s_pszBail ) == NUM_VBAILS );
 
+// V4b: the German soldier's bail-out (npc_german_soldier.cpp - one owner for how a man climbs out and jumps off)
+extern bool GermanSoldier_BailOut( CBaseEntity *pEnt, const Vector &vecHatch, const Vector &vecGround, const Vector &vecRun, float flYaw );
+
 #define VEHICLE_COOKOFF_KG		2.0f		// an ammunition cook-off goes up like this much explosive (game value)
 #define VEHICLE_PEN_MEMORY		15.0f		// two penetrations this close together on an immobile vehicle: the crew gets out
 
@@ -837,7 +840,8 @@ private:
 	void			SetBurning( bool bAmmo, CBaseEntity *pAttacker );
 	void			CheckMorale( CBaseEntity *pAttacker );
 	void			BailOut( int eWhy, CBaseEntity *pAttacker );
-	bool			SpawnCrewman( const Vector &vecAwayFrom );
+	bool			SpawnCrewman( const Vector &vecAwayFrom, int eRole );
+	Vector			HatchFor( int eRole, const Vector &vecSide );
 	void			KnockOut( bool bCatastrophic, CBaseEntity *pAttacker, const char *pszWhy );
 	void			Wreck( bool bBlowUp, CBaseEntity *pAttacker );
 	void			DamageStateThink( void );
@@ -995,6 +999,7 @@ private:
 	float			m_flPenTimes[2];
 	bool			m_bOutputKO, m_bOutOfAmmoSaid;
 	int				m_nBailPending;				// crewmen still to come out (one at a time)
+	int				m_iBailMask;				// their seats (DoDSPArmour_t::eCrew), lowest first
 	float			m_flNextBailAt, m_flIgniteAt;
 	Vector			m_vecBailFrom;				// where the attack came from (they get out on the far side)
 	EHANDLE			m_hLastCrewman;				// not saved: the run order for the man who just got out
@@ -1069,6 +1074,7 @@ BEGIN_DATADESC( CDoDSPVehicle )
 	DEFINE_FIELD( m_bOutputKO, FIELD_BOOLEAN ),
 	DEFINE_FIELD( m_bOutOfAmmoSaid, FIELD_BOOLEAN ),
 	DEFINE_FIELD( m_nBailPending, FIELD_INTEGER ),
+	DEFINE_FIELD( m_iBailMask, FIELD_INTEGER ),
 	DEFINE_FIELD( m_flNextBailAt, FIELD_TIME ),
 	DEFINE_FIELD( m_flIgniteAt, FIELD_TIME ),
 	DEFINE_FIELD( m_vecBailFrom, FIELD_POSITION_VECTOR ),
@@ -1145,6 +1151,7 @@ CDoDSPVehicle::CDoDSPVehicle()
 	m_flPenTimes[0] = m_flPenTimes[1] = -100.0f;
 	m_bOutputKO = m_bOutOfAmmoSaid = false;
 	m_nBailPending = 0;
+	m_iBailMask = 0;
 	m_flNextBailAt = m_flIgniteAt = m_flCrewRunAt = 0.0f;
 	m_vecBailFrom = m_vecLastCrewRun = vec3_origin;
 	m_bMovingWarned = false;
@@ -3446,7 +3453,10 @@ void CDoDSPVehicle::BailOut( int eWhy, CBaseEntity *pAttacker )
 		if ( m_eState == VSTATE_BURNING && random->RandomFloat() > 0.75f )
 			nLost++;
 		else if ( bAxis )
+		{
 			m_nBailPending++;
+			m_iBailMask |= ( 1 << i );
+		}
 		else
 			nOut++;
 	}
@@ -3461,7 +3471,37 @@ void CDoDSPVehicle::BailOut( int eWhy, CBaseEntity *pAttacker )
 		SetState( VSTATE_ABANDONED, pAttacker );
 }
 
-bool CDoDSPVehicle::SpawnCrewman( const Vector &vecAwayFrom )
+// Where a crewman's hatch is (the roof his feet end up on): the turret roof for the turret crew, the hull roof at
+// the front for the driver and radio operator (found by a trace onto the hull; open compartments the same way).
+Vector CDoDSPVehicle::HatchFor( int eRole, const Vector &vecSide )
+{
+	CBaseAnimating *pT = dynamic_cast<CBaseAnimating *>( m_hTurret.Get() );
+	CStudioHdr *pTHdr = pT ? pT->GetModelPtr() : NULL;
+	bool bTurretMan = ( eRole == CREW_COMMANDER || eRole == CREW_GUNNER || eRole == CREW_LOADER );
+	if ( bTurretMan && pTHdr )
+	{
+		Vector vecLocal( 0.0f, 0.0f, pTHdr->hull_max().z );
+		float flFwd = DEG2RAD( m_flTurretFwdOffset );
+		float flBack = -0.25f * ( pTHdr->hull_max().x - pTHdr->hull_min().x ) * 0.5f;	// a little behind the turret's middle
+		vecLocal.x = cosf( flFwd ) * flBack;
+		vecLocal.y = sinf( flFwd ) * flBack;
+		Vector vecHatch;
+		VectorTransform( vecLocal, pT->EntityToWorldTransform(), vecHatch );
+		return vecHatch + vecSide * ( eRole == CREW_LOADER ? 10.0f : eRole == CREW_GUNNER ? -10.0f : 0.0f );
+	}
+	Vector vecFwd( cosf( DEG2RAD( m_flHeading ) ), sinf( DEG2RAD( m_flHeading ) ), 0.0f );
+	Vector vecXY = GetAbsOrigin() + vecFwd * ( 0.5f * m_flHalfLength ) + vecSide * ( 0.3f * m_flHalfWidth );
+	Vector vecTop = vecXY + Vector( 0.0f, 0.0f, m_flBodyHeight + 64.0f );
+	trace_t tr;
+	Ray_t ray;
+	ray.Init( vecTop, vecXY );
+	enginetrace->ClipRayToEntity( ray, MASK_SOLID, this, &tr );
+	if ( tr.fraction < 1.0f && !tr.startsolid )
+		return tr.endpos;
+	return vecXY + Vector( 0.0f, 0.0f, m_flBodyHeight * 0.8f );
+}
+
+bool CDoDSPVehicle::SpawnCrewman( const Vector &vecAwayFrom, int eRole )
 {
 	Vector vecFwd( cosf( DEG2RAD( m_flHeading ) ), sinf( DEG2RAD( m_flHeading ) ), 0.0f );
 	Vector vecRight( vecFwd.y, -vecFwd.x, 0.0f );
@@ -3498,10 +3538,18 @@ bool CDoDSPVehicle::SpawnCrewman( const Vector &vecAwayFrom )
 			pNPC->SetAbsAngles( QAngle( 0.0f, RAD2DEG( atan2f( vecAway.y, vecAway.x ) ), 0.0f ) );
 			DispatchSpawn( pNPC );
 			pNPC->Activate();
-			// he runs from the vehicle (ordered on the next think, once his AI has started): what a bail-out looks
-			// like without a climb-out animation
+			Vector vecRun = p + ( vecDirs[d] * 0.5f + vecAway ) * 256.0f;
+			// V4b: out of his hatch and off the side (CoD1 tank_climb_out / tank_jump_off, the soldier's own
+			// schedule) when the jump is to the side; else (or a model without the animations) he's already on the
+			// ground here and just runs (ordered on the next think, once his AI has started)
+			if ( d == 0 || d == 2 )
+			{
+				Vector vecHatch = HatchFor( eRole, vecDirs[d] );
+				if ( vecHatch.z - p.z > 24.0f && GermanSoldier_BailOut( pNPC, vecHatch, p, vecRun, RAD2DEG( atan2f( vecDirs[d].y, vecDirs[d].x ) ) ) )
+					return true;
+			}
 			m_hLastCrewman = pNPC;
-			m_vecLastCrewRun = p + ( vecDirs[d] * 0.5f + vecAway ) * 256.0f;
+			m_vecLastCrewRun = vecRun;
 			m_flCrewRunAt = gpGlobals->curtime + 0.2f;
 			return true;
 		}
@@ -3534,6 +3582,7 @@ void CDoDSPVehicle::Wreck( bool bBlowUp, CBaseEntity *pAttacker )
 		Msg( "DOD-SP vehicle %s: %d crew were still inside\n", Label(), CrewAlive() + m_nBailPending );
 	m_iCrewAlive = 0;
 	m_nBailPending = 0;
+	m_iBailMask = 0;
 	SetState( VSTATE_WRECKED, pAttacker );
 	if ( bBlowUp )
 		DoDSP_ShellBlast( WorldSpaceCenter() + Vector( 0.0f, 0.0f, 16.0f ), VEHICLE_COOKOFF_KG, pAttacker ? pAttacker : this, this, m_pType->szExplode );
@@ -3611,7 +3660,11 @@ void CDoDSPVehicle::DamageStateThink( void )
 	if ( m_nBailPending > 0 && now >= m_flNextBailAt )
 	{
 		m_nBailPending--;
-		if ( !SpawnCrewman( m_vecBailFrom ) )
+		int iSeat = 0;
+		while ( iSeat < DODSP_MAX_CREW - 1 && !( m_iBailMask & ( 1 << iSeat ) ) )
+			iSeat++;
+		m_iBailMask &= ~( 1 << iSeat );
+		if ( !SpawnCrewman( m_vecBailFrom, m_pType->armour.eCrew[iSeat] ) )
 			Msg( "DOD-SP vehicle %s: no room beside it for a crewman to get out\n", Label() );
 		m_flNextBailAt = now + random->RandomFloat( 0.6f, 1.0f );
 	}

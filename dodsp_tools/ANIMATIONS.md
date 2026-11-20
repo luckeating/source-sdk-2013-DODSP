@@ -84,6 +84,10 @@ or a release frame timed in code.
 - **Turning on the spot**: `ACT_WW2_TURN_LEFT` and `ACT_WW2_TURN_RIGHT` (60° aim turns). These aren't wired, so he
   turns by yaw on the idle.
 
+### Vehicles (V4c - used)
+- CoD1 `TANK_CLIMB_OUT` (out of the hatch, made in place) and `TANK_JUMP_OFF` (off the side; the code carries him
+  down): the tank-crew bail-out, `SCHED_GERMAN_BAILOUT` in npc_german_soldier.cpp.
+
 ### Squad leader and orders
 - Hand signals (CoD1): `WAVE_COMEON`, `WAVE_GO`, `WAVE_GOGO`, `WAVE_FLANK`, `WAVE_WHAT`, and the DoD `ACT_DOD_HS_*`.
   - Today `ACT_SIGNAL_*` in the script map points at `STAND_AIM` as a placeholder.

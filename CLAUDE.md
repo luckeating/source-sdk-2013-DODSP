@@ -655,7 +655,24 @@ If you learn something like this, add it here in the same commit as the fix.
   hatches + env_fire parented to the vehicle). Crews come out ONE AT A TIME (0.6-1 s apart, m_nBailPending) on the far
   side from the attacker and RUN from the vehicle (SCHED_FORCED_GO_RUN to a point 256 units away, ordered on the next
   think). Owner: CoD2 has crew bail-out animations - if he converts them for the German soldier model, the crew can
-  climb out of the hatch instead (not built: no such sequence exists in DOD-SP's models).
+  climb out of the hatch instead.
+  V4c (2026-11-20): the bail-out animations WERE in our own sources - CoD1 Assault.zip has `tank_climb_out` (41 frames,
+  pelvis rises 8 -> 34 units: legs in the hatch -> standing on the roof) and `tank_jump_off` (40 frames, made IN PLACE:
+  the code carries him down). LESSON: before saying an animation doesn't exist, grep the decompiles we already
+  retargeted (scratchpad in_Assault / in_Ranger, ANIMATIONS.md) - half the German set came from them (owner: "you've done
+  these retargets before just fine"). build_cod1_pack.py now takes `tank_` (c1_tank_climb_out / c1_tank_jump_off,
+  ACT_WW2_TANK_*); the rebuilt pack differs from the delivered one ONLY by those two (every other SMD byte-identical).
+  The owner recompiles npc_ww2_anims_cod1 with Crowbar. Soldier side (one owner, npc_german_soldier.cpp):
+  SCHED_GERMAN_BAILOUT / TASK_GERMAN_BAILOUT - BeginBailOut puts him in the hatch (MOVETYPE_NONE, NODRAW until the climb
+  starts), climb_out holds him at the hatch, jump_off carries him to the ground (hop + fall), EndBailOut = MOVETYPE_STEP
+  on the ground, then SCHED_FORCED_GO_RUN away; killed mid-climb = he falls from there; a save loaded mid-climb puts
+  him on the ground. Vehicle side: HatchFor (turret crew: turret roof a little behind its middle; driver/radio: hull roof
+  at the front, by a trace onto the hull), one seat at a time from m_iBailMask, the far side from the attacker. A model
+  without the sequences: `INVARIANT npc_german_soldier: ... has no c1_tank_climb_out` once per map, crews appear beside
+  the tank as in V4b. Riders (V3): the owner's CoD2 officer model (cod2/npc/german_normandy_officer.mdl, 551 seqs) has
+  ride1-6_idle, jump_ride1-6, germantruck guy1-8 jumpout + driver climbout, halftrack driver/guy jumpouts, bren carrier
+  driver/passenger/back dismounts, kubelwagen, carchase get-outs; the CoD1 wehrmacht/driver2 models have truck_drive /
+  truck_driver_out / truck_guy1-4 - all need a Crowbar decompile (SMDs) before the retarget.
 - CoD1 set (owner's vehicles_part2.zip, 2026-11-19): REFERENCE ONLY except the **SU-152, which we keep**. One model per
   vehicle, turret/gun as BONES (tag_turret, tag_barrel, tag_flash = muzzle, tag_coaxel), faces +X (forward_yaw 0),
   CoD's rider tags tag_guy01..06 (Sherman, Elefant, SU-152: 6; Opel truck driver/passenger + 4), NO .phy (needs a
