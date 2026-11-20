@@ -356,6 +356,13 @@ If you learn something like this, add it here in the same commit as the fix.
   and then blob shadows OFF entirely while the per-pixel sun draws (agreed 2026-11-17). Also cubemap
   normalization / specular occlusion (the owner's idea). HDR moved up: it is the standard since 2026-11-18.
 
+## Open known issues (NPCs)
+- **K98 riflemen hold their rifles wrong in EVERY animation** (owner, 2026-11-20, Tiger rider test screenshot: the
+  riflemen beside the tank). "Not a single one plays correctly." The MP40 men look right. Not V3's doing (they're the
+  soldier's ordinary animations once off the vehicle) - a rifle-hold problem in the soldier's animation set / weapon
+  placement (weapon_bone_left = the K98 grip in the retarget, GRIP_K98 in build_ww2_pack.py). To look into after the
+  vehicle work: compare a K98 man's weapon bone against DoD's own StandAim_BOLT pose, animation by animation.
+
 ## Open known issues (lighting)
 - The door entity doesn't cast into the sun cascades.
 - Black front steps = the HL2-materials issue above (fixed in the client build after 44117643276). The half-black CAFÉ sign is an overlay - the
@@ -801,6 +808,16 @@ If you learn something like this, add it here in the same commit as the fix.
   (seat + its get-out's path end, turned by the yaw) and fails under RIDER_LAND_GAP 30; at runtime RideGetOut returns
   -1 when anyone (NPC / player, not the vehicle's seated riders) stands where he'd land, and RidersThink retries every
   VEHICLE_RIDER_WAIT 0.25 s for up to VEHICLE_RIDER_WAIT_MAX 3 s, then sends him anyway (out of the fight: at once).
+  FIRST V3 RUN 2026-11-20 (owner, Tiger, build 44813037953): riders spawned, rode and JUMPED OFF. Two faults: (1) they
+  stuttered in mid-air like the V4c bail-outs. Cause: the get-out's frame was set every tick with the playback rate at
+  0 - the NPC's animation time moves only when it thinks (10 Hz), so the client got the pose in 10 steps a second
+  while the origin moved per tick. V3b: rides AND bail-outs run their animation at a RATE (UpdatePlaybackRate: ride
+  1.0 = RidePosition's 30 fps clock; the bail climb BAILCLIMB_UPFRAME / (30 x BAILCLIMB_RISE) during the rise, then 1)
+  and the code moves only the origin per tick, with SetSimulationTime( curtime ) so the client interpolates per tick.
+  LESSON: never drive an NPC's cycle per tick - give it a rate on the same clock as the origin. (2) Landing on raised
+  ground they "get stuck in the ground": the ground trace started 72 units above where the ANIMATION lands, i.e.
+  inside any bank higher than that. V3b: the trace starts above the seat, and on landing his whole hull is dropped
+  from 48 units up onto what's there (INVARIANT once per map if it can't fit).
   HALFTRACK: the owner's CoD2 originals (everything_halftrack.zip: xmodel + xmodelparts, no xmodelsurfs mesh, no xanim)
   have the bones: hatch_open_left/right = the rear door hinges at (-107.9, +-26, 65.3); CoD's own seats tag_guy01..06
   at (x, +-17.4, 40.7) facing in (guy03 -86 left, guy05 -84 right - the get-outs' owners), tag_out (-33.8, 0, 30.2)

@@ -5013,14 +5013,20 @@ void CNPC_GermanSoldier::UpdateCoverTransition( void )
 // plays at normal speed. (Death animations set their own speed in TASK_DIE, after this.)
 void CNPC_GermanSoldier::UpdatePlaybackRate( void )
 {
+	// V3b: the ride and the bail-out run their animations at a RATE, never by setting the cycle every tick: a cycle set
+	// per tick with the rate at 0 reaches the client as steps (the NPC's animation time moves only when it thinks,
+	// 10x a second) - riders stuttered in mid-air. At a rate the client runs the frames smoothly itself; the code
+	// moves only the origin per tick (RidePosition / BailPosition), on the same clock as the rate.
 	if ( m_eRide != GERMAN_RIDE_NONE )
 	{
-		SetPlaybackRate( m_eRide == GERMAN_RIDE_GETOUT ? 0.0f : 1.0f );	// V3: the get-out's frame is set every tick (PhysicsSimulate)
+		SetPlaybackRate( 1.0f );		// 30 fps = RidePosition's frame clock
 		return;
 	}
 	if ( m_bBailOut )
 	{
-		SetPlaybackRate( m_iBailPhase == 0 ? 0.0f : 1.0f );	// V4g: the climb's frame is set every tick (PhysicsSimulate)
+		float t = gpGlobals->curtime - ( m_flBailPhaseEnd - m_flBailPhaseDur );
+		// the climb's frames 0..BAILCLIMB_UPFRAME over BAILCLIMB_RISE seconds (the lift's clock), then real time
+		SetPlaybackRate( ( m_iBailPhase == 0 && t < BAILCLIMB_RISE ) ? BAILCLIMB_UPFRAME / ( 30.0f * BAILCLIMB_RISE ) : 1.0f );
 		return;
 	}
 	if ( m_bDeathAnim || !GetModelPtr() || GetSequence() < 0 )
@@ -7330,26 +7336,16 @@ void CNPC_GermanSoldier::PhysicsSimulate( void )
 		float flFrame;
 		bool bDone = RidePosition( gpGlobals->curtime, &p, &flFrame );
 		SetAbsOrigin( p );
-		int iSeq = LookupSequence( STRING( m_iszRideGetout ) );
-		if ( iSeq >= 0 && GetSequence() == iSeq )
-		{
-			const GermanRidePath_t *pPath = GermanRidePath( STRING( m_iszRideGetout ) );
-			SetCycle( pPath ? flFrame / MAX( pPath->nFrames - 1, 1 ) : 1.0f );
-		}
+		SetSimulationTime( gpGlobals->curtime );		// the client interpolates his moves per tick, not per think
+		UpdatePlaybackRate();
 		if ( bDone )
 			EndRide( true );
 	}
 	if ( m_bBailOut && m_flBailPhaseDur > 0.0f && GetMoveType() == MOVETYPE_NONE && IsAlive() )
 	{
 		SetAbsOrigin( BailPosition( gpGlobals->curtime ) );
-		if ( m_iBailPhase == 0 )
-		{
-			// the climb's frame from the same clock as its lift (UpdatePlaybackRate holds the rate at 0 meanwhile)
-			float t = gpGlobals->curtime - ( m_flBailPhaseEnd - m_flBailPhaseDur );
-			float flFrame = ( t < BAILCLIMB_RISE ) ? BAILCLIMB_UPFRAME * MAX( t, 0.0f ) / BAILCLIMB_RISE
-												  : MIN( BAILCLIMB_UPFRAME + ( t - BAILCLIMB_RISE ) * 30.0f, BAILCLIMB_ENDFRAME );
-			SetCycle( flFrame / BAILCLIMB_LAST );
-		}
+		SetSimulationTime( gpGlobals->curtime );
+		UpdatePlaybackRate();			// the climb's slow rise, then real time (V3b: a rate, not a cycle per tick)
 		if ( IsEffectActive( EF_NODRAW ) && ( m_iBailPhase > 0 || gpGlobals->curtime >= m_flBailPhaseEnd - m_flBailPhaseDur + BAILCLIMB_SHOW ) )
 			RemoveEffects( EF_NODRAW );
 	}
@@ -7529,8 +7525,11 @@ int CNPC_GermanSoldier::RideGetOut( bool bForce )
 	RidePosition( FLT_MAX, &vecLand, &flFrame );
 	trace_t tr;
 	CTraceFilterSkipTwoEntities filter( this, pVehicle, COLLISION_GROUP_NPC );
-	UTIL_TraceLine( vecLand + Vector( 0, 0, 72 ), vecLand - Vector( 0, 0, 256 ), MASK_NPCSOLID_BRUSHONLY, &filter, &tr );
-	if ( tr.fraction < 1.0f && !tr.allsolid )
+	// V3b: from above the SEAT, not above where the animation lands - a bank higher than that (the owner's riders "get
+	// stuck in the ground" landing on raised ground) started the trace inside it
+	float flTop = MAX( vecTag.z, vecLand.z ) + 72.0f;
+	UTIL_TraceLine( Vector( vecLand.x, vecLand.y, flTop ), vecLand - Vector( 0, 0, 256 ), MASK_NPCSOLID_BRUSHONLY, &filter, &tr );
+	if ( tr.fraction < 1.0f && !tr.startsolid )
 		m_flRideDz = tr.endpos.z - vecLand.z;
 	else
 		RideWarnOnce( "a rider's landing point has no ground within 256 units below - he lands at the animation's own height", STRING( m_iszRideGetout ) );
@@ -7574,6 +7573,17 @@ void CNPC_GermanSoldier::EndRide( bool bLanded )
 	SetMoveType( MOVETYPE_STEP );
 	if ( bLanded )
 	{
+		// V3b: standing ON what's under him - his whole body box, dropped from a little above (a slope or a bank under one
+		// foot left part of the box in the ground: stuck)
+		trace_t tr;
+		CTraceFilterSkipTwoEntities filter( this, m_hRideVehicle.Get(), COLLISION_GROUP_NPC );
+		Vector p = GetAbsOrigin();
+		UTIL_TraceHull( p + Vector( 0, 0, 48 ), p - Vector( 0, 0, 48 ), GetHullMins(), GetHullMaxs(), MASK_NPCSOLID, &filter, &tr );
+		if ( !tr.startsolid && tr.fraction < 1.0f )
+			SetAbsOrigin( tr.endpos );
+		else if ( tr.startsolid )
+			RideWarnOnce( "a rider landed where his body doesn't fit (48 units up and down) - left where the animation put him",
+						  STRING( m_iszRideGetout ) );
 		// the get-outs end running: he keeps going the way he jumped, then his own AI decides
 		Vector vecFwd( cosf( DEG2RAD( m_flRideTagYaw ) ), sinf( DEG2RAD( m_flRideTagYaw ) ), 0.0f );
 		m_vecBailRun = GetAbsOrigin() + vecFwd * GERMAN_RIDE_RUN;
