@@ -552,6 +552,9 @@ If you learn something like this, add it here in the same commit as the fix.
   Files: dodsp_vehicle.cpp, dodsp_factions.cpp/.h (server_hl2.vpc), dodsp_vehicles.txt/.fgd, game_sounds_dodsp_vehicles.txt,
   dodsp_lint_client.py, dodsp_build.yml (content/scripts path). Undo: the V1f server.dll (build 44663089277) - the old
   type file still loads (unknown keys are ignored).
+  TESTED 2026-11-19 (build 44669320376, gm_countrysidedrive_d, Panzer II): WORKS - owner: "damn this thing shreds", "all
+  the sounds work and actually blend very very well together" (so DoD:S's Weapon_Mg42.Shoot is a real entry). KNOWN-GOOD
+  for V2. Next: V2b (halftrack/carrier hull MGs, SU-152 hull-aims), V3 riders, V4 damage.
 - CoD1 set (owner's vehicles_part2.zip, 2026-11-19): REFERENCE ONLY except the **SU-152, which we keep**. One model per
   vehicle, turret/gun as BONES (tag_turret, tag_barrel, tag_flash = muzzle, tag_coaxel), faces +X (forward_yaw 0),
   CoD's rider tags tag_guy01..06 (Sherman, Elefant, SU-152: 6; Opel truck driver/passenger + 4), NO .phy (needs a
