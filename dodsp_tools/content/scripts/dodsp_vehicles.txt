@@ -18,7 +18,10 @@
 //                    MEASURED against the meshes and PREVIEWED (dodsp_tools/vehicle_preview/rider_preview.py reads these
 //                    lines; the owner approved the tank and carrier previews 2026-11-20): tank riders sit on the deck
 //                    edges facing out, legs over the tracks, and jump off outward; carrier riders sit on the side walls
-//                    and vault over. The getout's path (where his origin goes, frame by frame) is
+//                    and vault over. Seated idle on every tank seat: ww2_ride3_idle (CoD's tankride guy3 driving idle,
+//                    3.8 s, a calm sway). NOT ride1 (guy1 "leanleft" = a lean-out-and-look one-shot, head moves 9 units,
+//                    hand 17 - looped it looked like a tantrum, owner 2026-11-20) and NOT ride6 (a 1.2 s engine-rumble
+//                    jiggle). The getout's path (where his origin goes, frame by frame) is
 //                    scripts/dodsp_ride_paths.txt, written with the ride pack by build_ww2_pack.py --ride-paths.
 //                    Halftrack: benches z 40 at |y| 10..24 (x -100..-12), aisle z 30 - its 8 riders get out through the
 //                    rear doors, which the model has closed on its only bone; they wait for a door rig.
@@ -116,10 +119,10 @@
 					  "turret_stop" "DoDSP_Vehicle.TurretStop"	"reload" "DoDSP_Vehicle.Reload"	"explode" "DoDSP_Vehicle.ShellExplode" }
 		"seats"
 		{
-			"seat"	{ "origin" "-50 50 68"	"yaw" "90"	"idle" "ww2_ride1_idle"	"getout" "ww2_jump_ride1"	"delay" "0.00" }	// front left
-			"seat"	{ "origin" "-90 50 68"	"yaw" "90"	"idle" "ww2_ride6_idle"	"getout" "ww2_jump_ride6"	"delay" "0.25" }	// rear left
-			"seat"	{ "origin" "-48 -55 56"	"yaw" "-90"	"idle" "ww2_ride1_idle"	"getout" "ww2_jump_ride1"	"delay" "0.10" }	// front right
-			"seat"	{ "origin" "-86 -50 66"	"yaw" "-90"	"idle" "ww2_ride6_idle"	"getout" "ww2_jump_ride6"	"delay" "0.35" }	// rear right
+			"seat"	{ "origin" "-50 50 68"	"yaw" "90"	"idle" "ww2_ride3_idle"	"getout" "ww2_jump_ride1"	"delay" "0.00" }	// front left
+			"seat"	{ "origin" "-90 50 68"	"yaw" "90"	"idle" "ww2_ride3_idle"	"getout" "ww2_jump_ride6"	"delay" "0.25" }	// rear left
+			"seat"	{ "origin" "-48 -55 56"	"yaw" "-90"	"idle" "ww2_ride3_idle"	"getout" "ww2_jump_ride1"	"delay" "0.10" }	// front right
+			"seat"	{ "origin" "-86 -50 66"	"yaw" "-90"	"idle" "ww2_ride3_idle"	"getout" "ww2_jump_ride6"	"delay" "0.35" }	// rear right
 		}
 	}
 	"panzer2_winter"
@@ -178,10 +181,10 @@
 					  "turret_stop" "DoDSP_Vehicle.TurretStop"	"reload" "DoDSP_Vehicle.Reload"	"explode" "DoDSP_Vehicle.ShellExplode" }
 		"seats"
 		{
-			"seat"	{ "origin" "-45 60 75"	"yaw" "90"	"idle" "ww2_ride1_idle"	"getout" "ww2_jump_ride1"	"delay" "0.00" }	// front left
-			"seat"	{ "origin" "-95 60 76"	"yaw" "90"	"idle" "ww2_ride6_idle"	"getout" "ww2_jump_ride6"	"delay" "0.25" }	// rear left
-			"seat"	{ "origin" "-45 -60 75"	"yaw" "-90"	"idle" "ww2_ride1_idle"	"getout" "ww2_jump_ride1"	"delay" "0.10" }	// front right
-			"seat"	{ "origin" "-95 -60 76"	"yaw" "-90"	"idle" "ww2_ride6_idle"	"getout" "ww2_jump_ride6"	"delay" "0.35" }	// rear right
+			"seat"	{ "origin" "-45 60 75"	"yaw" "90"	"idle" "ww2_ride3_idle"	"getout" "ww2_jump_ride1"	"delay" "0.00" }	// front left
+			"seat"	{ "origin" "-95 60 76"	"yaw" "90"	"idle" "ww2_ride3_idle"	"getout" "ww2_jump_ride6"	"delay" "0.25" }	// rear left
+			"seat"	{ "origin" "-45 -60 75"	"yaw" "-90"	"idle" "ww2_ride3_idle"	"getout" "ww2_jump_ride1"	"delay" "0.10" }	// front right
+			"seat"	{ "origin" "-95 -60 76"	"yaw" "-90"	"idle" "ww2_ride3_idle"	"getout" "ww2_jump_ride6"	"delay" "0.35" }	// rear right
 		}
 	}
 	"tiger_brush"
@@ -240,10 +243,10 @@
 					  "turret_stop" "DoDSP_Vehicle.TurretStop"	"reload" "DoDSP_Vehicle.Reload"	"explode" "DoDSP_Vehicle.ShellExplode" }
 		"seats"
 		{
-			"seat"	{ "origin" "-62 46 69"	"yaw" "90"	"idle" "ww2_ride1_idle"	"getout" "ww2_jump_ride1"	"delay" "0.00" }	// front left
-			"seat"	{ "origin" "-100 46 65"	"yaw" "90"	"idle" "ww2_ride6_idle"	"getout" "ww2_jump_ride6"	"delay" "0.25" }	// rear left
-			"seat"	{ "origin" "-62 -46 69"	"yaw" "-90"	"idle" "ww2_ride1_idle"	"getout" "ww2_jump_ride1"	"delay" "0.10" }	// front right
-			"seat"	{ "origin" "-100 -46 65"	"yaw" "-90"	"idle" "ww2_ride6_idle"	"getout" "ww2_jump_ride6"	"delay" "0.35" }	// rear right
+			"seat"	{ "origin" "-62 46 69"	"yaw" "90"	"idle" "ww2_ride3_idle"	"getout" "ww2_jump_ride1"	"delay" "0.00" }	// front left
+			"seat"	{ "origin" "-100 46 65"	"yaw" "90"	"idle" "ww2_ride3_idle"	"getout" "ww2_jump_ride6"	"delay" "0.25" }	// rear left
+			"seat"	{ "origin" "-62 -46 69"	"yaw" "-90"	"idle" "ww2_ride3_idle"	"getout" "ww2_jump_ride1"	"delay" "0.10" }	// front right
+			"seat"	{ "origin" "-100 -46 65"	"yaw" "-90"	"idle" "ww2_ride3_idle"	"getout" "ww2_jump_ride6"	"delay" "0.35" }	// rear right
 		}
 	}
 	"sherman_desert"
