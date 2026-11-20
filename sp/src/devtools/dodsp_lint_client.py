@@ -378,6 +378,64 @@ DAMAGE_WRITERS = {
 }
 
 
+RIDE_PATHS = os.path.join(ROOT, "..", "..", "dodsp_tools", "content", "scripts", "dodsp_ride_paths.txt")
+SOLDIER_CPP = os.path.join(ROOT, "game", "server", "dodsp", "npc_german_soldier.cpp")
+
+
+def check_vehicle_seats():
+    """V3: every rider seat names its idle and get-out, every get-out has a path (dodsp_ride_paths.txt, written with the
+    ride pack by build_ww2_pack.py --ride-paths), the paths are whole, and RidePosition is the only place that moves a
+    man getting off (one owner of where he is - the preview mirrors it)."""
+    bad = []
+    with open(VEHICLE_SCRIPT, encoding="utf-8") as f:
+        types = dict((k, v) for k, v in (kv_get(parse_kv(f.read()), "DoDSP_Vehicles") or []) if isinstance(v, list))
+    paths = {}
+    if not os.path.exists(RIDE_PATHS):
+        return ["dodsp_ride_paths.txt is missing (build_ww2_pack.py --ride-paths writes it)"]
+    with open(RIDE_PATHS, encoding="utf-8") as f:
+        for seq, blk in (kv_get(parse_kv(f.read()), "RidePaths") or []):
+            if not isinstance(blk, list):
+                continue
+            d = dict(blk)
+            n = int(d.get("frames", "0"))
+            take, land = int(d.get("take", "-1")), int(d.get("land", "-1"))
+            if n < 2 or not (0 <= take <= land < n):
+                bad.append("ride path %s: frames %d, take %d, land %d - not a path" % (seq, n, take, land))
+            for i in range(n):
+                v = d.get(str(i), "").split()
+                if len(v) != 4:
+                    bad.append("ride path %s: frame %d is '%s' (want x y z s)" % (seq, i, d.get(str(i))))
+                    break
+            else:
+                if n and abs(float(d[str(0)].split()[0])) + abs(float(d[str(0)].split()[1])) + abs(float(d[str(0)].split()[2])) > 0.05:
+                    bad.append("ride path %s doesn't start on the seat (frame 0 is %s)" % (seq, d["0"]))
+            paths[seq] = n
+    for name, t in types.items():
+        seats = kv_get(t, "seats")
+        if not isinstance(seats, list):
+            continue
+        if len(seats) > 8:
+            bad.append("%s: %d seats - VEHICLE_MAX_SEATS is 8" % (name, len(seats)))
+        for k, (key, blk) in enumerate(seats):
+            d = dict(blk) if isinstance(blk, list) else {}
+            for need in ("origin", "yaw", "idle", "getout"):
+                if need not in d:
+                    bad.append("%s seat %d: no \"%s\"" % (name, k + 1, need))
+            if len(d.get("origin", "").split()) != 3:
+                bad.append("%s seat %d: origin '%s' is not x y z" % (name, k + 1, d.get("origin")))
+            if "getout" in d and d["getout"] not in paths:
+                bad.append("%s seat %d: get-out %s has no path in dodsp_ride_paths.txt" % (name, k + 1, d["getout"]))
+    func = ""
+    with open(SOLDIER_CPP, encoding="latin-1") as f:
+        for n, line in enumerate(f, 1):
+            m = re.match(r"^[A-Za-z][^(]*?(\w+)::~?(\w+)\s*\(", line)
+            if m:
+                func = m.group(2)
+            if "m_vecRideTag" in line.split("//")[0] and re.search(r"m_vecRideTag\s*=(?!=)", line) and func not in ("RideGetOut", "CNPC_GermanSoldier"):
+                bad.append("npc_german_soldier.cpp:%d (%s) sets where a get-out starts - only RideGetOut may" % (n, func))
+    return bad
+
+
 def check_vehicle_damage():
     bad = []
     func = ""
@@ -403,7 +461,8 @@ def main():
         return 1
     for what, fn in (("a vehicle type is missing V4's armour / wreck / real ammunition", check_vehicle_types),
                      ("the vehicle damage state is written outside its owner (V4)", check_vehicle_damage),
-                     ("the Hammer FGD doesn't match the vehicle types (V4j)", check_vehicle_fgd)):
+                     ("the Hammer FGD doesn't match the vehicle types (V4j)", check_vehicle_fgd),
+                     ("a rider seat or ride path is broken (V3)", check_vehicle_seats)):
         vbad = fn()
         if vbad:
             print("dodsp_lint_client: %s:" % what)

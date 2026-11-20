@@ -46,6 +46,7 @@
 #include "smoke_trail.h"
 #include "itempents.h"
 #include "props_shared.h"
+#include "tier1/fmtstr.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -56,7 +57,7 @@
 // this; the lint checks the repo copy against it, the loader checks the owner's copy (V4e's first run: the old script
 // had no hatches, every crewman got out beside the tank and nothing at bail time said why). Bump both together
 // whenever the code starts needing a new key in the script.
-#define DODSP_VEHICLE_SCRIPT_VERSION	"V4e"
+#define DODSP_VEHICLE_SCRIPT_VERSION	"V3"
 static char s_szVehicleScriptVersion[32] = "not loaded";
 
 // V4h: how a shell's strike on the armour went - what HitFeedback shows and plays (name table guarded below)
@@ -227,6 +228,20 @@ COMPILE_TIME_ASSERT( ARRAYSIZE( s_pszBail ) == NUM_VBAILS );
 
 // V4b: the German soldier's bail-out (npc_german_soldier.cpp - one owner for how a man climbs out and jumps off)
 extern bool GermanSoldier_BailOut( CBaseEntity *pEnt, const Vector &vecHatch, const Vector &vecGround, const Vector &vecRun, float flYaw );
+// V3 riders (npc_german_soldier.cpp owns how a man rides and gets off; the vehicle owns when)
+extern bool GermanSoldier_BeginRide( CBaseEntity *pEnt, CBaseEntity *pVehicle, const Vector &vecSeat, float flYaw, const char *pszIdle, const char *pszGetout );
+extern bool GermanSoldier_RideGetOut( CBaseEntity *pEnt );
+extern void GermanSoldier_RideAbort( CBaseEntity *pEnt );
+extern int GermanSoldier_RideState( CBaseEntity *pEnt );		// 0 off, 1 seated, 2 getting off
+#define VEHICLE_MAX_SEATS		8
+#define VEHICLE_RIDERS_CONTACT	1200.0f		// riders get off when an enemy it knows of is this close (dismount "contact")
+#define VEHICLE_RIDERS_SPAWN	0.2f		// riders are put aboard this long after the vehicle activates
+enum VehicleRiders_t { VRIDERS_NONE, VRIDERS_ABOARD, VRIDERS_STOPPING, VRIDERS_GETTING_OFF, VRIDERS_OFF, NUM_VRIDERS };
+static const char *s_pszRiders[] = { "none", "aboard", "stopping to let them off", "getting off", "off" };
+COMPILE_TIME_ASSERT( ARRAYSIZE( s_pszRiders ) == NUM_VRIDERS );
+enum VehicleDismount_t { VDISMOUNT_CONTACT, VDISMOUNT_ORDER, NUM_VDISMOUNT };
+static const char *s_pszDismount[] = { "contact", "order" };
+COMPILE_TIME_ASSERT( ARRAYSIZE( s_pszDismount ) == NUM_VDISMOUNT );
 
 #define VEHICLE_COOKOFF_KG		2.0f		// an ammunition cook-off goes up like this much explosive (game value)
 #define VEHICLE_PEN_MEMORY		15.0f
@@ -275,8 +290,10 @@ struct VehicleType_t
 	bool	bVariant;				// has a "base" (a paint scheme): the pen chart lists the base only
 	char	szDeadModel[MAX_PATH];	// V4: the wreck
 	char	szEngineIdle[64], szEngineMove[64], szTurretTurn[64], szTurretStop[64], szReload[64], szExplode[64];
-	struct Seat_t { Vector vecOrigin; float flYaw; };
-	CUtlVector<Seat_t> seats;		// V3
+	// V3: a rider's seat - where (model space), facing (yaw on the vehicle), his looping idle and his get-out (both
+	// sequences of npc_ww2_anims_ride), and how long after the dismount order he goes
+	struct Seat_t { Vector vecOrigin; float flYaw; char szIdle[64], szGetout[64]; float flDelay; };
+	CUtlVector<Seat_t> seats;
 	// V4e: where each crew role gets out ("hatches": role -> "turret x y z" in the turret model's space, or "hull x y z"
 	// in the hull's) = the roof his feet end up on, measured from the meshes. Roles at the same spot share a hatch
 	// (iShare = the first role there): the next man waits until the one before has left it.
@@ -463,6 +480,19 @@ static void LoadVehicleTypes( bool bForce )
 			VehicleType_t::Seat_t seat;
 			ParseVector( pSeat->GetString( "origin" ), seat.vecOrigin );
 			seat.flYaw = pSeat->GetFloat( "yaw" );
+			Q_strncpy( seat.szIdle, pSeat->GetString( "idle" ), sizeof( seat.szIdle ) );
+			Q_strncpy( seat.szGetout, pSeat->GetString( "getout" ), sizeof( seat.szGetout ) );
+			seat.flDelay = pSeat->GetFloat( "delay" );
+			if ( !seat.szIdle[0] || !seat.szGetout[0] )
+			{
+				Warning( "INVARIANT DOD-SP vehicles: type '%s' has a seat without \"idle\" / \"getout\" - skipped (nobody can ride it)\n", t->szName );
+				continue;
+			}
+			if ( t->seats.Count() >= VEHICLE_MAX_SEATS )
+			{
+				Warning( "INVARIANT DOD-SP vehicles: type '%s' has more than %d seats - the rest skipped\n", t->szName, VEHICLE_MAX_SEATS );
+				break;
+			}
 			t->seats.AddToTail( seat );
 		}
 		if ( !t->szModel[0] )
@@ -984,6 +1014,22 @@ private:
 
 	string_t		m_iszVehicleType;
 	bool			m_bRiders;					// Hammer "riders": spawn with the full riding complement (V3)
+	// V3 riders: one per seat, put aboard after activation; RidersThink is the one owner of when they get off
+	string_t		m_iszDismount;				// Hammer "riders_dismount": contact (default) / order
+	int				m_eDismount;				// VehicleDismount_t
+	int				m_eRiders;					// VehicleRiders_t
+	bool			m_bRidersSpawned;
+	float			m_flRidersSpawnAt;
+	EHANDLE			m_hRider[VEHICLE_MAX_SEATS];
+	float			m_flRiderGo[VEHICLE_MAX_SEATS];	// when each gets off (0 = not ordered / gone)
+	bool			m_bDismountOrder;
+	COutputEvent	m_OnRidersOff;
+	void			RidersThink( void );
+	void			SpawnRiders( void );
+	void			OrderDismount( const char *pszWhy );
+	int				RidersAboard( void );
+	bool			RidersHold( void ) const { return m_eRiders == VRIDERS_STOPPING || m_eRiders == VRIDERS_GETTING_OFF; }
+	void			InputDismount( inputdata_t &inputdata );
 	string_t		m_iszInitialGoal;
 	VehicleType_t	*m_pType;
 	float			m_flHalfWidth, m_flHalfLength, m_flBodyHeight;	// from the model (MeasureBody), not saved
@@ -1109,6 +1155,16 @@ LINK_ENTITY_TO_CLASS( dodsp_vehicle, CDoDSPVehicle );
 BEGIN_DATADESC( CDoDSPVehicle )
 	DEFINE_KEYFIELD( m_iszVehicleType, FIELD_STRING, "vehicletype" ),
 	DEFINE_KEYFIELD( m_bRiders, FIELD_BOOLEAN, "riders" ),
+	DEFINE_KEYFIELD( m_iszDismount, FIELD_STRING, "riders_dismount" ),
+	DEFINE_FIELD( m_eDismount, FIELD_INTEGER ),
+	DEFINE_FIELD( m_eRiders, FIELD_INTEGER ),
+	DEFINE_FIELD( m_bRidersSpawned, FIELD_BOOLEAN ),
+	DEFINE_FIELD( m_flRidersSpawnAt, FIELD_TIME ),
+	DEFINE_AUTO_ARRAY( m_hRider, FIELD_EHANDLE ),
+	DEFINE_AUTO_ARRAY( m_flRiderGo, FIELD_TIME ),
+	DEFINE_FIELD( m_bDismountOrder, FIELD_BOOLEAN ),
+	DEFINE_OUTPUT( m_OnRidersOff, "OnRidersOff" ),
+	DEFINE_INPUTFUNC( FIELD_VOID, "Dismount", InputDismount ),
 	DEFINE_KEYFIELD( m_iszInitialGoal, FIELD_STRING, "goal" ),
 	DEFINE_FIELD( m_hTurret, FIELD_EHANDLE ),
 	DEFINE_FIELD( m_flSpeed, FIELD_FLOAT ),
@@ -1254,12 +1310,21 @@ CDoDSPVehicle::CDoDSPVehicle()
 		m_flHatchFree[r] = 0.0f;
 	m_vecBailFrom = m_vecLastCrewRun = vec3_origin;
 	m_bMovingWarned = false;
+	m_eDismount = VDISMOUNT_CONTACT;
+	m_eRiders = VRIDERS_NONE;
+	m_bRidersSpawned = m_bDismountOrder = false;
+	m_flRidersSpawnAt = 0.0f;
+	for ( int i = 0; i < VEHICLE_MAX_SEATS; i++ )
+		m_flRiderGo[i] = 0.0f;
 	s_All.AddToTail( this );
 }
 
 void CDoDSPVehicle::UpdateOnRemove( void )
 {
 	s_All.FindAndRemove( this );
+	for ( int i = 0; i < VEHICLE_MAX_SEATS; i++ )
+		if ( m_hRider[i].Get() )
+			GermanSoldier_RideAbort( m_hRider[i].Get() );		// still aboard: off where they are, not left on nothing
 	StopSounds();
 	if ( m_hTurret.Get() )
 		UTIL_Remove( m_hTurret.Get() );
@@ -1334,10 +1399,19 @@ void CDoDSPVehicle::Spawn( void )
 		Warning( "INVARIANT DOD-SP vehicle %s: side %s but its class counts as %s (dodsp_factions.cpp tables disagree)\n",
 				 Label(), DoDSP_FactionName( m_eFaction ), DoDSP_FactionName( DoDSP_FactionOf( this ) ) );
 
-	// V4j: the Hammer option is in place; the riders themselves (seated, riding, dismounting) are stage V3
-	if ( m_bRiders )
-		Msg( "DOD-SP vehicle %s: \"riders\" is set (%d seats in its type) - riders arrive with stage V3, none spawned yet\n",
-			 Label(), m_pType->seats.Count() );
+	// V3: when its riders get off (they're put aboard after activation, RidersThink)
+	m_eDismount = VDISMOUNT_CONTACT;
+	if ( m_iszDismount != NULL_STRING && STRING( m_iszDismount )[0] )
+	{
+		int e = -1;
+		for ( int i = 0; i < NUM_VDISMOUNT; i++ )
+			if ( !Q_stricmp( STRING( m_iszDismount ), s_pszDismount[i] ) )
+				e = i;
+		if ( e >= 0 )
+			m_eDismount = e;
+		else
+			Warning( "INVARIANT DOD-SP vehicle %s: riders_dismount '%s' is not contact / order - contact\n", Label(), STRING( m_iszDismount ) );
+	}
 
 	// how it fights (V2c): offensive unless the map says otherwise
 	m_eBehavior = VBEHAVE_OFFENSIVE;
@@ -1425,6 +1499,8 @@ void CDoDSPVehicle::OnRestore( void )
 void CDoDSPVehicle::Activate( void )
 {
 	BaseClass::Activate();
+	if ( m_bRiders && !m_bRidersSpawned && m_flRidersSpawnAt <= 0.0f )
+		m_flRidersSpawnAt = gpGlobals->curtime + VEHICLE_RIDERS_SPAWN;
 	m_flNavCheckTime = gpGlobals->curtime + 1.5f;		// grade and set off once the node graph is built (DriveThink)
 }
 
@@ -1945,6 +2021,7 @@ void CDoDSPVehicle::DriveThink( void )
 	SetMoveDoneTime( 1.0f );
 	if ( !m_pType )
 		return;
+	RidersThink();
 	if ( m_eState != VSTATE_FIGHTING )
 	{
 		DamageStateThink();		// burning / abandoned: no driving, no guns
@@ -2036,11 +2113,14 @@ void CDoDSPVehicle::DriveThink( void )
 	else
 		m_bReversing = false;
 
-	// V4: an immobilised vehicle doesn't move; a jammed turret is aimed by turning the whole (tracked) tank
-	if ( m_bImmobile )
+	// V4: an immobilised vehicle doesn't move; a jammed turret is aimed by turning the whole (tracked) tank.
+	// V3: nor while its riders get off (it stops for them, then waits until the last is down).
+	if ( m_bImmobile || RidersHold() )
 	{
 		flTargetSpeed = 0.0f;
 		flYawRate = 0.0f;
+		if ( RidersHold() )
+			m_flProgressTime = now;		// standing for its riders isn't stuck (the watchdog would blame the road)
 	}
 	else if ( m_bTurretJammed && !m_bHasGoal && m_pType->bTracked && m_hTarget.Get() )
 	{
@@ -3580,6 +3660,150 @@ void CDoDSPVehicle::HaltMotion( void )
 	SetLocalAngularVelocity( vec3_angle );
 }
 
+//-----------------------------------------------------------------------------
+// V3 riders. The vehicle owns WHEN they get off (this); the soldier owns HOW (npc_german_soldier.cpp: the seat's
+// idle, the get-out on its ride path). Seats, animations and delays: the type's "seats" (dodsp_vehicles.txt),
+// previewed against the meshes with dodsp_tools/vehicle_preview/rider_preview.py before they go in.
+//-----------------------------------------------------------------------------
+int CDoDSPVehicle::RidersAboard( void )
+{
+	int n = 0;
+	for ( int i = 0; i < VEHICLE_MAX_SEATS; i++ )
+	{
+		if ( m_hRider[i].Get() && GermanSoldier_RideState( m_hRider[i].Get() ) == 0 )
+			m_hRider[i] = NULL;			// dead, or off and on his own
+		if ( m_hRider[i].Get() )
+			n++;
+	}
+	return n;
+}
+
+void CDoDSPVehicle::SpawnRiders( void )
+{
+	m_bRidersSpawned = true;
+	if ( !m_pType->seats.Count() )
+	{
+		Msg( "DOD-SP vehicle %s: \"riders\" is set but a %s has no seats in %s\n", Label(), m_pType->szName, DODSP_VEHICLE_SCRIPT );
+		return;
+	}
+	// riders are soldiers of its side - DOD-SP has German soldiers only so far
+	if ( m_eFaction != DoDSP_FactionFromName( "axis" ) )
+	{
+		Msg( "DOD-SP vehicle %s: \"riders\" is set, but its side (%s) has no soldier NPC yet - riders on Allied vehicles come with the Allied soldiers\n",
+			 Label(), DoDSP_FactionName( m_eFaction ) );
+		return;
+	}
+	char szSquad[32];
+	Q_snprintf( szSquad, sizeof( szSquad ), "riders%d", entindex() );
+	int n = 0;
+	for ( int i = 0; i < m_pType->seats.Count(); i++ )
+	{
+		const VehicleType_t::Seat_t &seat = m_pType->seats[i];
+		CBaseEntity *pNPC = CreateEntityByName( "npc_german_soldier" );
+		if ( !pNPC )
+			break;
+		Vector vecWorld;
+		VectorTransform( seat.vecOrigin, EntityToWorldTransform(), vecWorld );
+		pNPC->KeyValue( "additionalequipment", i == 0 ? "weapon_mp40" : "weapon_k98" );	// the first seat: the squad leader's MP40
+		pNPC->KeyValue( "squadname", szSquad );
+		pNPC->AddSpawnFlags( SF_NPC_FALL_TO_GROUND );		// no snap to the floor: he's on the vehicle
+		pNPC->SetAbsOrigin( vecWorld );
+		pNPC->SetAbsAngles( QAngle( 0.0f, GetAbsAngles().y + seat.flYaw, 0.0f ) );
+		DispatchSpawn( pNPC );
+		pNPC->Activate();
+		if ( !GermanSoldier_BeginRide( pNPC, this, seat.vecOrigin, seat.flYaw, seat.szIdle, seat.szGetout ) )
+		{
+			UTIL_Remove( pNPC );		// the soldier said why (once per map)
+			break;
+		}
+		m_hRider[i] = pNPC;
+		m_flRiderGo[i] = 0.0f;
+		n++;
+	}
+	m_eRiders = n ? VRIDERS_ABOARD : VRIDERS_NONE;
+	Msg( "DOD-SP vehicle %s: %d of %d riders aboard (they get off: %s)\n", Label(), n, m_pType->seats.Count(),
+		 m_eDismount == VDISMOUNT_ORDER ? "on the Dismount input, or when it's knocked out" : "when an enemy is close, on the Dismount input, or when it's knocked out" );
+}
+
+void CDoDSPVehicle::OrderDismount( const char *pszWhy )
+{
+	if ( m_eRiders != VRIDERS_ABOARD )
+		return;
+	m_eRiders = VRIDERS_STOPPING;
+	Msg( "DOD-SP vehicle %s: riders get off - %s\n", Label(), pszWhy );
+}
+
+void CDoDSPVehicle::InputDismount( inputdata_t &inputdata )
+{
+	if ( m_eRiders == VRIDERS_ABOARD )
+		OrderDismount( "ordered (Dismount input)" );
+	else
+		m_bDismountOrder = true;		// riders not aboard yet (spawning): they get off as soon as they are
+}
+
+// THE owner of when riders get off: put them aboard, decide, stop, then send each off at his seat's delay.
+void CDoDSPVehicle::RidersThink( void )
+{
+	float now = gpGlobals->curtime;
+	if ( m_bRiders && !m_bRidersSpawned && m_flRidersSpawnAt > 0.0f && now >= m_flRidersSpawnAt )
+		SpawnRiders();
+	if ( m_eRiders == VRIDERS_NONE || m_eRiders == VRIDERS_OFF )
+		return;
+	int nAboard = RidersAboard();
+	if ( m_eRiders == VRIDERS_ABOARD )
+	{
+		if ( !nAboard )
+		{
+			m_eRiders = VRIDERS_OFF;		// all shot off it
+			return;
+		}
+		if ( m_eState != VSTATE_FIGHTING )
+			OrderDismount( "it's out of the fight" );
+		else if ( m_bDismountOrder )
+		{
+			m_bDismountOrder = false;
+			OrderDismount( "ordered (Dismount input)" );
+		}
+		else if ( m_eDismount == VDISMOUNT_CONTACT && m_hQuarry.Get() &&
+				  ( m_hQuarry->GetAbsOrigin() - GetAbsOrigin() ).Length() < VEHICLE_RIDERS_CONTACT )
+			OrderDismount( CFmtStr( "an enemy (%s) is %.0f units away", m_hQuarry->GetClassname(), ( m_hQuarry->GetAbsOrigin() - GetAbsOrigin() ).Length() ) );
+	}
+	if ( m_eRiders == VRIDERS_STOPPING )
+	{
+		// it stops first (DriveThink holds it while RidersHold); out of the fight it's already halted
+		if ( fabs( m_flSpeed ) > 4.0f && m_eState == VSTATE_FIGHTING )
+			return;
+		for ( int i = 0; i < VEHICLE_MAX_SEATS; i++ )
+			m_flRiderGo[i] = m_hRider[i].Get() ? now + ( i < m_pType->seats.Count() ? m_pType->seats[i].flDelay : 0.0f ) : 0.0f;
+		m_eRiders = VRIDERS_GETTING_OFF;
+	}
+	if ( m_eRiders == VRIDERS_GETTING_OFF )
+	{
+		bool bWaiting = false;
+		for ( int i = 0; i < VEHICLE_MAX_SEATS; i++ )
+		{
+			CBaseEntity *pRider = m_hRider[i].Get();
+			if ( !pRider )
+				continue;
+			int eState = GermanSoldier_RideState( pRider );
+			if ( eState == 1 && m_flRiderGo[i] > 0.0f && now >= m_flRiderGo[i] )
+			{
+				m_flRiderGo[i] = 0.0f;
+				if ( !GermanSoldier_RideGetOut( pRider ) )
+					Warning( "INVARIANT DOD-SP vehicle %s: its rider on seat %d couldn't get off - he was put down where he sat\n", Label(), i + 1 );
+			}
+			if ( GermanSoldier_RideState( pRider ) != 0 )
+				bWaiting = true;
+		}
+		if ( !bWaiting )
+		{
+			m_eRiders = VRIDERS_OFF;
+			m_OnRidersOff.FireOutput( this, this );
+			Msg( "DOD-SP vehicle %s: riders off\n", Label() );
+		}
+	}
+}
+
 void CDoDSPVehicle::SetBurning( bool bAmmo, CBaseEntity *pAttacker )
 {
 	if ( m_eState == VSTATE_BURNING || m_eState == VSTATE_WRECKED )
@@ -4224,6 +4448,9 @@ void CDoDSPVehicle::Report( void )
 	char szDamage[256];
 	DamageReport( szDamage, sizeof( szDamage ) );
 	Msg( "    %s\n", szDamage );
+	if ( m_bRiders || m_eRiders != VRIDERS_NONE )
+		Msg( "    riders: %s, %d aboard of %d seats (get off: %s)\n", s_pszRiders[m_eRiders], RidersAboard(),
+			 m_pType ? m_pType->seats.Count() : 0, s_pszDismount[m_eDismount] );
 }
 
 // Fine-tuning the script's estimate in game: move the turret, print the line for the script

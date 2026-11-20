@@ -5,10 +5,15 @@
 
 @BaseClass base(Targetname, Angles) = DoDSPVehicleBase
 [
-	riders(choices) : "Riders" : "0" : "Spawn with its full riding complement: soldiers of its side on every seat in scripts/dodsp_vehicles.txt (tank deck / troop bay). Stage V3 - until it's built the option is kept and the console says no riders were spawned." =
+	riders(choices) : "Riders" : "0" : "Spawn with its full riding complement: soldiers of its side on every seat in scripts/dodsp_vehicles.txt (tank deck edges, carrier walls). German vehicles only for now (DOD-SP has no Allied soldier yet); the halftrack's troop bay waits for its rear doors." =
 	[
 		"0" : "No riders"
 		"1" : "Full riding complement"
+	]
+	riders_dismount(choices) : "Riders get off" : "contact" : "When the riders get off (it stops for them). Contact: when an enemy it knows of is within 1200 units (and on the Dismount input). Order: only on the Dismount input. Either way they get off when it's knocked out." =
+	[
+		"contact" : "On contact"
+		"order" : "Only when ordered"
 	]
 	goal(target_destination) : "Drive to at start" : "" : "Optional: an entity it drives to when the map starts."
 	behavior(choices) : "Behaviour" : "offensive" : "Offensive: hunts, closes in, shoots on the move. Defensive: holds long-range spots, stops to shoot, backs away from what gets close, stays in its leash. Hold: stays put. Scripted: moves only on inputs." =
@@ -33,6 +38,7 @@
 	input ClearTarget(void) : "Choose its own targets again."
 	input HoldFire(void) : "Stop firing (it still aims)."
 	input OpenFire(void) : "Fire again."
+	input Dismount(void) : "Riders get off (it stops for them)."
 
 	output OnArrived(void) : "Reached the goal."
 	output OnStuck(void) : "Couldn't move for 3 s (it plans around the spot by itself)."
@@ -43,6 +49,7 @@
 	output OnImmobilized(void) : "Engine, tracks or driver gone - it can't move any more."
 	output OnBailOut(void) : "The crew got out (German crews come out as soldiers)."
 	output OnKnockedOut(void) : "Out of the fight: burning, abandoned or wrecked (fires once)."
+	output OnRidersOff(void) : "The last rider is off (it may drive on)."
 ]
 
 // Everything below is GENERATED from scripts/dodsp_vehicles.txt by dodsp_tools/gen_vehicle_fgd.py (the lint checks it is

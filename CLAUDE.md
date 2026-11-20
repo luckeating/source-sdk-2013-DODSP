@@ -772,7 +772,35 @@ If you learn something like this, add it here in the same commit as the fix.
   dodsp_vehicle until switched (Class box -> dodsp_vehicle_<type>; other keys carry over).
   CONFIRMED 2026-11-20 (owner, Hammer++ screenshot, two Shermans + a Panzer II): previews right way out, textured, turrets
   on, facing their entities - "perfect". KNOWN-GOOD for V4j's Hammer side (riders key: stored only until V3).
-- CoD1 set (owner's vehicles_part2.zip, 2026-11-19): REFERENCE ONLY except the **SU-152, which we keep**. One model per
+- **V3 BUILT 2026-11-20 (riders: tanks + carrier; halftrack waits on its doors).** Animations: the CoD2 officer port's
+  ride set retargeted (build_ww2_pack.py --want ... --model german\npc_ww2_anims_ride.mdl, 39 sequences); the owner
+  compiles it and adds `$includemodel "german/npc_ww2_anims_ride.mdl"` to the soldier's .qc. PREVIEWED FIRST (rule):
+  dodsp_tools/vehicle_preview/rider_preview.py renders animated GIFs (render3d.py: depth-buffered mesh + riders) from
+  the SAME script seats and path table the game reads; owner approved tanks + carrier ("really good"). A CoD get-out is
+  relative to its seat tag and ends 50-150 units away and 30-80 lower while the origin stays on the seat - switching
+  sequence at the end would pop him back. So --ride-paths makes every get-out IN PLACE and writes
+  scripts/dodsp_ride_paths.txt (per frame: origin x y z in the seat frame + s = fall done); verified: in-place + path
+  = the raw animation within 0.05 units. ONE owner of where a man getting off is: CNPC_GermanSoldier::RidePosition
+  (origin = seat in the world at the start + path, + (real ground under the landing - the animation's) x s); the code
+  sets the frame from its own clock (rate 0, like V4g). Seated = parented to the vehicle on his seat (MOVETYPE_NONE,
+  SCHED_GERMAN_RIDE, no stance/cover/squad/full-body pain while riding). The vehicle owns WHEN (RidersThink): spawn
+  0.2 s after activation (axis vehicles only - no Allied NPC yet), get off on contact (enemy known within 1200,
+  `riders_dismount contact`, default) / the Dismount input / out of the fight; it stops, holds (stuck watchdog reset),
+  sends each at his seat's "delay", OnRidersOff when all are down. Seats (dodsp_vehicles.txt, script_version V3): tanks
+  4 on the deck edges facing out (front ww2_ride1 lean + jump, rear ww2_ride6), carrier 2 on the side walls
+  (bren_carrier_back02 vault; back01's climb-out goes through our carrier's deck wherever it sits - searched).
+  Guards: lint check_vehicle_seats (seat keys, every getout has a path, paths whole and starting on the seat, only
+  RideGetOut sets where a get-out starts), soldier INVARIANTs (no ride pack in the model / a get-out whose frame count
+  isn't the table's / no ground under the landing), vehicle INVARIANT (a rider that couldn't get off), name tables with
+  COMPILE_TIME_ASSERTs. LESSON from the search: the preview's depth check sees surfaces from above only - also check
+  something is UNDER a seated man (a floating seat passes a depth-only test). Undo: riders 0 on the entities, or the
+  V4j server.dll + the V4e script.
+  HALFTRACK: the owner's CoD2 originals (everything_halftrack.zip: xmodel + xmodelparts, no xmodelsurfs mesh, no xanim)
+  have the bones: hatch_open_left/right = the rear door hinges at (-107.9, +-26, 65.3); CoD's own seats tag_guy01..06
+  at (x, +-17.4, 40.7) facing in (guy03 -86 left, guy05 -84 right - the get-outs' owners), tag_out (-33.8, 0, 30.2)
+  facing back (guy02's walk out), tag_mgguy (-18.9, 0, 30.2), tag_turret (9.4, 0, 86.8), tag_driver, tag_passenger -
+  same frame as our port, within ~2 units of the seats measured from the mesh. xmodelparts parent byte = ABSOLUTE index.
+: REFERENCE ONLY except the **SU-152, which we keep**. One model per
   vehicle, turret/gun as BONES (tag_turret, tag_barrel, tag_flash = muzzle, tag_coaxel), faces +X (forward_yaw 0),
   CoD's rider tags tag_guy01..06 (Sherman, Elefant, SU-152: 6; Opel truck driver/passenger + 4), NO .phy (needs a
   $collisionmodel before it can drive - Claude can generate box collision SMDs + QC lines). Its tag_wheel_* markers sit

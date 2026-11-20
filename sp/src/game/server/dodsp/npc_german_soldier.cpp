@@ -62,6 +62,8 @@
 #include "player.h"
 #include "german_chatter.h"
 #include "bone_setup.h"
+#include "utldict.h"
+#include "tier1/fmtstr.h"
 
 void DoDSP_SetWeaponDeployed( CBaseCombatWeapon *pWeapon, bool bDeployed );		// weapon_dodsp_guns.cpp
 
@@ -94,6 +96,60 @@ void DoDSP_SetWeaponDeployed( CBaseCombatWeapon *pWeapon, bool bDeployed );		// 
 #define BAILJUMP_OUT		( 10.0f / BAILJUMP_LAST )
 #define BAILJUMP_TAKEOFF	( 13.0f / BAILJUMP_LAST )
 #define BAILJUMP_LAND		( 25.0f / BAILJUMP_LAST )
+
+// V3 riders. A get-out from the CoD2 ride pack is made relative to the seat; build_ww2_pack.py --ride-paths makes it IN
+// PLACE and writes where the origin goes frame by frame (scripts/dodsp_ride_paths.txt: x y z in the seat's frame,
+// +x = the rider's forward, and s = how much of the fall is done). One owner of the path: that table, written by the
+// same run as the model; the frame counts are checked against the model before a ride starts.
+enum GermanRide_t { GERMAN_RIDE_NONE, GERMAN_RIDE_SEATED, GERMAN_RIDE_GETOUT };
+#define GERMAN_RIDE_PATHS		"scripts/dodsp_ride_paths.txt"
+#define GERMAN_RIDE_RUN			200.0f		// once down, he runs on this far the way he jumped
+struct GermanRidePath_t
+{
+	int nFrames, iTake, iLand;
+	CUtlVector<Vector4D> pts;		// x y z s per frame
+};
+static CUtlDict<GermanRidePath_t *, int> s_RidePaths;
+static bool s_bRidePathsLoaded = false;
+static const GermanRidePath_t *GermanRidePath( const char *pszSeq )
+{
+	if ( !s_bRidePathsLoaded )
+	{
+		s_bRidePathsLoaded = true;
+		KeyValues *pKV = new KeyValues( "RidePaths" );
+		if ( !pKV->LoadFromFile( filesystem, GERMAN_RIDE_PATHS, "GAME" ) )
+			Warning( "INVARIANT npc_german_soldier: %s is missing - riders can't get off vehicles (it ships with server.dll in the game artifact's scripts folder)\n", GERMAN_RIDE_PATHS );
+		else
+		{
+			for ( KeyValues *pSeq = pKV->GetFirstTrueSubKey(); pSeq; pSeq = pSeq->GetNextTrueSubKey() )
+			{
+				GermanRidePath_t *p = new GermanRidePath_t;
+				p->nFrames = pSeq->GetInt( "frames" );
+				p->iTake = pSeq->GetInt( "take" );
+				p->iLand = pSeq->GetInt( "land" );
+				for ( int i = 0; i < p->nFrames; i++ )
+				{
+					char szKey[8];
+					Q_snprintf( szKey, sizeof( szKey ), "%d", i );
+					Vector4D v( 0, 0, 0, 0 );
+					sscanf( pSeq->GetString( szKey, "0 0 0 0" ), "%f %f %f %f", &v.x, &v.y, &v.z, &v.w );
+					p->pts.AddToTail( v );
+				}
+				if ( p->nFrames < 2 )
+				{
+					Warning( "INVARIANT npc_german_soldier: %s: %s has %d frames - skipped\n", GERMAN_RIDE_PATHS, pSeq->GetName(), p->nFrames );
+					delete p;
+					continue;
+				}
+				s_RidePaths.Insert( pSeq->GetName(), p );
+			}
+			Msg( "DOD-SP ride paths: %d get-outs (%s, made for %s)\n", s_RidePaths.Count(), GERMAN_RIDE_PATHS, pKV->GetString( "model", "?" ) );
+		}
+		pKV->deleteThis();
+	}
+	int i = s_RidePaths.Find( pszSeq );
+	return i != s_RidePaths.InvalidIndex() ? s_RidePaths[i] : NULL;
+}
 
 #define GERMAN_SOLDIER_DEFAULT_MODEL	"models/german/npc_german_rifleman.mdl"
 #define GERMAN_SOLDIER_SCRIPT			"scripts/npc_german_soldier.txt"
@@ -176,6 +232,7 @@ public:
 		SCHED_GERMAN_DRILL_STACK,							// A3e: at the door for the drill - fires from it if he shows; only the squad's go moves him
 		SCHED_GERMAN_MG,									// A4b: the MG42 gunner, deployed on a wall or prone: the MG loop owns him
 		SCHED_GERMAN_BAILOUT,								// V4b: climbing out of a knocked-out tank and jumping off it
+		SCHED_GERMAN_RIDE,									// V3: riding on a vehicle, and getting off it
 		NEXT_SCHEDULE
 	};
 	enum
@@ -189,6 +246,7 @@ public:
 		TASK_GERMAN_CLEAR_DONE,
 		TASK_GERMAN_MG_LOOP,
 		TASK_GERMAN_BAILOUT,
+		TASK_GERMAN_RIDE,
 		NEXT_TASK
 	};
 	enum
@@ -239,6 +297,13 @@ public:
 	bool		BeginBailOut( const Vector &vecHatch, const Vector &vecGround, const Vector &vecRun, float flYaw );
 	void		EndBailOut( bool bRun );
 	Vector		BailPosition( float flNow ) const;
+	// V3 riders (one owner of where a rider is: RidePosition)
+public:
+	bool		BeginRide( CBaseEntity *pVehicle, const Vector &vecSeat, float flYaw, const char *pszIdle, const char *pszGetout );
+	bool		RideGetOut( void );
+	void		EndRide( bool bLanded );
+	int			RideState( void ) const { return m_eRide; }
+	bool		RidePosition( float flNow, Vector *pvecPos, float *pflFrame ) const;
 	virtual void PhysicsSimulate( void );
 	bool		BecomeRagdoll( const CTakeDamageInfo &info, const Vector &forceVector );
 	bool		CanBecomeRagdoll( void );
@@ -767,6 +832,16 @@ private:
 	int					m_iBailPhase;			// 0 climbing out of the hatch, 1 jumping off (not saved)
 	float				m_flBailPhaseEnd, m_flBailPhaseDur;
 
+	// V3: riding a vehicle (saved). Seated = parented to it on its seat; getting out = the in-place get-out animation
+	// on an origin that follows the ride path (scripts/dodsp_ride_paths.txt), see RidePosition.
+	int					m_eRide;				// GermanRide_t
+	EHANDLE				m_hRideVehicle;
+	Vector				m_vecRideSeat;			// the seat on the vehicle (its model space)
+	float				m_flRideYaw;			// the seat's yaw on the vehicle
+	string_t			m_iszRideIdle, m_iszRideGetout;
+	Vector				m_vecRideTag;			// getting out: the seat in the world when he started
+	float				m_flRideTagYaw, m_flRideStart, m_flRideDz;
+
 	// Networked to the client for the procedural hit kick
 	CNetworkVector( m_vecHitDir );			// horizontal direction the bullet travelled
 	CNetworkVar( int, m_nHitGroup );
@@ -793,6 +868,16 @@ BEGIN_DATADESC( CNPC_GermanSoldier )
 	DEFINE_FIELD( m_vecBailGround, FIELD_POSITION_VECTOR ),
 	DEFINE_FIELD( m_vecBailRun, FIELD_POSITION_VECTOR ),
 	DEFINE_FIELD( m_flBailYaw, FIELD_FLOAT ),
+	DEFINE_FIELD( m_eRide, FIELD_INTEGER ),
+	DEFINE_FIELD( m_hRideVehicle, FIELD_EHANDLE ),
+	DEFINE_FIELD( m_vecRideSeat, FIELD_VECTOR ),
+	DEFINE_FIELD( m_flRideYaw, FIELD_FLOAT ),
+	DEFINE_FIELD( m_iszRideIdle, FIELD_STRING ),
+	DEFINE_FIELD( m_iszRideGetout, FIELD_STRING ),
+	DEFINE_FIELD( m_vecRideTag, FIELD_POSITION_VECTOR ),
+	DEFINE_FIELD( m_flRideTagYaw, FIELD_FLOAT ),
+	DEFINE_FIELD( m_flRideStart, FIELD_TIME ),
+	DEFINE_FIELD( m_flRideDz, FIELD_FLOAT ),
 END_DATADESC()
 
 CNPC_GermanSoldier::CNPC_GermanSoldier() : m_AnimMap( DefLessFunc( int ) )
@@ -801,6 +886,10 @@ CNPC_GermanSoldier::CNPC_GermanSoldier() : m_AnimMap( DefLessFunc( int ) )
 	m_bBailOut = m_bBailRun = false;
 	m_vecBailHatch = m_vecBailGround = m_vecBailRun = vec3_origin;
 	m_flBailYaw = 0.0f;
+	m_eRide = GERMAN_RIDE_NONE;
+	m_vecRideSeat = m_vecRideTag = vec3_origin;
+	m_flRideYaw = m_flRideTagYaw = m_flRideStart = m_flRideDz = 0.0f;
+	m_iszRideIdle = m_iszRideGetout = NULL_STRING;
 	m_iBailPhase = 0;
 	m_flBailPhaseEnd = m_flBailPhaseDur = 0.0f;
 	m_iszAnimMapWeapon = NULL_STRING;
@@ -1023,6 +1112,16 @@ void CNPC_GermanSoldier::OnRestore( void )
 	m_Chatter.Init( this, m_SquadName != NULL_STRING ? STRING( m_SquadName ) : NULL, true );
 	if ( m_bBailOut )
 		EndBailOut( true );		// loaded mid-climb: he's off the tank
+	if ( m_eRide == GERMAN_RIDE_GETOUT )
+	{
+		Vector p;
+		float f;
+		RidePosition( FLT_MAX, &p, &f );	// loaded mid-get-out: he's on the ground where it ends
+		SetAbsOrigin( p );
+		EndRide( true );
+	}
+	else if ( m_eRide == GERMAN_RIDE_SEATED && !m_hRideVehicle.Get() )
+		EndRide( false );
 }
 
 // A4a: every live soldier, for the bullet-path test (a few dozen at most - cheaper than a
@@ -4913,6 +5012,11 @@ void CNPC_GermanSoldier::UpdateCoverTransition( void )
 // plays at normal speed. (Death animations set their own speed in TASK_DIE, after this.)
 void CNPC_GermanSoldier::UpdatePlaybackRate( void )
 {
+	if ( m_eRide != GERMAN_RIDE_NONE )
+	{
+		SetPlaybackRate( m_eRide == GERMAN_RIDE_GETOUT ? 0.0f : 1.0f );	// V3: the get-out's frame is set every tick (PhysicsSimulate)
+		return;
+	}
 	if ( m_bBailOut )
 	{
 		SetPlaybackRate( m_iBailPhase == 0 ? 0.0f : 1.0f );	// V4g: the climb's frame is set every tick (PhysicsSimulate)
@@ -5175,6 +5279,14 @@ void CNPC_GermanSoldier::NPCThink( void )
 void CNPC_GermanSoldier::PrescheduleThink( void )
 {
 	BaseClass::PrescheduleThink();
+	if ( m_eRide != GERMAN_RIDE_NONE )
+	{
+		// V3: riding - no stance, cover or squad tactics on a vehicle (they'd move him off his seat); he still
+		// talks and the ride owns his animation
+		m_Chatter.Update();
+		UpdatePlaybackRate();
+		return;
+	}
 	UpdateMovingReload();
 	UpdatePainRecovery();
 	SyncStance();
@@ -5206,6 +5318,26 @@ void CNPC_GermanSoldier::StartTask( const Task_t *pTask )
 {
 	switch ( pTask->iTask )
 	{
+	case TASK_GERMAN_RIDE:
+		{
+			if ( m_eRide == GERMAN_RIDE_NONE )
+			{
+				TaskComplete();
+				break;
+			}
+			if ( m_eRide == GERMAN_RIDE_SEATED )
+			{
+				int iIdle = LookupSequence( STRING( m_iszRideIdle ) );
+				SetIdealActivity( ACT_DO_NOT_DISTURB );
+				if ( iIdle >= 0 && GetSequence() != iIdle )
+				{
+					SetSequenceById( iIdle );
+					SetCycle( random->RandomFloat( 0.0f, 1.0f ) );		// riders side by side don't move in step
+				}
+			}
+			UpdatePlaybackRate();
+		}
+		break;
 	case TASK_GERMAN_BAILOUT:
 		{
 			int iClimb = LookupSequence( "c1_tank_climb_out" );
@@ -5480,6 +5612,12 @@ void CNPC_GermanSoldier::RunTask( const Task_t *pTask )
 {
 	// V4b/V4e: out of the hatch, then the jump. Where he is comes from BailPosition, set every TICK in PhysicsSimulate
 	// (V4c set it here, once per AI think = 10 steps a second: the owner saw him hop down "jitter-like").
+	if ( pTask->iTask == TASK_GERMAN_RIDE )
+	{
+		if ( m_eRide == GERMAN_RIDE_NONE )
+			TaskComplete();		// off the vehicle (EndRide): his own AI from here
+		return;
+	}
 	if ( pTask->iTask == TASK_GERMAN_BAILOUT )
 	{
 		float now = gpGlobals->curtime;
@@ -6123,6 +6261,8 @@ void CNPC_GermanSoldier::Event_Killed( const CTakeDamageInfo &info )
 {
 	if ( m_bBailOut )
 		EndBailOut( false );	// shot on the tank: he falls from where he is
+	if ( m_eRide != GERMAN_RIDE_NONE )
+		EndRide( false );		// V3: shot riding or getting off: he falls from where he is
 	m_Chatter.OnDeath();
 	CNPC_GermanSoldier *pWitness = NearestSquadmate( 800.0f, true );
 	if ( pWitness )
@@ -6422,6 +6562,8 @@ void CNPC_GermanSoldier::UpdatePainRecovery( void )
 // stops everything else and DoD's animations take over again with a cross-fade after.
 void CNPC_GermanSoldier::StartFullBodyPain( Activity act )
 {
+	if ( m_eRide != GERMAN_RIDE_NONE )
+		return;		// V3: riding - the seat's animation stays (the flinch gesture still plays over it)
 	m_actFullBodyPain = act;
 	m_flWantFullFlinch = gpGlobals->curtime;
 	// Pains that end on one knee (fall to a hand, the leg hit, the crouch pain) leave him
@@ -6530,6 +6672,8 @@ int CNPC_GermanSoldier::SelectSchedule( void )
 int CNPC_GermanSoldier::SelectScheduleInner( void )
 {
 	// V4b: out of a knocked-out tank first, then away from it
+	if ( m_eRide != GERMAN_RIDE_NONE && IsAlive() )
+		return SCHED_GERMAN_RIDE;
 	if ( m_bBailOut && IsAlive() )
 		return SCHED_GERMAN_BAILOUT;
 	if ( m_bBailRun && IsAlive() )
@@ -7179,6 +7323,21 @@ Vector CNPC_GermanSoldier::BailPosition( float flNow ) const
 
 void CNPC_GermanSoldier::PhysicsSimulate( void )
 {
+	if ( m_eRide == GERMAN_RIDE_GETOUT && IsAlive() )
+	{
+		Vector p;
+		float flFrame;
+		bool bDone = RidePosition( gpGlobals->curtime, &p, &flFrame );
+		SetAbsOrigin( p );
+		int iSeq = LookupSequence( STRING( m_iszRideGetout ) );
+		if ( iSeq >= 0 && GetSequence() == iSeq )
+		{
+			const GermanRidePath_t *pPath = GermanRidePath( STRING( m_iszRideGetout ) );
+			SetCycle( pPath ? flFrame / MAX( pPath->nFrames - 1, 1 ) : 1.0f );
+		}
+		if ( bDone )
+			EndRide( true );
+	}
 	if ( m_bBailOut && m_flBailPhaseDur > 0.0f && GetMoveType() == MOVETYPE_NONE && IsAlive() )
 	{
 		SetAbsOrigin( BailPosition( gpGlobals->curtime ) );
@@ -7260,6 +7419,176 @@ bool GermanSoldier_BailOut( CBaseEntity *pEnt, const Vector &vecHatch, const Vec
 	return pG && pG->BeginBailOut( vecHatch, vecGround, vecRun, flYaw );
 }
 
+//-----------------------------------------------------------------------------
+// V3 riders: seated on a vehicle (parented to it on his seat, playing the seat's idle), then off it (the get-out).
+// The vehicle owns WHEN (dodsp_vehicle.cpp RidersThink); the soldier owns HOW, and RidePosition is the one owner of
+// where a man getting off is. dodsp_tools/vehicle_preview/rider_preview.py draws exactly this - change both together.
+//-----------------------------------------------------------------------------
+static void RideWarnOnce( const char *pszWhat, const char *pszDetail )
+{
+	static char s_szMap[64] = "";
+	static CUtlSymbolTable s_Said;
+	if ( Q_strcmp( s_szMap, STRING( gpGlobals->mapname ) ) )
+	{
+		Q_strncpy( s_szMap, STRING( gpGlobals->mapname ), sizeof( s_szMap ) );
+		s_Said.RemoveAll();
+	}
+	char szKey[256];
+	Q_snprintf( szKey, sizeof( szKey ), "%s|%s", pszWhat, pszDetail );
+	if ( s_Said.Find( szKey ).IsValid() )
+		return;
+	s_Said.AddString( szKey );
+	Warning( "INVARIANT npc_german_soldier: %s (%s)\n", pszWhat, pszDetail );
+}
+
+bool CNPC_GermanSoldier::BeginRide( CBaseEntity *pVehicle, const Vector &vecSeat, float flYaw, const char *pszIdle, const char *pszGetout )
+{
+	if ( !pVehicle || !GetModelPtr() )
+		return false;
+	int iIdle = LookupSequence( pszIdle ), iGetout = LookupSequence( pszGetout );
+	if ( iIdle < 0 || iGetout < 0 )
+	{
+		RideWarnOnce( "riders need npc_ww2_anims_ride (the V3 ride pack, $includemodel in the soldier's .qc) - no riders spawned",
+					  iIdle < 0 ? pszIdle : pszGetout );
+		return false;
+	}
+	const GermanRidePath_t *pPath = GermanRidePath( pszGetout );
+	int nFrames = Studio_MaxFrame( GetModelPtr(), iGetout, GetPoseParameterArray() ) + 1;
+	if ( !pPath || pPath->nFrames != nFrames )
+	{
+		char sz[160];
+		Q_snprintf( sz, sizeof( sz ), "%s: the model has %d frames, %s %s", pszGetout, nFrames, GERMAN_RIDE_PATHS,
+					pPath ? CFmtStr( "has %d - the model and the table come from different builds", pPath->nFrames ).Access() : "has no entry" );
+		RideWarnOnce( "a rider's get-out has no matching path - no riders spawned", sz );
+		return false;
+	}
+	m_eRide = GERMAN_RIDE_SEATED;
+	m_hRideVehicle = pVehicle;
+	m_vecRideSeat = vecSeat;
+	m_flRideYaw = flYaw;
+	m_iszRideIdle = AllocPooledString( pszIdle );
+	m_iszRideGetout = AllocPooledString( pszGetout );
+	m_bBailOut = m_bBailRun = false;
+	SetMoveType( MOVETYPE_NONE );
+	SetGroundEntity( NULL );
+	SetParent( pVehicle );
+	SetLocalOrigin( vecSeat );
+	SetLocalAngles( QAngle( 0.0f, flYaw, 0.0f ) );
+	IncrementInterpolationFrame();
+	SetIdealActivity( ACT_DO_NOT_DISTURB );
+	SetSequenceById( iIdle );
+	SetCycle( random->RandomFloat( 0.0f, 1.0f ) );
+	ClearSchedule( "riding a vehicle" );
+	return true;
+}
+
+// Off the vehicle: the seat in the world now is where the get-out starts; the real ground under where it lands
+// (vs the ground the animation was made for) is added over the fall, with the path's own s.
+bool CNPC_GermanSoldier::RideGetOut( void )
+{
+	if ( m_eRide != GERMAN_RIDE_SEATED || !IsAlive() )
+		return false;
+	const GermanRidePath_t *pPath = GermanRidePath( STRING( m_iszRideGetout ) );
+	int iSeq = LookupSequence( STRING( m_iszRideGetout ) );
+	CBaseEntity *pVehicle = m_hRideVehicle.Get();
+	if ( !pPath || iSeq < 0 || !pVehicle )
+	{
+		EndRide( false );
+		return false;
+	}
+	Vector vecTag;
+	VectorTransform( m_vecRideSeat, pVehicle->EntityToWorldTransform(), vecTag );
+	Vector vecFwdLocal( cosf( DEG2RAD( m_flRideYaw ) ), sinf( DEG2RAD( m_flRideYaw ) ), 0.0f ), vecFwd;
+	VectorRotate( vecFwdLocal, pVehicle->EntityToWorldTransform(), vecFwd );
+	m_vecRideTag = vecTag;
+	m_flRideTagYaw = RAD2DEG( atan2f( vecFwd.y, vecFwd.x ) );
+	m_flRideStart = gpGlobals->curtime;
+	m_flRideDz = 0.0f;
+	m_eRide = GERMAN_RIDE_GETOUT;
+	SetParent( NULL );
+	SetAbsOrigin( vecTag );
+	SetAbsAngles( QAngle( 0.0f, m_flRideTagYaw, 0.0f ) );
+	// where it lands, and the ground there (the vehicle, its riders and other people don't count as ground)
+	Vector vecLand;
+	float flFrame;
+	RidePosition( FLT_MAX, &vecLand, &flFrame );
+	trace_t tr;
+	CTraceFilterSkipTwoEntities filter( this, pVehicle, COLLISION_GROUP_NPC );
+	UTIL_TraceLine( vecLand + Vector( 0, 0, 72 ), vecLand - Vector( 0, 0, 256 ), MASK_NPCSOLID_BRUSHONLY, &filter, &tr );
+	if ( tr.fraction < 1.0f && !tr.allsolid )
+		m_flRideDz = tr.endpos.z - vecLand.z;
+	else
+		RideWarnOnce( "a rider's landing point has no ground within 256 units below - he lands at the animation's own height", STRING( m_iszRideGetout ) );
+	SetIdealActivity( ACT_DO_NOT_DISTURB );
+	SetSequenceById( iSeq );
+	SetCycle( 0.0f );
+	UpdatePlaybackRate();
+	return true;
+}
+
+// THE owner of where a rider getting off is (a time past the end = where he ends up). Returns true when it's over.
+bool CNPC_GermanSoldier::RidePosition( float flNow, Vector *pvecPos, float *pflFrame ) const
+{
+	const GermanRidePath_t *pPath = GermanRidePath( STRING( m_iszRideGetout ) );
+	if ( !pPath )
+	{
+		*pvecPos = m_vecRideTag;
+		*pflFrame = 0.0f;
+		return true;
+	}
+	float flLast = (float)( pPath->nFrames - 1 );
+	float f = clamp( ( flNow - m_flRideStart ) * 30.0f, 0.0f, flLast );
+	int i0 = (int)f, i1 = MIN( i0 + 1, pPath->nFrames - 1 );
+	float t = f - i0;
+	Vector4D v;
+	Vector4DLerp( pPath->pts[i0], pPath->pts[i1], t, v );
+	float c = cosf( DEG2RAD( m_flRideTagYaw ) ), sn = sinf( DEG2RAD( m_flRideTagYaw ) );
+	*pvecPos = m_vecRideTag + Vector( c * v.x - sn * v.y, sn * v.x + c * v.y, v.z + m_flRideDz * v.w );
+	*pflFrame = f;
+	return f >= flLast;
+}
+
+void CNPC_GermanSoldier::EndRide( bool bLanded )
+{
+	if ( m_eRide == GERMAN_RIDE_NONE )
+		return;
+	m_eRide = GERMAN_RIDE_NONE;
+	if ( GetMoveParent() )
+		SetParent( NULL );		// keeps where he is in the world
+	SetAbsAngles( QAngle( 0.0f, GetAbsAngles().y, 0.0f ) );
+	SetMoveType( MOVETYPE_STEP );
+	if ( bLanded )
+	{
+		// the get-outs end running: he keeps going the way he jumped, then his own AI decides
+		Vector vecFwd( cosf( DEG2RAD( m_flRideTagYaw ) ), sinf( DEG2RAD( m_flRideTagYaw ) ), 0.0f );
+		m_vecBailRun = GetAbsOrigin() + vecFwd * GERMAN_RIDE_RUN;
+		m_bBailRun = true;
+		SetIdealActivity( ACT_IDLE );
+	}
+}
+
+bool GermanSoldier_BeginRide( CBaseEntity *pEnt, CBaseEntity *pVehicle, const Vector &vecSeat, float flYaw, const char *pszIdle, const char *pszGetout )
+{
+	CNPC_GermanSoldier *pG = dynamic_cast<CNPC_GermanSoldier *>( pEnt );
+	return pG && pG->BeginRide( pVehicle, vecSeat, flYaw, pszIdle, pszGetout );
+}
+bool GermanSoldier_RideGetOut( CBaseEntity *pEnt )
+{
+	CNPC_GermanSoldier *pG = dynamic_cast<CNPC_GermanSoldier *>( pEnt );
+	return pG && pG->RideGetOut();
+}
+void GermanSoldier_RideAbort( CBaseEntity *pEnt )
+{
+	CNPC_GermanSoldier *pG = dynamic_cast<CNPC_GermanSoldier *>( pEnt );
+	if ( pG )
+		pG->EndRide( false );
+}
+int GermanSoldier_RideState( CBaseEntity *pEnt )
+{
+	CNPC_GermanSoldier *pG = dynamic_cast<CNPC_GermanSoldier *>( pEnt );
+	return ( pG && pG->IsAlive() ) ? pG->RideState() : 0;
+}
+
 AI_BEGIN_CUSTOM_NPC( npc_german_soldier, CNPC_GermanSoldier )
 
 	DECLARE_TASK( TASK_GERMAN_COVER_LOOP )
@@ -7271,6 +7600,7 @@ AI_BEGIN_CUSTOM_NPC( npc_german_soldier, CNPC_GermanSoldier )
 	DECLARE_TASK( TASK_GERMAN_CLEAR_DONE )
 	DECLARE_TASK( TASK_GERMAN_MG_LOOP )
 	DECLARE_TASK( TASK_GERMAN_BAILOUT )
+	DECLARE_TASK( TASK_GERMAN_RIDE )
 	DECLARE_SQUADSLOT( SQUAD_SLOT_GERMAN_FIRE1 )
 	DECLARE_SQUADSLOT( SQUAD_SLOT_GERMAN_FIRE2 )
 	DECLARE_SQUADSLOT( SQUAD_SLOT_GERMAN_FIRE3 )
@@ -7444,6 +7774,20 @@ AI_BEGIN_CUSTOM_NPC( npc_german_soldier, CNPC_GermanSoldier )
 
 		"	Tasks"
 		"		TASK_GERMAN_BAILOUT			0"
+		""
+		"	Interrupts"
+	)
+
+	//=========================================================
+	// SCHED_GERMAN_RIDE (V3): seated on a vehicle (its idle), then off it (the get-out) - the ride owns him;
+	// nothing interrupts it. Off the vehicle, the task completes and his own AI takes over.
+	//=========================================================
+	DEFINE_SCHEDULE
+	(
+		SCHED_GERMAN_RIDE,
+
+		"	Tasks"
+		"		TASK_GERMAN_RIDE			0"
 		""
 		"	Interrupts"
 	)

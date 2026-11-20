@@ -13,9 +13,15 @@
 //                    ESTIMATED from the models (deck height + the turret ring hole): fine-tune in game with
 //                    dodsp_vehicle_turret x y z, which prints the line to paste here.
 //   seats            riders (stage V3), model space, yaw relative to the vehicle's front (+90 = facing its left).
-//                    MEASURED from the models' flat surfaces (2026-11-19): halftrack troop bay floor z 30, side benches
-//                    z 40 at x +-27..43 from y 16 to 101 (riders face inward); tank riders on the engine deck behind
-//                    the turret (Panzer II z 66-72, Sherman 72-80, Tiger 76-82), facing outward.
+//                    Each seat: "origin", "yaw", "idle" (looping sequence while he rides) and "getout" (the dismount),
+//                    both from npc_ww2_anims_ride.mdl, and "delay" (seconds after the order before this man goes).
+//                    MEASURED against the meshes and PREVIEWED (dodsp_tools/vehicle_preview/rider_preview.py reads these
+//                    lines; the owner approved the tank and carrier previews 2026-11-20): tank riders sit on the deck
+//                    edges facing out, legs over the tracks, and jump off outward; carrier riders sit on the side walls
+//                    and vault over. The getout's path (where his origin goes, frame by frame) is
+//                    scripts/dodsp_ride_paths.txt, written with the ride pack by build_ww2_pack.py --ride-paths.
+//                    Halftrack: benches z 40 at |y| 10..24 (x -100..-12), aisle z 30 - its 8 riders get out through the
+//                    rear doors, which the model has closed on its only bone; they wait for a door rig.
 //   base             another type this one copies everything from; its own keys (and whole blocks) win. The
 //                    paint variants (winter, desert, brush, snow) are only their models - one owner per number.
 //   faction          axis or allies (who it shoots; a dodsp_vehicle's own "faction" key wins - captured tanks)
@@ -63,7 +69,7 @@
 "DoDSP_Vehicles"
 {
 	// Must match DODSP_VEHICLE_SCRIPT_VERSION in server.dll (dodsp_vehicle.cpp): use this file with the server.dll of the same build.
-	"script_version"	"V4e"
+	"script_version"	"V3"
 
 	"panzer2"
 	{
@@ -110,10 +116,10 @@
 					  "turret_stop" "DoDSP_Vehicle.TurretStop"	"reload" "DoDSP_Vehicle.Reload"	"explode" "DoDSP_Vehicle.ShellExplode" }
 		"seats"
 		{
-			"seat"	{ "origin"	"-45 -28 70"		"yaw"	"-90" }
-			"seat"	{ "origin"	"-45 28 70"		"yaw"	"90" }
-			"seat"	{ "origin"	"-85 -28 68"		"yaw"	"-90" }
-			"seat"	{ "origin"	"-85 28 68"		"yaw"	"90" }
+			"seat"	{ "origin" "-50 50 68"	"yaw" "90"	"idle" "ww2_ride1_idle"	"getout" "ww2_jump_ride1"	"delay" "0.00" }	// front left
+			"seat"	{ "origin" "-90 50 68"	"yaw" "90"	"idle" "ww2_ride6_idle"	"getout" "ww2_jump_ride6"	"delay" "0.25" }	// rear left
+			"seat"	{ "origin" "-64 -50 62"	"yaw" "-90"	"idle" "ww2_ride1_idle"	"getout" "ww2_jump_ride1"	"delay" "0.10" }	// front right
+			"seat"	{ "origin" "-82 -50 66"	"yaw" "-90"	"idle" "ww2_ride6_idle"	"getout" "ww2_jump_ride6"	"delay" "0.35" }	// rear right
 		}
 	}
 	"panzer2_winter"
@@ -172,10 +178,10 @@
 					  "turret_stop" "DoDSP_Vehicle.TurretStop"	"reload" "DoDSP_Vehicle.Reload"	"explode" "DoDSP_Vehicle.ShellExplode" }
 		"seats"
 		{
-			"seat"	{ "origin"	"-70 -40 78"		"yaw"	"-90" }
-			"seat"	{ "origin"	"-70 40 78"		"yaw"	"90" }
-			"seat"	{ "origin"	"-108 -40 81"		"yaw"	"-90" }
-			"seat"	{ "origin"	"-108 40 81"		"yaw"	"90" }
+			"seat"	{ "origin" "-45 60 75"	"yaw" "90"	"idle" "ww2_ride1_idle"	"getout" "ww2_jump_ride1"	"delay" "0.00" }	// front left
+			"seat"	{ "origin" "-95 60 76"	"yaw" "90"	"idle" "ww2_ride6_idle"	"getout" "ww2_jump_ride6"	"delay" "0.25" }	// rear left
+			"seat"	{ "origin" "-45 -60 75"	"yaw" "-90"	"idle" "ww2_ride1_idle"	"getout" "ww2_jump_ride1"	"delay" "0.10" }	// front right
+			"seat"	{ "origin" "-95 -60 76"	"yaw" "-90"	"idle" "ww2_ride6_idle"	"getout" "ww2_jump_ride6"	"delay" "0.35" }	// rear right
 		}
 	}
 	"tiger_brush"
@@ -234,10 +240,10 @@
 					  "turret_stop" "DoDSP_Vehicle.TurretStop"	"reload" "DoDSP_Vehicle.Reload"	"explode" "DoDSP_Vehicle.ShellExplode" }
 		"seats"
 		{
-			"seat"	{ "origin"	"-55 -30 74"		"yaw"	"-90" }
-			"seat"	{ "origin"	"-55 30 74"		"yaw"	"90" }
-			"seat"	{ "origin"	"-95 -30 76"		"yaw"	"-90" }
-			"seat"	{ "origin"	"-95 30 76"		"yaw"	"90" }
+			"seat"	{ "origin" "-62 46 69"	"yaw" "90"	"idle" "ww2_ride1_idle"	"getout" "ww2_jump_ride1"	"delay" "0.00" }	// front left
+			"seat"	{ "origin" "-100 46 65"	"yaw" "90"	"idle" "ww2_ride6_idle"	"getout" "ww2_jump_ride6"	"delay" "0.25" }	// rear left
+			"seat"	{ "origin" "-62 -46 69"	"yaw" "-90"	"idle" "ww2_ride1_idle"	"getout" "ww2_jump_ride1"	"delay" "0.10" }	// front right
+			"seat"	{ "origin" "-100 -46 65"	"yaw" "-90"	"idle" "ww2_ride6_idle"	"getout" "ww2_jump_ride6"	"delay" "0.35" }	// rear right
 		}
 	}
 	"sherman_desert"
@@ -367,17 +373,6 @@
 			"commander"		"hull -20 -15 70"
 		}
 		"sounds"	{ "engine_idle" "DoDSP_Vehicle.TruckIdle"	"engine_move" "DoDSP_Vehicle.TruckMove" }
-		"seats"
-		{
-			"seat"	{ "origin"	"-25 -35 40"		"yaw"	"90" }
-			"seat"	{ "origin"	"-48 -35 40"		"yaw"	"90" }
-			"seat"	{ "origin"	"-71 -35 40"		"yaw"	"90" }
-			"seat"	{ "origin"	"-94 -35 40"		"yaw"	"90" }
-			"seat"	{ "origin"	"-25 35 40"		"yaw"	"-90" }
-			"seat"	{ "origin"	"-48 35 40"		"yaw"	"-90" }
-			"seat"	{ "origin"	"-71 35 40"		"yaw"	"-90" }
-			"seat"	{ "origin"	"-94 35 40"		"yaw"	"-90" }
-		}
 	}
 	"halftrack_desert"
 	{
@@ -429,5 +424,10 @@
 			"commander"		"hull 10 -25 52"
 		}
 		"sounds"	{ "engine_idle" "DoDSP_Vehicle.TruckIdle"	"engine_move" "DoDSP_Vehicle.TruckMove" }
+		"seats"
+		{
+			"seat"	{ "origin" "-10 34 42"	"yaw" "90"	"idle" "ww2_vi_bren_carrier_back02_rideidle"	"getout" "ww2_jump_bren_carrier_back02_ridedismount"	"delay" "0" }	// on the left wall
+			"seat"	{ "origin" "-28 -34 42"	"yaw" "-90"	"idle" "ww2_vi_bren_carrier_back02_rideidle"	"getout" "ww2_jump_bren_carrier_back02_ridedismount"	"delay" "0.3" }	// on the right wall
+		}
 	}
 }
