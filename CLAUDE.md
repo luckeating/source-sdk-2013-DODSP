@@ -707,6 +707,17 @@ If you learn something like this, add it here in the same commit as the fix.
   prints an INVARIANT for the owner's copy; a crewman without a hatch prints the script's version at bail time). Bump
   both whenever the code needs a new script key. Rule: never tell the owner to take a file from an artifact without
   checking the artifact's file list in the CI log.
+  SECOND V4e RUN (new script): the jump looks better, but the climb still "floats above the tank in place". MY WRONG
+  TURN first: I blamed the hatch-lid push in the animation (CoD1's climb has the hands over the head 0..12, then the
+  left hand holds the lid up) and offered lid bones; owner: he'd happily phase through the lid - the fault is that he
+  STARTS above the roof. Right: c1_tank_climb_out is made relative to the roof (frame 0: pelvis 8.7, head 35 OVER it,
+  feet -23), so with the origin on the roof his head and shoulders show from the first frame; in CoD he starts out of
+  sight. V4f: the climb starts BAILCLIMB_HIDE (42) under the hatch and the code lifts him to it by frame 12 (smoothstep),
+  the animation's own rise on top; hidden (EF_NODRAW) for the first 0.25 s (the sequence's 0.2 s blend-in from his
+  previous pose) and IncrementInterpolationFrame when he's put in the hatch (no glide from where he spawned).
+  INVARIANT if c1_tank_climb_out isn't 41 frames. dodsp_vehicle_debug prints each crewman's hatch, its height over the
+  ground and the jump length. LESSON: listen to what the owner says looks wrong before reading the animation for
+  another cause.
 - CoD1 set (owner's vehicles_part2.zip, 2026-11-19): REFERENCE ONLY except the **SU-152, which we keep**. One model per
   vehicle, turret/gun as BONES (tag_turret, tag_barrel, tag_flash = muzzle, tag_coaxel), faces +X (forward_yaw 0),
   CoD's rider tags tag_guy01..06 (Sherman, Elefant, SU-152: 6; Opel truck driver/passenger + 4), NO .phy (needs a

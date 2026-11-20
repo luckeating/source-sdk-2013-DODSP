@@ -68,6 +68,25 @@ void DoDSP_SetWeaponDeployed( CBaseCombatWeapon *pWeapon, bool bDeployed );		// 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
+// The CoD1 tank_jump_off as retargeted (c1_tank_jump_off, 40 frames, measured from its SMD: foot bones 4-5 units over
+// the deck until frame 12, airborne 13..24, back on the ground at frame 25, then the landing crouch). It is made IN
+// PLACE - the pelvis rises 22 units and comes down again over the same spot - so the code carries his origin: outward
+// from frame 10 (fast first, so he clears the hull side before he drops much), down from frame 13 to 25 (a fall: slow,
+// then fast). A different animation in that slot needs these frames measured again (BeginBailOut checks the length).
+// V4f: c1_tank_climb_out (41 frames) is made relative to the ROOF: head 35 units over it at frame 0, feet on it from
+// frame 11. In CoD he starts out of sight, so the code starts him BAILCLIMB_HIDE under the hatch (head + helmet below
+// the roof) and lifts him to the roof by frame BAILCLIMB_UP - the animation's own rise plays on top of that (V4e left
+// his head and shoulders above the roof from the first frame: "floating above the tank"). Hidden (EF_NODRAW) for the
+// sequence's 0.2 s blend-in, so the pose he had before never shows.
+#define BAILCLIMB_LAST		40.0f
+#define BAILCLIMB_UP		( 12.0f / BAILCLIMB_LAST )
+#define BAILCLIMB_HIDE		42.0f
+#define BAILCLIMB_SHOW		0.25f
+#define BAILJUMP_LAST		39.0f
+#define BAILJUMP_OUT		( 10.0f / BAILJUMP_LAST )
+#define BAILJUMP_TAKEOFF	( 13.0f / BAILJUMP_LAST )
+#define BAILJUMP_LAND		( 25.0f / BAILJUMP_LAST )
+
 #define GERMAN_SOLDIER_DEFAULT_MODEL	"models/german/npc_german_rifleman.mdl"
 #define GERMAN_SOLDIER_SCRIPT			"scripts/npc_german_soldier.txt"
 #define GERMAN_WEAPON_TOKEN				"*"		// replaced by the weapon's DoD animation set (RIFLE, MP40, ...)
@@ -5184,8 +5203,9 @@ void CNPC_GermanSoldier::StartTask( const Task_t *pTask )
 				break;
 			}
 			SetMoveType( MOVETYPE_NONE );
-			RemoveEffects( EF_NODRAW );
-			SetAbsOrigin( m_vecBailHatch );
+			// still hidden: PhysicsSimulate shows him once the sequence has blended in, deep inside the hatch
+			SetAbsOrigin( m_vecBailHatch - Vector( 0.0f, 0.0f, BAILCLIMB_HIDE ) );
+			IncrementInterpolationFrame();
 			SetAbsAngles( QAngle( 0.0f, m_flBailYaw, 0.0f ) );
 			SetIdealActivity( ACT_DO_NOT_DISTURB );
 			SetSequenceById( iClimb );
@@ -7121,22 +7141,18 @@ CON_COMMAND( npc_german_test_crouch, "Toggle forced crouching on the German sold
 // CoD1 pack (npc_ww2_anims_cod1, build_cod1_pack.py); a model without them can't, and the vehicle falls back to
 // putting him on the ground (the console says so once per map).
 //-----------------------------------------------------------------------------
-// The CoD1 tank_jump_off as retargeted (c1_tank_jump_off, 40 frames, measured from its SMD: foot bones 4-5 units over
-// the deck until frame 12, airborne 13..24, back on the ground at frame 25, then the landing crouch). It is made IN
-// PLACE - the pelvis rises 22 units and comes down again over the same spot - so the code carries his origin: outward
-// from frame 10 (fast first, so he clears the hull side before he drops much), down from frame 13 to 25 (a fall: slow,
-// then fast). A different animation in that slot needs these frames measured again (BeginBailOut checks the length).
-#define BAILJUMP_LAST		39.0f
-#define BAILJUMP_OUT		( 10.0f / BAILJUMP_LAST )
-#define BAILJUMP_TAKEOFF	( 13.0f / BAILJUMP_LAST )
-#define BAILJUMP_LAND		( 25.0f / BAILJUMP_LAST )
 
 // THE owner of where a bailing crewman is: in the hatch while he climbs (c1_tank_climb_out starts with his legs 23
 // units below vecHatch = inside the turret or hull), then along the jump. Set every tick (PhysicsSimulate).
 Vector CNPC_GermanSoldier::BailPosition( float flNow ) const
 {
 	if ( m_iBailPhase == 0 )
-		return m_vecBailHatch;
+	{
+		float c0 = clamp( 1.0f - ( m_flBailPhaseEnd - flNow ) / m_flBailPhaseDur, 0.0f, 1.0f );
+		float s = clamp( c0 / BAILCLIMB_UP, 0.0f, 1.0f );
+		s = s * s * ( 3.0f - 2.0f * s );
+		return m_vecBailHatch - Vector( 0.0f, 0.0f, BAILCLIMB_HIDE * ( 1.0f - s ) );
+	}
 	float c = clamp( 1.0f - ( m_flBailPhaseEnd - flNow ) / m_flBailPhaseDur, 0.0f, 1.0f );
 	float h = clamp( ( c - BAILJUMP_OUT ) / ( BAILJUMP_LAND - BAILJUMP_OUT ), 0.0f, 1.0f );
 	float v = clamp( ( c - BAILJUMP_TAKEOFF ) / ( BAILJUMP_LAND - BAILJUMP_TAKEOFF ), 0.0f, 1.0f );
@@ -7149,7 +7165,11 @@ Vector CNPC_GermanSoldier::BailPosition( float flNow ) const
 void CNPC_GermanSoldier::PhysicsSimulate( void )
 {
 	if ( m_bBailOut && m_flBailPhaseDur > 0.0f && GetMoveType() == MOVETYPE_NONE && IsAlive() )
+	{
 		SetAbsOrigin( BailPosition( gpGlobals->curtime ) );
+		if ( IsEffectActive( EF_NODRAW ) && ( m_iBailPhase > 0 || gpGlobals->curtime >= m_flBailPhaseEnd - m_flBailPhaseDur + BAILCLIMB_SHOW ) )
+			RemoveEffects( EF_NODRAW );
+	}
 	BaseClass::PhysicsSimulate();
 }
 
@@ -7160,11 +7180,14 @@ bool CNPC_GermanSoldier::BeginBailOut( const Vector &vecHatch, const Vector &vec
 	{
 		int nFrames = Studio_MaxFrame( GetModelPtr(), iJumpSeq, GetPoseParameterArray() );
 		static bool s_bWarnedFrames = false;
-		if ( nFrames != (int)BAILJUMP_LAST && !s_bWarnedFrames )
+		int iClimbSeq = LookupSequence( "c1_tank_climb_out" );
+		int nClimb = iClimbSeq >= 0 ? Studio_MaxFrame( GetModelPtr(), iClimbSeq, GetPoseParameterArray() ) : (int)BAILCLIMB_LAST;
+		if ( ( nFrames != (int)BAILJUMP_LAST || nClimb != (int)BAILCLIMB_LAST ) && !s_bWarnedFrames )
 		{
 			s_bWarnedFrames = true;
-			Warning( "INVARIANT npc_german_soldier: c1_tank_jump_off has %d frames, the bail-out's take-off/landing were measured "
-					 "on %d - crews will float or sink during the jump (measure BAILJUMP_* again)\n", nFrames + 1, (int)BAILJUMP_LAST + 1 );
+			Warning( "INVARIANT npc_german_soldier: c1_tank_climb_out / c1_tank_jump_off have %d / %d frames, the bail-out was "
+					 "measured on %d / %d - crews will float or sink (measure BAILCLIMB_* / BAILJUMP_* again)\n",
+					 nClimb + 1, nFrames + 1, (int)BAILCLIMB_LAST + 1, (int)BAILJUMP_LAST + 1 );
 		}
 	}
 	if ( LookupSequence( "c1_tank_climb_out" ) < 0 || iJumpSeq < 0 )

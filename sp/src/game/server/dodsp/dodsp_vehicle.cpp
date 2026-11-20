@@ -3617,6 +3617,10 @@ bool CDoDSPVehicle::SpawnCrewman( const Vector &vecAwayFrom, int eRole )
 			if ( bJump && vecHatch.z - p.z > 24.0f && GermanSoldier_BailOut( pNPC, vecHatch, p, vecRun, RAD2DEG( atan2f( vecDirs[d].y, vecDirs[d].x ) ) ) )
 			{
 				m_flHatchFree[m_pType->hatches[eRole].iShare] = gpGlobals->curtime + VEHICLE_HATCH_BUSY;
+				if ( dodsp_vehicle_debug.GetBool() )
+					Msg( "DOD-SP vehicle %s: its %s climbs out of the %s hatch, %.0f units over the ground, and jumps %.0f units out\n",
+						 Label(), g_pszCrewRole[eRole], m_pType->hatches[eRole].bTurret ? "turret" : "hull", vecHatch.z - p.z,
+						 ( vecHatch - p ).Length2D() );
 				return true;
 			}
 			m_hLastCrewman = pNPC;
