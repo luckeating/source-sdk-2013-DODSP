@@ -221,6 +221,7 @@ If you learn something like this, add it here in the same commit as the fix.
   without a separate sun also never get the per-pixel sun on top (it used to add a second sun there).
   The fallback lives in server.dll: client.dll and server.dll must come from one build.
 - Stage 5: `dodsp_lamps_baked 0` (live lamps drawn live), `dodsp_lamps_scale 1`, `dodsp_lamps_shadows 1` reset too.
+- Vehicles: `dodsp_vehicle_road_slack 160`, `dodsp_vehicle_debug 0` reset too.
 - `dodsp_sunshader` is read once per game start. Changing it mid-game does nothing until a restart.
 
 ## Owner-side pitfalls seen
@@ -513,6 +514,9 @@ If you learn something like this, add it here in the same commit as the fix.
   WHY with reason codes (CorridorFail_t: no ground / too steep / step too high / blocked + what), printed with
   dodsp_vehicle_debug: `can't go on - <reason>, <what> at x y z`. The first sample never fails (the vehicle or node is
   standing there). Known gap: a pivoting tracked vehicle's rear isn't checked (pushers clip through it).
+  V1e: owner 2026-11-19 "now the node usage is a little too tight, blend the shortcut with the node usage" (route hooked
+  back to a node before the goal). The slack is now `dodsp_vehicle_road_slack` (default 160; 0 = every node), so the
+  blend can be tuned live: a shortcut may skip nodes that lie within the slack of it, and only where the body fits.
 - CoD1 set (owner's vehicles_part2.zip, 2026-11-19): REFERENCE ONLY except the **SU-152, which we keep**. One model per
   vehicle, turret/gun as BONES (tag_turret, tag_barrel, tag_flash = muzzle, tag_coaxel), faces +X (forward_yaw 0),
   CoD's rider tags tag_guy01..06 (Sherman, Elefant, SU-152: 6; Opel truck driver/passenger + 4), NO .phy (needs a

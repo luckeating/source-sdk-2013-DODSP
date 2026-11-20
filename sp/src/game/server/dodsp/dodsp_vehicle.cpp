@@ -45,9 +45,12 @@
 #define VEHICLE_STUCK_TIME		3.0f
 #define VEHICLE_MIN_GROUND_NZ	0.6f		// steepest ground the tracks take (normal z; ~53 degrees)
 #define VEHICLE_DIRECT_DIST		768.0f		// a goal this close is driven to straight, off the road
-#define VEHICLE_ROAD_SLACK		48.0f		// a shortcut may pass a node it skips this far off
 #define VEHICLE_BADLINK_TIME	30.0f
 
+// How far a route may cut past a road node it skips: the blend between "every node" (0) and "any shortcut the
+// corridor test passes" (huge). V1d used 48 (owner: "a little too tight"); V1c had no limit ("skips most of the
+// nodes"). The corridor test (trees, rocks, slopes) applies either way.
+ConVar dodsp_vehicle_road_slack( "dodsp_vehicle_road_slack", "160", 0, "Units a vehicle's route may cut past a road node it skips (0 = drive every node; bigger = straighter, still only where the body fits)." );
 ConVar dodsp_vehicle_debug( "dodsp_vehicle_debug", "0", 0, "1 = draw vehicle routes and print their decisions." );
 
 enum VehicleStuck_t
@@ -812,7 +815,7 @@ bool CDoDSPVehicle::PlanRoute( void )
 	for ( int i = iEnd; i >= 0; i = from[i] )
 		nodes.AddToHead( i );
 	// straighten - but keep to the road: from each point, the furthest later point it can drive to directly
-	// AND whose shortcut passes every node it skips within VEHICLE_ROAD_SLACK (a straight road loses its
+	// AND whose shortcut passes every node it skips within dodsp_vehicle_road_slack (a straight road loses its
 	// zig-zag; a bend keeps its nodes). V1c test: "it seems to skip most of the nodes".
 	CUtlVector<Vector> pts;
 	pts.AddToTail( vecFrom );
@@ -834,7 +837,7 @@ bool CDoDSPVehicle::PlanRoute( void )
 				vecTo.z = 0.0f;
 				float flSegLen2 = vecSeg.LengthSqr();
 				float t = flSegLen2 > 1.0f ? clamp( DotProduct( vecTo, vecSeg ) / flSegLen2, 0.0f, 1.0f ) : 0.0f;
-				if ( ( vecTo - vecSeg * t ).Length() > VEHICLE_ROAD_SLACK )
+				if ( ( vecTo - vecSeg * t ).Length() > dodsp_vehicle_road_slack.GetFloat() )
 					bOnRoad = false;
 			}
 			if ( bOnRoad && CorridorClear( pts[iAt], pts[j], m_flHalfWidth, m_flBodyHeight, this ) )
