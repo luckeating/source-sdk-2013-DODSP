@@ -43,6 +43,7 @@
 #define VEHICLE_STEP			24.0f		// what it climbs without noticing (kerbs, rubble)
 #define VEHICLE_MAX_STEP_PER_32	36.0f		// ground change between two samples 32 units apart (a slope of ~48 degrees)
 #define VEHICLE_STUCK_TIME		3.0f
+#define VEHICLE_MIN_GROUND_NZ	0.6f		// steepest ground the tracks take (normal z; ~53 degrees)
 #define VEHICLE_BADLINK_TIME	30.0f
 
 ConVar dodsp_vehicle_debug( "dodsp_vehicle_debug", "0", 0, "1 = draw vehicle routes and print their decisions." );
@@ -166,6 +167,14 @@ private:
 	CBaseEntity *m_pSelf;
 };
 
+// THE rule for "can it drive on this surface" (one owner): CorridorClear grades ground with it and the
+// drive sweep uses it to tell ground it climbs from a wall. V1b test (gm_countrysidedrive_d): the sweep
+// called rising terrain a wall that CorridorClear had passed, and the tank stopped on a route it was given.
+static inline bool VehicleDrivable( float flNormalZ )
+{
+	return flNormalZ >= VEHICLE_MIN_GROUND_NZ;
+}
+
 static bool GroundAt( const Vector &vecPos, float flUp, float flDown, float *pflZ, float *pflNormalZ, CBaseEntity *pSelf )
 {
 	CTraceFilterVehicleWorld filter( pSelf );
@@ -199,7 +208,7 @@ static bool CorridorClear( const Vector &a, const Vector &b, float flHalfWidth, 
 	{
 		Vector p = a + vecDir * ( flLen * i / nSteps );
 		float flZ, flNZ;
-		if ( !GroundAt( p, 64.0f, 128.0f, &flZ, &flNZ, pSelf ) || flNZ < 0.6f )
+		if ( !GroundAt( p, 64.0f, 128.0f, &flZ, &flNZ, pSelf ) || !VehicleDrivable( flNZ ) )
 			return false;
 		if ( i > 0 && fabs( flZ - flPrevZ ) > VEHICLE_MAX_STEP_PER_32 )
 			return false;
@@ -846,14 +855,36 @@ void CDoDSPVehicle::DriveThink( void )
 		CTraceFilterVehicleWorld filter( this );
 		trace_t tr;
 		UTIL_TraceEntity( this, vecPos + vecLift, vecPos + vecLift + vecAhead, MASK_SOLID, &filter, &tr );
-		if ( tr.fraction < 1.0f && !tr.startsolid )
+		// ground it can drive on is climbed (BuildAngles lifts it), not a wall - VehicleDrivable, the same
+		// rule CorridorClear graded the route with. The ground may hide a wall right behind it, so look
+		// again from higher up (rising ground doesn't climb 48 more units in one step; a wall does).
+		if ( tr.fraction < 1.0f && !tr.startsolid && VehicleDrivable( tr.plane.normal.z ) )
 		{
+			Vector vecHigh( 0, 0, VEHICLE_STEP + 48.0f );
+			UTIL_TraceEntity( this, vecPos + vecHigh, vecPos + vecHigh + vecAhead, MASK_SOLID, &filter, &tr );
+		}
+		if ( tr.fraction < 1.0f && !tr.startsolid && !VehicleDrivable( tr.plane.normal.z ) )
+		{
+			float flDirSign = ( m_flSpeed >= 0.0f ) ? 1.0f : -1.0f;
 			m_flSpeed = 0.0f;
 			if ( m_eStuck != VSTUCK_WORLD && m_bHasGoal && now - m_flProgressTime > 1.0f )
 			{
 				m_eStuck = VSTUCK_WORLD;
+				float flHitUp = tr.endpos.z - vecPos.z;
+				// the guard: the route was graded clear here, yet the sweep found a wall - the two tests disagree
+				Vector vecCheck = vecPos + vecFwd * flDirSign * ( m_flHalfLength + 64.0f );
+				float flZ;
+				if ( GroundAt( vecCheck, 64.0f, 128.0f, &flZ, NULL, this ) )
+				{
+					vecCheck.z = flZ;
+					if ( CorridorClear( vecPos, vecCheck, m_flHalfWidth, this ) )
+						Warning( "INVARIANT DOD-SP vehicle %s: the sweep found a wall (%s, slope normal z %.2f, %.0f units up, at %.0f %.0f %.0f) "
+								 "where CorridorClear says it can drive\n", GetDebugName(), tr.m_pEnt ? tr.m_pEnt->GetClassname() : "world",
+								 tr.plane.normal.z, flHitUp, tr.endpos.x, tr.endpos.y, tr.endpos.z );
+				}
 				if ( dodsp_vehicle_debug.GetBool() )
-					Msg( "DOD-SP vehicle %s: wall ahead (%s)\n", GetDebugName(), tr.m_pEnt ? tr.m_pEnt->GetClassname() : "world" );
+					Msg( "DOD-SP vehicle %s: wall ahead (%s, normal z %.2f, %.0f units up)\n", GetDebugName(),
+						 tr.m_pEnt ? tr.m_pEnt->GetClassname() : "world", tr.plane.normal.z, flHitUp );
 			}
 		}
 	}

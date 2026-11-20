@@ -196,6 +196,14 @@ If you learn something like this, add it here in the same commit as the fix.
   warning for models) and prints `DOD-SP detail props: N placed (limit ..)`; the client prints `DOD-SP detail props: N`
   at map load, INVARIANT if over the limit. A map over 65535 needs DOD-SP's vbsp AND client.dll (a stock client draws
   the wrong leaves' props). Lump version unchanged (4): VRAD needed no change.
+  FIRST TEST 2026-11-19 (build 44642676300, gm_countrysidedrive_d, a ~32K-unit map): client loaded exactly 524288 = the
+  map wanted MORE, and stock-style overflow fills faces in order -> the last faces get none (bare patches). VBSP now
+  thins EVENLY: the surface pass runs again with every density x (budget / wanted) (placement is seeded per face, so
+  it's the same pattern, sparser); hand-placed detail_prop/prop_detail_sprite are kept first and never thinned. Line:
+  `DOD-SP detail props: N placed (H hand-placed; the surfaces wanted W; limit ..)`. Density is props per million
+  square units (VBSP: area x density x 1e-6), so a huge map x a dense detail.vbsp = millions. Raising the limit
+  further costs ~52 bytes/prop in the .bsp, ~55 in client memory (32-bit process) and VRAD time (detail prop lighting
+  runs on ONE thread, ComputeDetailPropLighting).
 - Hammer expert compile: every `-option` goes BEFORE `$path\$file` in a tool's parameters. An
   option after the map name is read as the map name, the tool prints usage and the compile fails.
 - The engine writes no crash logs. Ours (c_dodsp_crashlog.cpp) writes `DOD-SP\dodsp_crash.txt` and
@@ -470,6 +478,15 @@ If you learn something like this, add it here in the same commit as the fix.
   after activation and cached per map + node count + LINK count; INVARIANT when nodes exist but no links. The
   converted tread materials name proxy "COD2TreadScroll": registered as a second name of DoDSPTrackScroll. Wheel
   spinner skips bones below 4 units (CoD's ground tags). The owner's shader DLL was build 5a vs client 5a2.
+- **V1b TEST 2026-11-19 (build 44642676300, gm_countrysidedrive_d, forest roads, 672 nodes): WORKS** - `panzer2 (128 units
+  wide) can drive 1676 of 1678 node links`, graded in 0.09 s; drove and arrived twice ("moves pretty well"). Fault: a
+  long straightened leg stopped with `wall ahead (worldspawn)` + stuck/world on terrain the route was graded clear on.
+  V1c: ONE rule for drivable ground, `VehicleDrivable(normal z >= VEHICLE_MIN_GROUND_NZ 0.6)`, used by CorridorClear AND
+  the drive sweep: a sweep hit on drivable ground is climbed, not a wall (and the sweep looks again 48 units higher, so
+  a wall behind the slope is still found). Guard: when the sweep stops it for a wall where CorridorClear says the next
+  stretch is clear, `INVARIANT ... the sweep found a wall (...) where CorridorClear says it can drive` with the hit's
+  normal/height/position. Known gap: CorridorClear samples GROUND on the centre line only (the sides are checked by
+  lines at 24/64 units up), so a steep bump under one track is found only by the sweep - the INVARIANT shows it.
 - CoD1 set (owner's vehicles_part2.zip, 2026-11-19): REFERENCE ONLY except the **SU-152, which we keep**. One model per
   vehicle, turret/gun as BONES (tag_turret, tag_barrel, tag_flash = muzzle, tag_coaxel), faces +X (forward_yaw 0),
   CoD's rider tags tag_guy01..06 (Sherman, Elefant, SU-152: 6; Opel truck driver/passenger + 4), NO .phy (needs a

@@ -458,6 +458,11 @@ static bool IsModelValid( const char* pModelName )
 // Add a detail to the lump.
 //-----------------------------------------------------------------------------
 static int s_nDetailOverflow = 0;
+// DOD-SP: how many props this pass may place (the limit minus the hand-placed ones), and the density
+// scale for the map's surfaces. A map that wants more than the limit is THINNED EVENLY (every surface at
+// the same lower density) instead of filling the first faces and leaving the rest bare.
+static int s_nDoDSPDetailBudget = DODSP_MAX_DETAIL_PROPS;
+static float s_flDoDSPDensityScale = 1.0f;
 static void AddDetailToLump( const char* pModelName, const Vector& pt, const QAngle& angles, int nOrientation )
 {
 	Assert( pt.IsValid() && angles.IsValid() );
@@ -467,7 +472,7 @@ static void AddDetailToLump( const char* pModelName, const Vector& pt, const QAn
 		return;
 
 	// DOD-SP: the limit has one owner (dodsp_detailprops.h; stock was 65535)
-	if (s_DetailObjectLump.Count() >= DODSP_MAX_DETAIL_PROPS)
+	if (s_DetailObjectLump.Count() >= s_nDoDSPDetailBudget)
 	{
 		++s_nDetailOverflow;
 		return;
@@ -501,7 +506,7 @@ static void AddDetailSpriteToLump( const Vector &vecOrigin, const QAngle &vecAng
 {
 	// DOD-SP: same limit and same handling as detail models (stock: a fatal Error at 65535 for sprites but
 	// a warning for models). Over the limit the rest are skipped and EmitDetailObjects says how many.
-	if (s_DetailObjectLump.Count() >= DODSP_MAX_DETAIL_PROPS)
+	if (s_DetailObjectLump.Count() >= s_nDoDSPDetailBudget)
 	{
 		++s_nDetailOverflow;
 		return;
@@ -665,7 +670,7 @@ static void EmitDetailObjectsOnFace( dface_t* pFace, DetailObject_t& detail )
 		float area = 0.5f * normalLength;
 
 		// Compute the number of samples to take
-		int numSamples = area * detail.m_Density * 0.000001;
+		int numSamples = area * detail.m_Density * 0.000001 * s_flDoDSPDensityScale;	// DOD-SP: thinned evenly over the limit
 
 		// Now take a sample, and randomly place an object there
 		for (int i = 0; i < numSamples; ++i )
@@ -751,7 +756,7 @@ static void EmitDetailObjectsOnDisplacementFace( dface_t* pFace,
 	float area = ComputeDisplacementFaceArea( pFace );
 
 	// Compute the number of samples to take
-	int numSamples = area * detail.m_Density * 0.000001;
+	int numSamples = area * detail.m_Density * 0.000001 * s_flDoDSPDensityScale;	// DOD-SP: thinned evenly over the limit
 
 	// Now take a sample, and randomly place an object there
 	for (int i = 0; i < numSamples; ++i )
@@ -902,6 +907,27 @@ void EmitDetailModels()
 		}
 	}
 
+	EndPacifier( true );
+}
+
+//-----------------------------------------------------------------------------
+// DOD-SP: the hand-placed detail props (detail_prop / prop_detail / prop_detail_sprite), split from the
+// surface pass so the surface pass can run again thinner. Never thinned. Strips the entities.
+//-----------------------------------------------------------------------------
+static int CountHandPlacedDetails()
+{
+	int n = 0;
+	for (int i = 0; i < num_entities; ++i)
+	{
+		char* pEntity = ValueForKey(&entities[i], "classname");
+		if (!strcmp(pEntity, "detail_prop") || !strcmp(pEntity, "prop_detail") || !strcmp(pEntity, "prop_detail_sprite"))
+			++n;
+	}
+	return n;
+}
+
+static void EmitHandPlacedDetails()
+{
 	// Emit specifically specified detail props
 	Vector origin;
 	QAngle angles;
@@ -949,8 +975,6 @@ void EmitDetailModels()
 			continue;
 		}
 	}
-
-	EndPacifier( true );
 }
 
 
@@ -959,14 +983,37 @@ void EmitDetailModels()
 //-----------------------------------------------------------------------------
 void EmitDetailObjects()
 {
+	// DOD-SP: the limit (dodsp_detailprops.h) is shared by the map's surfaces and the hand-placed props;
+	// the hand-placed ones are kept first. Surfaces that want more than the rest are thinned EVENLY: the
+	// pass runs again with every density scaled down (placement is seeded per face, so the second pass is
+	// the same pattern, sparser). INVARIANT: no surface is left bare because others came first.
+	int nHand = CountHandPlacedDetails();
+	s_nDoDSPDetailBudget = MAX( DODSP_MAX_DETAIL_PROPS - nHand, 0 );
+	s_flDoDSPDensityScale = 1.0f;
 	EmitDetailModels();
+	int nWanted = s_DetailObjectLump.Count() + s_nDetailOverflow;
+	if ( s_nDetailOverflow != 0 )
+	{
+		// a little under the budget: numSamples rounds per triangle
+		s_flDoDSPDensityScale = 0.98f * (float)s_nDoDSPDetailBudget / (float)nWanted;
+		Msg( "DOD-SP detail props: the map's surfaces want %d, more than the limit - every density x %.3f\n", nWanted, s_flDoDSPDensityScale );
+		s_DetailObjectLump.RemoveAll();
+		s_nDetailOverflow = 0;
+		EmitDetailModels();
+		if ( s_nDetailOverflow != 0 )
+			Warning( "INVARIANT DOD-SP detail props: still %d over the limit after thinning (surfaces cut off)\n", s_nDetailOverflow );
+		s_nDetailOverflow = 0;
+	}
+	s_nDoDSPDetailBudget = DODSP_MAX_DETAIL_PROPS;
+	EmitHandPlacedDetails();
 
 	// Done! Now lets add the lumps (destroy previous ones)
 	SetLumpData( );
 
 	// DOD-SP: one line with the count, so the mapper sees how close to the limit the map is
-	Msg( "DOD-SP detail props: %d placed (limit %d, stock %d)%s\n", s_DetailObjectLump.Count(), DODSP_MAX_DETAIL_PROPS,
-		DODSP_STOCK_DETAIL_PROPS, s_DetailObjectLump.Count() > DODSP_STOCK_DETAIL_PROPS ? " - needs DOD-SP's client.dll to draw" : "" );
+	Msg( "DOD-SP detail props: %d placed (%d hand-placed; the surfaces wanted %d; limit %d, stock %d)%s\n", s_DetailObjectLump.Count(), nHand,
+		nWanted, DODSP_MAX_DETAIL_PROPS, DODSP_STOCK_DETAIL_PROPS,
+		s_DetailObjectLump.Count() > DODSP_STOCK_DETAIL_PROPS ? " - needs DOD-SP's client.dll to draw" : "" );
 	if ( s_nDetailOverflow != 0 )
 	{
 		Warning( "Error! Too many detail props on this map. %d were not emitted (limit %d)!\n", s_nDetailOverflow, DODSP_MAX_DETAIL_PROPS );
