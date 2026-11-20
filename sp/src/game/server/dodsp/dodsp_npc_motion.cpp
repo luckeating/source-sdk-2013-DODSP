@@ -29,6 +29,15 @@
 // V3c jumped 13 units at the start, and stepped think-set pose parameters 4.7 degrees at a time).
 // The hook: CBaseEntity::UseStepSimulationNetworkOrigin / ...Angles ask DoDSP_NetworkOrigin / DoDSP_NetworkAngles
 // first (baseentity.h/.cpp, lint check_npc_motion keeps them there).
+//
+// V3f - INVARIANT: while a motion is active its owner is simulated EVERY tick. The engine runs PhysicsSimulate for a
+// MOVETYPE_NONE entity only on ticks one of its thinks is due (WillSimulateGamePhysics is false for NONE ->
+// EFL_NO_GAME_PHYSICS_SIMULATION -> entitylist.cpp CSimThinkManager lists him for his next think tick only). So the
+// "every tick" moves of V3b, V3c and V3e all really ran at the soldier's thinks, 0.1-0.2 s apart, while the client -
+// told he is "simulated every tick" - drew his position with a one-tick window: it held him, then snapped (owner's
+// video 2026-11-20: standing at the deck edge ~0.4 s, then on the ground in one frame). motion_sim.py's 'shipped' clock
+// reproduces it (20-37 units). KeepSimulating schedules an empty think context (DODSP_MOTION_THINK) for the next tick
+// for as long as the motion is active (the move, and the delay draining after it); a skipped tick prints an INVARIANT.
 //=============================================================================
 #include "cbase.h"
 #include "baseanimating.h"
@@ -38,12 +47,22 @@
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
+#define DODSP_MOTION_THINK	"DoDSPMotionTick"
+
+// V3f: a think due next tick = the engine simulates him next tick (MOVETYPE_NONE alone would wait for his AI think)
+static void KeepSimulating( CBaseAnimating *pOwner )
+{
+	pOwner->SetContextThink( &CBaseEntity::SUB_DoNothing, gpGlobals->curtime + TICK_INTERVAL, DODSP_MOTION_THINK );
+}
+
 void CDoDSPNpcMotion::Reset( void )
 {
 	m_nCount = m_nHead = 0;
 	m_bActive = m_bMoving = false;
 	m_nEndTick = 0;
 	m_nLastParentedTick = -1000;
+	m_nLastSimTick = -1;
+	m_bGapWarned = false;
 	m_vecNet.Init();
 	m_angNet.Init();
 	m_pszWhat = "";
@@ -141,6 +160,9 @@ void CDoDSPNpcMotion::Begin( CBaseAnimating *pOwner, const char *pszWhat )
 		m_nCount = m_nHead = 0;
 	m_bActive = m_bMoving = true;
 	m_pszWhat = pszWhat ? pszWhat : "";
+	m_nLastSimTick = gpGlobals->tickcount;
+	m_bGapWarned = false;
+	KeepSimulating( pOwner );
 	pOwner->StudioFrameAdvance();		// stamp: the motion's sequence (set next by the caller) runs from now
 	Add( pOwner );
 	Update( pOwner );
@@ -201,6 +223,16 @@ void CDoDSPNpcMotion::PostSimulate( CBaseAnimating *pOwner )
 		m_bActive = m_bMoving = false;
 		return;
 	}
+	// V3f watchdog: every tick of the motion is simulated (KeepSimulating); a gap = steps on screen
+	int nGap = gpGlobals->tickcount - m_nLastSimTick;
+	if ( nGap > 1 && !m_bGapWarned )
+	{
+		m_bGapWarned = true;
+		Warning( "INVARIANT DOD-SP NPC motion: %s %d (%s) was simulated %d ticks apart - the engine skipped him (a MOVETYPE_NONE "
+				 "entity is simulated only when a think is due), so his position reaches the screen in steps\n",
+				 pOwner->GetClassname(), pOwner->entindex(), m_pszWhat, nGap );
+	}
+	m_nLastSimTick = gpGlobals->tickcount;
 	int nSinceEnd = gpGlobals->tickcount - m_nEndTick, nDelay = DelayTicks();
 	// hand back to the engine's glide on a think once the delay has drained: the glide then starts from the very
 	// spot this line shows (both read the last two think positions), so nothing jumps
@@ -210,4 +242,5 @@ void CDoDSPNpcMotion::PostSimulate( CBaseAnimating *pOwner )
 		return;
 	}
 	Update( pOwner );
+	KeepSimulating( pOwner );
 }

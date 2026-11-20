@@ -531,7 +531,9 @@ def check_npc_motion():
       - the soldier's PhysicsSimulate moves/animates him only through ScriptedMoveTick -> m_Motion.Move;
       - every class that owns a CDoDSPNpcMotion overrides DoDSP_NetworkOrigin AND DoDSP_NetworkAngles and calls
         PostSimulate (else the delay line is never networked or never drains);
-      - CBaseEntity's two networked-origin/angle functions still ask the hook first (a Mapbase merge must not drop it).
+      - CBaseEntity's two networked-origin/angle functions still ask the hook first (a Mapbase merge must not drop it);
+      - V3f: Begin and PostSimulate keep a think due next tick (KeepSimulating) - a MOVETYPE_NONE entity is otherwise
+        simulated only when its AI thinks (0.1-0.2 s), and every 'per-tick' move of V3b/V3c/V3e ran at thinks.
     motion_sim.py (dodsp_tools) is the preview check for any new code-driven animation."""
     bad = []
     srv = os.path.join(ROOT, "game", "server")
@@ -567,6 +569,15 @@ def check_npc_motion():
         mm = re.search(r"bool CBaseEntity::%s\([^)]*\)\s*\{(.*?)\n\}" % fn_name, be, re.S)
         if not mm or hook not in mm.group(1):
             bad.append("baseentity.cpp: CBaseEntity::%s no longer asks %s first" % (fn_name, hook))
+    mo = open(os.path.join(srv, "dodsp", "dodsp_npc_motion.cpp"), encoding="utf-8", errors="replace").read()
+    for fn_name in ("Begin", "PostSimulate"):
+        mm = re.search(r"void CDoDSPNpcMotion::%s\([^)]*\)\s*\{(.*?)\n\}" % fn_name, mo, re.S)
+        if not mm or "KeepSimulating( pOwner )" not in mm.group(1):
+            bad.append("dodsp_npc_motion.cpp: CDoDSPNpcMotion::%s doesn't KeepSimulating - the engine would simulate a "
+                       "MOVETYPE_NONE soldier only at his thinks and his moves would reach the screen in steps" % fn_name)
+    km = re.search(r"static void KeepSimulating\([^)]*\)\s*\{(.*?)\n\}", mo, re.S)
+    if not km or not re.search(r"SetContextThink\(.*gpGlobals->curtime \+ TICK_INTERVAL", km.group(1)):
+        bad.append("dodsp_npc_motion.cpp: KeepSimulating no longer schedules a think for the next tick")
     beh = open(os.path.join(srv, "baseentity.h"), encoding="utf-8", errors="replace").read()
     for hook in ("DoDSP_NetworkOrigin", "DoDSP_NetworkAngles"):
         if not re.search(r"virtual\s+const\s+\w+\s*\*\s*%s" % hook, beh):

@@ -145,6 +145,10 @@ If you learn something like this, add it here in the same commit as the fix.
 - A name table for an enum (`s_pszNames[]` next to `enum Invariant_t`) gets `COMPILE_TIME_ASSERT( ARRAYSIZE( names )
   == NUM_... )`: the soldier's INVARIANT names were two short, so INV_PINNED_STUCK / INV_MG_MOVING printed whatever
   memory followed (found 2026-11-18, C1).
+- **A MOVETYPE_NONE entity is NOT simulated every tick.** `WillSimulateGamePhysics` is false for NONE/VPHYSICS, so the
+  engine lists it (entitylist.cpp CSimThinkManager) only for the tick its next think is due: its PhysicsSimulate runs at
+  its thinks (an NPC: every 0.1-0.2 s). Code that must run every tick on such an entity keeps a think context due next
+  tick (dodsp_npc_motion.cpp KeepSimulating). This one fact defeated three rider fixes (V3b, V3c, V3e - all "per tick").
 - `ISoundEmitterSystemBase::GetWaveName` takes a NON-const `CUtlSymbol&`: copy `SoundFile::symbol` into a local first (C2664, 44667501038).
 - `IMaterialSystemHardwareConfig` has no GetShadowSlopeScaleDepthBias/GetShadowDepthBias in this SDK (only in env_projectedtexture's
   dead non-ASW branch): read Mapbase's `mat_slopescaledepthbias_shadowmap` / `mat_depthbias_shadowmap` (C2039, 44341665956).
@@ -854,7 +858,20 @@ If you learn something like this, add it here in the same commit as the fix.
   motion_sim.py (clock 'delay') before a build. Known: a sequence switch inside a move shows the new sequence ~0.1 s
   early on every Source NPC (m_nSequence isn't interpolated; the 0.2 s blend covers it) - switch at slow moments.
   Leaving a MOVING parent mid-move would pop (the client resets interpolation on a parent change): today every
-  vehicle halts before anyone gets off. Undo: V3d's server.dll + revert this commit (V3c's tick clock comes back). (2) Landing on raised
+  vehicle halts before anyone gets off. Undo: V3d's server.dll + revert this commit (V3c's tick clock comes back).
+  V3e TESTED 2026-11-20 (build 44834598013): "still stuttering". The owner's video (30 fps, Tiger, two get-outs): the man
+  stands at the deck edge ~0.4 s, pose playing, then is on the ground in ONE frame. Real cause, found in the engine
+  code: the get-out runs as MOVETYPE_NONE, and the engine simulates a NONE entity only on ticks a think is due - so
+  every "per-tick" move (V3b origin, V3c tick clock, V3e delay line) ran at the soldier's AI thinks, while the client
+  (told he's "simulated every tick") drew his position with a one-tick window: hold, then snap. motion_sim.py assumed
+  per-tick simulation, so it passed all three. V3f: CDoDSPNpcMotion keeps an empty think context due NEXT tick while a
+  motion is active (KeepSimulating, Begin + PostSimulate) - the V3e delay design then runs as designed; INVARIANT when
+  two simulated ticks of a motion are more than one apart; lint (check_npc_motion) fails if Begin/PostSimulate stop
+  keeping him simulated (tested by removing it). motion_sim.py: clock 'shipped' = V3e as built (code at thinks only,
+  the client only has samples that have ARRIVED): 20-37 units, the video's failure; 'delay' (V3f) 0.5-1.4.
+  LESSONS: (1) a simulator only proves what its assumptions say - list them and check each against the engine code
+  ("per tick" was never checked); (2) after a second failed fix, get footage first (the video settled it in one look:
+  position, not pose). (2) Landing on raised
   ground they "get stuck in the ground": the ground trace started 72 units above where the ANIMATION lands, i.e.
   inside any bank higher than that. V3b: the trace starts above the seat, and on landing his whole hull is dropped
   from 48 units up onto what's there (INVARIANT once per map if it can't fit).

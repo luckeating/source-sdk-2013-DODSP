@@ -10,7 +10,9 @@ Copies Source 2013 SP as the engine code does it (one owner each, re-read the en
     (cycle, pose parameters) when "animated every tick", otherwise cl_interp 0.1 rounded up to ticks + 1 tick.
     Each var is drawn by linear interpolation between the two samples around that time; a sample's time is the
     simulation time (origin) or the anim time (animation vars) it arrived with.
-  - MOVETYPE_NONE (what our scripted moves use): simulated every tick, NOT animated every tick.
+  - MOVETYPE_NONE (what our scripted moves use): FLAGGED "simulated every tick" (the client's 1-tick origin window),
+    NOT animated every tick - but the SERVER runs its PhysicsSimulate only on ticks a think is due (V3f, see 'shipped').
+  - the client only has the samples that have ARRIVED (time <= the frame being drawn); past the newest it holds it.
   - MOVETYPE_STEP walking (sv_teststepsimulation 1, baseentity.cpp ComputeStepSimulationNetwork): the AI moves him
     at its think; the networked origin then glides from the last think's spot to this think's spot over the next
     think interval - Valve's way of putting position and pose on the same delay.
@@ -19,6 +21,8 @@ Clocks compared (the question: can position and pose disagree on screen?):
   tick   = V3c: animated every tick, the frame advanced every tick (both drawn one tick late)
   think  = origin set every tick but NOT simulated every tick: both drawn ~0.12 s late on one window
   step   = the engine's walking way: origin moved at thinks only and glided (root motion played by AutoMovement)
+  shipped= V3e AS BUILT: 'delay', but the code ran only at the soldier's thinks - a MOVETYPE_NONE entity is left out of
+           the engine's per-tick list (EFL_NO_GAME_PHYSICS_SIMULATION) and simulated only when a think is due
   delay  = THE BASE DESIGN (V3e, dodsp_npc_motion.cpp): origin set every tick, the NETWORKED origin = the real one one
            think ago (like the walking glide), animation clock stamped at start / sequence switch / end
 Also: the walk -> move -> walk hand-off at a run (a clock that disagrees with walking jumps there) and a pose
@@ -73,8 +77,11 @@ class Case:
     def truth(self, t):
         a, f = self.pose(t); return a.at(f) + self.origin(t)
 
-def interp(samples, t):
-    """samples: [(time, value)], sorted; linear between the two around t, held outside"""
+def interp(samples, t, now=None):
+    """samples: [(time, value)], sorted; linear between the two around t, held outside. now = the client's clock: only
+    the samples that have arrived by then count"""
+    if now is not None:
+        samples = samples[:max(1, int(np.searchsorted([s[0] for s in samples], now + 1e-9, 'right')))]
     ts = [s[0] for s in samples]
     k = np.searchsorted(ts, t)
     if k <= 0: return samples[0][1]
@@ -104,6 +111,14 @@ def run(case, clock, phase=0):
             # it ends (StudioFrameAdvance there, so the client's samples sit on those corners) - stock never did
             sync = clock == 'think' and any(abs(t - s0) < TICK / 2 for s0 in [seg[1] for seg in case.segments] + [case.dur])
             if think(k) or sync: anim.append((t, (a, f)))
+        elif clock == 'shipped':
+            # V3e as built: the soldier is MOVETYPE_NONE, so the engine simulates him (PhysicsSimulate: the move, the
+            # delay line, the network update) only on ticks his think is due; the client's origin window stays 1 tick
+            if think(k) or not real:
+                real.append((t, case.origin(tt)))
+                org.append((t, interp(real, t - THINK_TICKS * TICK)))
+            sync = any(abs(t - s0) < TICK / 2 for s0 in [seg[1] for seg in case.segments] + [case.dur])
+            if think(k) or sync: anim.append((t, (a, f)))
         elif clock == 'delay':
             # the base design: the NETWORKED origin = the real one one think ago (what the engine's walking glide does),
             # read from real positions sampled every tick during the move and at thinks otherwise; pose as 'think'
@@ -122,13 +137,13 @@ def run(case, clock, phase=0):
                 if prev_think_org is None: o = last_think_org
                 else: o = prev_think_org + (last_think_org - prev_think_org) * min((k - prev_think_tick) / THINK_TICKS, 1.0)
                 org.append((t, o))
-    wo = FAST_WIN if clock in ('stock', 'tick', 'step', 'delay') else SLOW_WIN
+    wo = FAST_WIN if clock in ('stock', 'tick', 'step', 'delay', 'shipped') else SLOW_WIN
     wa = FAST_WIN if clock == 'tick' else SLOW_WIN
-    lat = {'stock': None, 'tick': FAST_WIN, 'think': SLOW_WIN, 'step': SLOW_WIN, 'delay': THINK_TICKS * TICK + FAST_WIN}[clock]
+    lat = {'stock': None, 'tick': FAST_WIN, 'think': SLOW_WIN, 'step': SLOW_WIN, 'delay': THINK_TICKS * TICK + FAST_WIN, 'shipped': None}[clock]
     frames = np.arange(0.0, case.dur + 0.3, RENDER_DT)
     drawn = []
     for r in frames:
-        o = interp(org, r - wo); a, f = interp(anim, r - wa)
+        o = interp(org, r - wo, r); a, f = interp(anim, r - wa, r)
         drawn.append(a.at(f) + o)
     drawn = np.array(drawn)
     # the true motion delayed by the clock's own constant latency (stock has none that fits: try the best one)
@@ -253,8 +268,9 @@ if __name__ == '__main__':
     cases.append(para_case(S))
     if only: cases = [c for c in cases if any(o in c.name for o in only)]
     print('worst bone error vs the true motion (units; 95th percentile in brackets) / feet drawn under the floor')
-    CLOCKS = ('stock', 'tick', 'think', 'step', 'delay')
-    print('%-56s %-21s %-21s %-21s %-21s %-21s' % ('case', 'stock (V3b)', 'tick (V3c)', 'think (synced)', 'step (engine walk)', 'delay (base design)'))
+    CLOCKS = ('stock', 'tick', 'think', 'step', 'shipped', 'delay')
+    print('%-56s %-21s %-21s %-21s %-21s %-21s %-21s' % ('case', 'stock (V3b)', 'tick (V3c)', 'think (synced)', 'step (engine walk)',
+                                                          'shipped (V3e built)', 'delay (V3f)'))
     for c in cases:
         row = []
         for clock in CLOCKS:
@@ -263,7 +279,7 @@ if __name__ == '__main__':
                 r = run(c, clock, ph)
                 if worst is None or r['err'] > worst['err']: worst = r
             row.append('%5.1f (%4.1f) / %4.1f' % (worst['err'], worst['err95'], worst['under']))
-        print('%-56s %-21s %-21s %-21s %-21s %-21s' % (c.name[:56], *row))
+        print('%-56s %-21s %-21s %-21s %-21s %-21s %-21s' % (c.name[:56], *row))
     for clock, (med, hi, lo) in handoff_test().items():
         print('hand-off walk -> move -> walk, running 200 u/s: %-5s clock drawn step per frame %.2f normally, %.1f largest, %.1f smallest'
               % (clock, med, hi, lo))

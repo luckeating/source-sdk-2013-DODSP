@@ -23,7 +23,8 @@ public:
 	void			SwitchSequence( CBaseAnimating *pOwner );
 	// the motion is over (he's back on his own movement): the delay drains, then the engine's glide takes over
 	void			End( CBaseAnimating *pOwner );
-	// every tick from the owner's PhysicsSimulate, AFTER the base class ran (a think may have moved him)
+	// every tick from the owner's PhysicsSimulate, AFTER the base class ran (a think may have moved him); while the
+	// motion is active it keeps a think due next tick, so the engine really does simulate him every tick (V3f)
 	void			PostSimulate( CBaseAnimating *pOwner );
 	// the hooks CBaseEntity's origin/angle send proxies call (DoDSP_NetworkOrigin / DoDSP_NetworkAngles)
 	const Vector	*NetworkOrigin( void ) const { return m_bActive ? &m_vecNet : NULL; }
@@ -43,6 +44,8 @@ private:
 	bool			m_bActive, m_bMoving;
 	int				m_nEndTick;
 	int				m_nLastParentedTick;
+	int				m_nLastSimTick;			// V3f: the last tick it was simulated (the watchdog: no tick may be skipped)
+	bool			m_bGapWarned;
 	Vector			m_vecNet;
 	QAngle			m_angNet;
 	const char		*m_pszWhat;
