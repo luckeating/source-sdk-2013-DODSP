@@ -291,6 +291,18 @@ def check_vehicle_types():
                     bad.append("%s: crew role '%s'" % (name, r))
             if "turret_model" in t and "turret_front" not in a:
                 bad.append("%s: has a turret but no turret_front armour" % name)
+            # V4e: every crew role gets out through a measured hatch ("turret x y z" / "hull x y z")
+            hatches = t.get("hatches")
+            h = dict(hatches) if isinstance(hatches, list) else {}
+            for r in a.get("crew", "").split():
+                if r not in h:
+                    bad.append("%s: crew role '%s' has no \"hatches\" entry (he'd get out beside the tank)" % (name, r))
+            for r, v in h.items():
+                parts = v.split()
+                if r not in roles or len(parts) != 4 or parts[0] not in ("turret", "hull"):
+                    bad.append("%s: hatch '%s' is '%s' - want a crew role and \"turret x y z\" / \"hull x y z\"" % (name, r, v))
+                elif parts[0] == "turret" and "turret_model" not in t:
+                    bad.append("%s: hatch '%s' is on a turret it hasn't got" % (name, r))
         gun = t.get("gun")
         if isinstance(gun, list):
             g = dict(gun)

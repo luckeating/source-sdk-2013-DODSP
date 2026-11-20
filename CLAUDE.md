@@ -680,6 +680,22 @@ If you learn something like this, add it here in the same commit as the fix.
   data showed the rule, not a bug. V4d: CheckMorale also bails out when a penetration leaves it immobile
   (VBAIL_IMMOBILE_HIT) or the structure at <= 30% (VBAIL_WRECKED_INSIDE). Out of the fight = CLASS_NONE, so the attacker
   stops shooting and the crew gets out before it burns.
+  V4d RUN 2026-11-20 (after the owner compiled npc_ww2_anims_cod1, NOT npc_ww2_anims - the INVARIANT named it): crews
+  bail with the animations, but "goofy": they climbed out in place ON TOP of the turret and hopped down "jitter-like".
+  Causes: (1) HatchFor put the hatch at the turret's HULL BOX top - that box includes the barrel at full elevation
+  (Tiger: 79 units over the turret origin, the real roof is 11; Panzer II 13 vs 6; Sherman 34 vs 5), so the climb's
+  first frames (legs 23 units below the hatch, meant to be inside) showed in mid-air; (2) the jump moved him with
+  SetAbsOrigin once per AI think (10 steps a second) and added its own hop on top of the animation's.
+  V4e: hatches are DATA, measured from the meshes (top-down height maps of the .vvd/.vtx triangles: cupolas, hatch
+  rings, hull hatches in front of the turret, the rim of open compartments): type key `hatches` { role "turret x y z" |
+  "hull x y z" }. Roles at one point share the hatch; the next man waits VEHICLE_HATCH_BUSY (1.9 s) and a man with his
+  own hatch goes first. He lands straight out from his hatch, just clear of the hull. Soldier: BailPosition is the ONE
+  owner of where a bailing crewman is, set every TICK in PhysicsSimulate; the jump follows c1_tank_jump_off's own
+  frames (measured from its SMD: feet on the deck to frame 12, airborne 13..24, down at 25; made in place, pelvis
+  +22): outward from frame 10 (fast first, clears the hull side), down 13..25 (a fall). Guards: lint check_vehicle_types
+  (every crew role has a valid hatch; tested with a broken entry), loader INVARIANT for a role without one, soldier
+  INVARIANT if c1_tank_jump_off isn't 40 frames (the timing would be off), vehicle INVARIANT if crew are pending with
+  no seat marked. LESSON: a model's hull box is not its shape - measure surfaces from the mesh.
 - CoD1 set (owner's vehicles_part2.zip, 2026-11-19): REFERENCE ONLY except the **SU-152, which we keep**. One model per
   vehicle, turret/gun as BONES (tag_turret, tag_barrel, tag_flash = muzzle, tag_coaxel), faces +X (forward_yaw 0),
   CoD's rider tags tag_guy01..06 (Sherman, Elefant, SU-152: 6; Opel truck driver/passenger + 4), NO .phy (needs a

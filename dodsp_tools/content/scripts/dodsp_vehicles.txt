@@ -38,6 +38,11 @@
 //                    engine hit sets it burning (Sherman dry stowage: 60-80% of penetrated tanks burned - real).
 //                    engine rear / front / middle.
 //   dead_model       the wreck (its own paint, so every variant names its own)
+//   hatches          V4e: where each crew role gets out when they bail: "turret x y z" (turret model space - it turns
+//                    with the turret) or "hull x y z" (hull model space), the roof his feet end up on. MEASURED from the
+//                    meshes (2026-11-20, top-down height maps): turret cupolas / hatch rings, hull hatches in front of
+//                    the turret, rim height for open compartments. Roles at the same point share the hatch and come
+//                    out one after the other. A crew role without one gets out beside the vehicle (the load warns).
 //   1 m = 40 units (a 72-unit player ~ 1.8 m). "est." below = not found in a source, an estimate - correct freely.
 //   coax             machine gun beside the main gun, fires bursts at infantry: damage per bullet, rate (shots/s),
 //                    burst / pause (seconds), range, spread (degrees), sound (DoD:S's own MG sounds)
@@ -89,6 +94,12 @@
 			"ammo_fire"		"0.25"	"fuel_fire"		"0.3"	"engine"	"rear"		// fire chances est.
 		}
 		"dead_model"		"models/cod2/vehicles/panzer2_dead.mdl"
+		"hatches"
+		{
+			"commander"		"turret -15.6 -7.5 6"
+			"loader"			"hull 65 -21 71"
+			"driver"			"hull 65 21 71"
+		}
 		"sounds"	{ "engine_idle" "DoDSP_Vehicle.Engine1Idle"	"engine_move" "DoDSP_Vehicle.Engine1Move"	"turret_turn" "DoDSP_Vehicle.TurretTurn"
 					  "turret_stop" "DoDSP_Vehicle.TurretStop"	"reload" "DoDSP_Vehicle.Reload"	"explode" "DoDSP_Vehicle.ShellExplode" }
 		"seats"
@@ -141,6 +152,14 @@
 			"ammo_fire"		"0.45"	"fuel_fire"		"0.3"	"engine"	"rear"		// ammunition above the tracks; chances est.
 		}
 		"dead_model"		"models/cod2/vehicles/tiger_dead.mdl"
+		"hatches"
+		{
+			"commander"		"turret -13.5 14.3 11"
+			"gunner"			"turret -13.5 14.3 11"
+			"loader"			"turret -13.5 -14.3 0"
+			"driver"			"hull 85 28 76"
+			"radio"			"hull 85 -28 76"
+		}
 		"sounds"	{ "engine_idle" "DoDSP_Vehicle.Engine3Idle"	"engine_move" "DoDSP_Vehicle.Engine3Move"	"turret_turn" "DoDSP_Vehicle.TurretTurn"
 					  "turret_stop" "DoDSP_Vehicle.TurretStop"	"reload" "DoDSP_Vehicle.Reload"	"explode" "DoDSP_Vehicle.ShellExplode" }
 		"seats"
@@ -193,6 +212,14 @@
 			"ammo_fire"		"0.7"	"fuel_fire"		"0.2"	"engine"	"rear"
 		}
 		"dead_model"		"models/cod2/vehicles/sherman_dead.mdl"
+		"hatches"
+		{
+			"commander"		"turret -12 -18.1 5"
+			"gunner"			"turret -12 -18.1 5"
+			"loader"			"turret -12 18.1 0"
+			"driver"			"hull 60 21 80.5"
+			"radio"			"hull 60 -21 80.5"
+		}
 		"sounds"	{ "engine_idle" "DoDSP_Vehicle.Engine2Idle"	"engine_move" "DoDSP_Vehicle.Engine2Move"	"turret_turn" "DoDSP_Vehicle.TurretTurn"
 					  "turret_stop" "DoDSP_Vehicle.TurretStop"	"reload" "DoDSP_Vehicle.Reload"	"explode" "DoDSP_Vehicle.ShellExplode" }
 		"seats"
@@ -245,6 +272,12 @@
 			"ammo_fire"		"0.6"	"fuel_fire"		"0.3"	"engine"	"rear"
 		}
 		"dead_model"		"models/cod2/vehicles/crusader_dead.mdl"
+		"hatches"
+		{
+			"commander"		"turret -15 12 4"
+			"gunner"			"turret -15 -12 4"
+			"driver"			"hull 75 -25 71"
+		}
 		"sounds"	{ "engine_idle" "DoDSP_Vehicle.Engine2Idle"	"engine_move" "DoDSP_Vehicle.Engine2Move"	"turret_turn" "DoDSP_Vehicle.TurretTurn"
 					  "turret_stop" "DoDSP_Vehicle.TurretStop"	"reload" "DoDSP_Vehicle.Reload"	"explode" "DoDSP_Vehicle.ShellExplode" }
 	}
@@ -284,6 +317,12 @@
 			"ammo_fire"		"0.2"	"fuel_fire"		"0.4"	"engine"	"rear"
 		}
 		"dead_model"		"models/cod2/vehicles/armoredcar_dead.mdl"
+		"hatches"
+		{
+			"commander"		"turret 5 8 28"
+			"gunner"			"turret 5 -8 28"
+			"driver"			"hull 45 12 72"
+		}
 		"sounds"	{ "engine_idle" "DoDSP_Vehicle.TruckIdle"	"engine_move" "DoDSP_Vehicle.TruckMove"	"turret_turn" "DoDSP_Vehicle.TurretTurn"
 					  "turret_stop" "DoDSP_Vehicle.TurretStop"	"reload" "DoDSP_Vehicle.Reload"	"explode" "DoDSP_Vehicle.ShellExplode" }
 	}
@@ -308,6 +347,11 @@
 			"ammo_fire"		"0.1"	"fuel_fire"		"0.35"	"engine"	"front"
 		}
 		"dead_model"		"models/cod2/vehicles/halftrack_dead.mdl"
+		"hatches"
+		{
+			"driver"			"hull -20 15 70"
+			"commander"		"hull -20 -15 70"
+		}
 		"sounds"	{ "engine_idle" "DoDSP_Vehicle.TruckIdle"	"engine_move" "DoDSP_Vehicle.TruckMove" }
 		"seats"
 		{
@@ -360,6 +404,12 @@
 			"ammo_fire"		"0.1"	"fuel_fire"		"0.35"	"engine"	"middle"
 		}
 		"dead_model"		"models/cod2/vehicles/carrier_dead.mdl"
+		"hatches"
+		{
+			"driver"			"hull 40 -15 50"
+			"gunner"			"hull 40 15 50"
+			"commander"		"hull 10 -25 52"
+		}
 		"sounds"	{ "engine_idle" "DoDSP_Vehicle.TruckIdle"	"engine_move" "DoDSP_Vehicle.TruckMove" }
 	}
 }

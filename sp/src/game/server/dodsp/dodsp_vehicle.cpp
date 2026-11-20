@@ -260,6 +260,11 @@ struct VehicleType_t
 	char	szEngineIdle[64], szEngineMove[64], szTurretTurn[64], szTurretStop[64], szReload[64], szExplode[64];
 	struct Seat_t { Vector vecOrigin; float flYaw; };
 	CUtlVector<Seat_t> seats;		// V3
+	// V4e: where each crew role gets out ("hatches": role -> "turret x y z" in the turret model's space, or "hull x y z"
+	// in the hull's) = the roof his feet end up on, measured from the meshes. Roles at the same spot share a hatch
+	// (iShare = the first role there): the next man waits until the one before has left it.
+	struct Hatch_t { bool bHas, bTurret; Vector vecPos; int iShare; };
+	Hatch_t	hatches[NUM_CREW_ROLES];
 };
 static CUtlVector<VehicleType_t *> s_Types;
 static float s_flTypesLoaded = -1.0f;
@@ -394,6 +399,42 @@ static void LoadVehicleTypes( bool bForce )
 		Q_strncpy( t->szTurretStop, pSnd ? pSnd->GetString( "turret_stop" ) : "", sizeof( t->szTurretStop ) );
 		Q_strncpy( t->szReload, pSnd ? pSnd->GetString( "reload" ) : "", sizeof( t->szReload ) );
 		Q_strncpy( t->szExplode, pSnd ? pSnd->GetString( "explode", "DoDSP_Vehicle.ShellExplode" ) : "DoDSP_Vehicle.ShellExplode", sizeof( t->szExplode ) );
+		KeyValues *pHatches = pType->FindKey( "hatches" );
+		for ( int r = 0; r < NUM_CREW_ROLES; r++ )
+		{
+			VehicleType_t::Hatch_t &h = t->hatches[r];
+			h.bHas = h.bTurret = false;
+			h.vecPos.Init();
+			h.iShare = r;
+			const char *psz = pHatches ? pHatches->GetString( g_pszCrewRole[r], NULL ) : NULL;
+			if ( !psz )
+				continue;
+			char szFrame[16] = "";
+			float x, y, z;
+			if ( sscanf( psz, "%15s %f %f %f", szFrame, &x, &y, &z ) != 4 || ( Q_stricmp( szFrame, "turret" ) && Q_stricmp( szFrame, "hull" ) ) )
+			{
+				Warning( "INVARIANT DOD-SP vehicles: type '%s' hatch \"%s\" is '%s' - want \"turret x y z\" or \"hull x y z\"\n", t->szName, g_pszCrewRole[r], psz );
+				continue;
+			}
+			h.bTurret = !Q_stricmp( szFrame, "turret" );
+			if ( h.bTurret && !t->szTurretModel[0] )
+			{
+				Warning( "INVARIANT DOD-SP vehicles: type '%s' hatch \"%s\" is on a turret it hasn't got\n", t->szName, g_pszCrewRole[r] );
+				continue;
+			}
+			h.bHas = true;
+			h.vecPos.Init( x, y, z );
+			for ( int q = 0; q < r; q++ )
+				if ( t->hatches[q].bHas && t->hatches[q].bTurret == h.bTurret && t->hatches[q].vecPos.DistToSqr( h.vecPos ) < 1.0f )
+				{
+					h.iShare = t->hatches[q].iShare;
+					break;
+				}
+		}
+		for ( int i = 0; i < t->armour.nCrew; i++ )
+			if ( !t->hatches[t->armour.eCrew[i]].bHas )
+				Warning( "INVARIANT DOD-SP vehicles: type '%s' has a %s but no \"hatches\" entry for him - he gets out beside it\n",
+						 t->szName, g_pszCrewRole[t->armour.eCrew[i]] );
 		KeyValues *pSeats = pType->FindKey( "seats" );
 		for ( KeyValues *pSeat = pSeats ? pSeats->GetFirstTrueSubKey() : NULL; pSeat; pSeat = pSeat->GetNextTrueSubKey() )
 		{
@@ -844,7 +885,7 @@ private:
 	void			CheckMorale( CBaseEntity *pAttacker );
 	void			BailOut( int eWhy, CBaseEntity *pAttacker );
 	bool			SpawnCrewman( const Vector &vecAwayFrom, int eRole );
-	Vector			HatchFor( int eRole, const Vector &vecSide );
+	bool			HatchFor( int eRole, Vector *pvecHatch );
 	void			KnockOut( bool bCatastrophic, CBaseEntity *pAttacker, const char *pszWhy );
 	void			Wreck( bool bBlowUp, CBaseEntity *pAttacker );
 	void			DamageStateThink( void );
@@ -1007,6 +1048,7 @@ private:
 	Vector			m_vecBailFrom;				// where the attack came from (they get out on the far side)
 	EHANDLE			m_hLastCrewman;				// not saved: the run order for the man who just got out
 	Vector			m_vecLastCrewRun;
+	float			m_flHatchFree[NUM_CREW_ROLES];	// V4e: a shared hatch is in use until then (by VehicleType_t::Hatch_t::iShare)
 	float			m_flCrewRunAt;
 	bool			m_bMovingWarned;
 	COutputEvent	m_OnPenetrated;
@@ -1156,6 +1198,8 @@ CDoDSPVehicle::CDoDSPVehicle()
 	m_nBailPending = 0;
 	m_iBailMask = 0;
 	m_flNextBailAt = m_flIgniteAt = m_flCrewRunAt = 0.0f;
+	for ( int r = 0; r < NUM_CREW_ROLES; r++ )
+		m_flHatchFree[r] = 0.0f;
 	m_vecBailFrom = m_vecLastCrewRun = vec3_origin;
 	m_bMovingWarned = false;
 	s_All.AddToTail( this );
@@ -3482,34 +3526,23 @@ void CDoDSPVehicle::BailOut( int eWhy, CBaseEntity *pAttacker )
 		SetState( VSTATE_ABANDONED, pAttacker );
 }
 
-// Where a crewman's hatch is (the roof his feet end up on): the turret roof for the turret crew, the hull roof at
-// the front for the driver and radio operator (found by a trace onto the hull; open compartments the same way).
-Vector CDoDSPVehicle::HatchFor( int eRole, const Vector &vecSide )
+// V4e: how long a hatch is in use by one crewman: c1_tank_climb_out (41 frames, 1.37 s) + c1_tank_jump_off until he
+// moves off the hatch (frame 10, 0.33 s) + a little. The next man through the same hatch starts after that.
+#define VEHICLE_HATCH_BUSY	1.9f
+
+// Where a crewman gets out: his hatch from the type's "hatches" (V4e: measured from the meshes - V4c guessed the turret
+// roof from its HULL BOX, whose top is the raised barrel's tip: the Tiger's crew climbed out 67 units over the roof).
+// The point is the roof his feet end up on; the climb starts with his legs below it, inside.
+bool CDoDSPVehicle::HatchFor( int eRole, Vector *pvecHatch )
 {
-	CBaseAnimating *pT = dynamic_cast<CBaseAnimating *>( m_hTurret.Get() );
-	CStudioHdr *pTHdr = pT ? pT->GetModelPtr() : NULL;
-	bool bTurretMan = ( eRole == CREW_COMMANDER || eRole == CREW_GUNNER || eRole == CREW_LOADER );
-	if ( bTurretMan && pTHdr )
-	{
-		Vector vecLocal( 0.0f, 0.0f, pTHdr->hull_max().z );
-		float flFwd = DEG2RAD( m_flTurretFwdOffset );
-		float flBack = -0.25f * ( pTHdr->hull_max().x - pTHdr->hull_min().x ) * 0.5f;	// a little behind the turret's middle
-		vecLocal.x = cosf( flFwd ) * flBack;
-		vecLocal.y = sinf( flFwd ) * flBack;
-		Vector vecHatch;
-		VectorTransform( vecLocal, pT->EntityToWorldTransform(), vecHatch );
-		return vecHatch + vecSide * ( eRole == CREW_LOADER ? 10.0f : eRole == CREW_GUNNER ? -10.0f : 0.0f );
-	}
-	Vector vecFwd( cosf( DEG2RAD( m_flHeading ) ), sinf( DEG2RAD( m_flHeading ) ), 0.0f );
-	Vector vecXY = GetAbsOrigin() + vecFwd * ( 0.5f * m_flHalfLength ) + vecSide * ( 0.3f * m_flHalfWidth );
-	Vector vecTop = vecXY + Vector( 0.0f, 0.0f, m_flBodyHeight + 64.0f );
-	trace_t tr;
-	Ray_t ray;
-	ray.Init( vecTop, vecXY );
-	enginetrace->ClipRayToEntity( ray, MASK_SOLID, this, &tr );
-	if ( tr.fraction < 1.0f && !tr.startsolid )
-		return tr.endpos;
-	return vecXY + Vector( 0.0f, 0.0f, m_flBodyHeight * 0.8f );
+	if ( eRole < 0 || eRole >= NUM_CREW_ROLES || !m_pType->hatches[eRole].bHas )
+		return false;
+	const VehicleType_t::Hatch_t &h = m_pType->hatches[eRole];
+	CBaseEntity *pFrame = h.bTurret ? m_hTurret.Get() : this;
+	if ( !pFrame )
+		return false;
+	VectorTransform( h.vecPos, pFrame->EntityToWorldTransform(), *pvecHatch );
+	return true;
 }
 
 bool CDoDSPVehicle::SpawnCrewman( const Vector &vecAwayFrom, int eRole )
@@ -3524,12 +3557,25 @@ bool CDoDSPVehicle::SpawnCrewman( const Vector &vecAwayFrom, int eRole )
 	Vector vecDirs[4] = { vecSide, vecEnd, -vecSide, -vecEnd };
 	float flOut[4] = { m_flHalfWidth, m_flHalfLength, m_flHalfWidth, m_flHalfLength };
 	CTraceFilterSimple filter( this, COLLISION_GROUP_NPC );
+	Vector vecHatch;
+	bool bHatch = HatchFor( eRole, &vecHatch );
 	for ( int d = 0; d < 4; d++ )
 	{
+		// V4e: out of his hatch he jumps straight off the side, landing just clear of the hull (a short leap, not a
+		// spot anywhere along the tank); the ends and a crewman without a hatch get out beside it as before
+		bool bJump = bHatch && ( d == 0 || d == 2 );
 		for ( int k = 0; k < 3; k++ )
 		{
-			Vector p = GetAbsOrigin() + vecDirs[d] * ( flOut[d] + 32.0f + 24.0f * k ) +
-					   ( ( d & 1 ) ? vecSide : vecFwd ) * random->RandomFloat( -0.5f, 0.5f ) * ( ( d & 1 ) ? m_flHalfWidth : m_flHalfLength );
+			Vector p;
+			if ( bJump )
+			{
+				float flOff = DotProduct( vecHatch - GetAbsOrigin(), vecDirs[d] );
+				p = vecHatch + vecDirs[d] * ( m_flHalfWidth - flOff + 24.0f + 24.0f * k );
+				p.z = GetAbsOrigin().z;
+			}
+			else
+				p = GetAbsOrigin() + vecDirs[d] * ( flOut[d] + 32.0f + 24.0f * k ) +
+					( ( d & 1 ) ? vecSide : vecFwd ) * random->RandomFloat( -0.5f, 0.5f ) * ( ( d & 1 ) ? m_flHalfWidth : m_flHalfLength );
 			float flZ;
 			if ( !GroundAt( p, 64.0f, 256.0f, &flZ, NULL, this ) )
 				continue;
@@ -3553,11 +3599,10 @@ bool CDoDSPVehicle::SpawnCrewman( const Vector &vecAwayFrom, int eRole )
 			// V4b: out of his hatch and off the side (CoD1 tank_climb_out / tank_jump_off, the soldier's own
 			// schedule) when the jump is to the side; else (or a model without the animations) he's already on the
 			// ground here and just runs (ordered on the next think, once his AI has started)
-			if ( d == 0 || d == 2 )
+			if ( bJump && vecHatch.z - p.z > 24.0f && GermanSoldier_BailOut( pNPC, vecHatch, p, vecRun, RAD2DEG( atan2f( vecDirs[d].y, vecDirs[d].x ) ) ) )
 			{
-				Vector vecHatch = HatchFor( eRole, vecDirs[d] );
-				if ( vecHatch.z - p.z > 24.0f && GermanSoldier_BailOut( pNPC, vecHatch, p, vecRun, RAD2DEG( atan2f( vecDirs[d].y, vecDirs[d].x ) ) ) )
-					return true;
+				m_flHatchFree[m_pType->hatches[eRole].iShare] = gpGlobals->curtime + VEHICLE_HATCH_BUSY;
+				return true;
 			}
 			m_hLastCrewman = pNPC;
 			m_vecLastCrewRun = vecRun;
@@ -3670,14 +3715,35 @@ void CDoDSPVehicle::DamageStateThink( void )
 	}
 	if ( m_nBailPending > 0 && now >= m_flNextBailAt )
 	{
-		m_nBailPending--;
-		int iSeat = 0;
-		while ( iSeat < DODSP_MAX_CREW - 1 && !( m_iBailMask & ( 1 << iSeat ) ) )
-			iSeat++;
-		m_iBailMask &= ~( 1 << iSeat );
-		if ( !SpawnCrewman( m_vecBailFrom, m_pType->armour.eCrew[iSeat] ) )
-			Msg( "DOD-SP vehicle %s: no room beside it for a crewman to get out\n", Label() );
-		m_flNextBailAt = now + random->RandomFloat( 0.6f, 1.0f );
+		// V4e: the first seat whose hatch is free (a man waits while the one before him is still in a shared hatch;
+		// the loader's own hatch doesn't wait for the commander's)
+		int iSeat = -1;
+		float flSoonest = FLT_MAX;
+		for ( int i = 0; i < DODSP_MAX_CREW && iSeat < 0; i++ )
+		{
+			if ( !( m_iBailMask & ( 1 << i ) ) )
+				continue;
+			const VehicleType_t::Hatch_t &hatch = m_pType->hatches[m_pType->armour.eCrew[i]];
+			if ( hatch.bHas && m_flHatchFree[hatch.iShare] > now )
+				flSoonest = MIN( flSoonest, m_flHatchFree[hatch.iShare] );
+			else
+				iSeat = i;
+		}
+		if ( iSeat < 0 && flSoonest == FLT_MAX )
+		{
+			Warning( "INVARIANT DOD-SP vehicle %s: %d crew to get out but no seat marked - dropped\n", Label(), m_nBailPending );
+			m_nBailPending = 0;
+		}
+		else if ( iSeat < 0 )
+			m_flNextBailAt = flSoonest;
+		else
+		{
+			m_nBailPending--;
+			m_iBailMask &= ~( 1 << iSeat );
+			if ( !SpawnCrewman( m_vecBailFrom, m_pType->armour.eCrew[iSeat] ) )
+				Msg( "DOD-SP vehicle %s: no room beside it for a crewman to get out\n", Label() );
+			m_flNextBailAt = now + random->RandomFloat( 0.6f, 1.0f );
+		}
 	}
 	if ( m_eState == VSTATE_ABANDONED && m_flIgniteAt > 0.0f && now >= m_flIgniteAt )
 	{

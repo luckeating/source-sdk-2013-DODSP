@@ -211,6 +211,8 @@ public:
 	void		Event_Killed( const CTakeDamageInfo &info );
 	bool		BeginBailOut( const Vector &vecHatch, const Vector &vecGround, const Vector &vecRun, float flYaw );
 	void		EndBailOut( bool bRun );
+	Vector		BailPosition( float flNow ) const;
+	virtual void PhysicsSimulate( void );
 	bool		BecomeRagdoll( const CTakeDamageInfo &info, const Vector &forceVector );
 	bool		CanBecomeRagdoll( void );
 	Activity	GetDeathActivity( void );
@@ -736,7 +738,7 @@ private:
 	Vector				m_vecBailHatch, m_vecBailGround, m_vecBailRun;
 	float				m_flBailYaw;
 	int					m_iBailPhase;			// 0 climbing out of the hatch, 1 jumping off (not saved)
-	float				m_flBailPhaseEnd;
+	float				m_flBailPhaseEnd, m_flBailPhaseDur;
 
 	// Networked to the client for the procedural hit kick
 	CNetworkVector( m_vecHitDir );			// horizontal direction the bullet travelled
@@ -773,7 +775,7 @@ CNPC_GermanSoldier::CNPC_GermanSoldier() : m_AnimMap( DefLessFunc( int ) )
 	m_vecBailHatch = m_vecBailGround = m_vecBailRun = vec3_origin;
 	m_flBailYaw = 0.0f;
 	m_iBailPhase = 0;
-	m_flBailPhaseEnd = 0.0f;
+	m_flBailPhaseEnd = m_flBailPhaseDur = 0.0f;
 	m_iszAnimMapWeapon = NULL_STRING;
 	m_actFireGesture = ACT_INVALID;
 	m_actReloadGesture = ACT_INVALID;
@@ -5189,7 +5191,8 @@ void CNPC_GermanSoldier::StartTask( const Task_t *pTask )
 			SetSequenceById( iClimb );
 			SetCycle( 0.0f );
 			m_iBailPhase = 0;
-			m_flBailPhaseEnd = gpGlobals->curtime + SequenceDuration( iClimb );
+			m_flBailPhaseDur = MAX( SequenceDuration( iClimb ), 0.1f );
+			m_flBailPhaseEnd = gpGlobals->curtime + m_flBailPhaseDur;
 		}
 		break;
 	case TASK_RANGE_ATTACK1:
@@ -5441,41 +5444,31 @@ void CNPC_GermanSoldier::StartTask( const Task_t *pTask )
 
 void CNPC_GermanSoldier::RunTask( const Task_t *pTask )
 {
-	// V4b: out of the hatch, then the jump: the animation is made in place, the code carries him from the deck to
-	// the ground (a short hop, then a fall)
+	// V4b/V4e: out of the hatch, then the jump. Where he is comes from BailPosition, set every TICK in PhysicsSimulate
+	// (V4c set it here, once per AI think = 10 steps a second: the owner saw him hop down "jitter-like").
 	if ( pTask->iTask == TASK_GERMAN_BAILOUT )
 	{
 		float now = gpGlobals->curtime;
+		if ( now < m_flBailPhaseEnd )
+			return;
 		if ( m_iBailPhase == 0 )
 		{
-			SetAbsOrigin( m_vecBailHatch );
-			if ( now >= m_flBailPhaseEnd )
+			int iJump = LookupSequence( "c1_tank_jump_off" );
+			if ( iJump < 0 )
 			{
-				int iJump = LookupSequence( "c1_tank_jump_off" );
-				if ( iJump < 0 )
-				{
-					EndBailOut( true );
-					TaskComplete();
-					return;
-				}
-				SetSequenceById( iJump );
-				SetCycle( 0.0f );
-				m_iBailPhase = 1;
-				m_flBailPhaseEnd = now + SequenceDuration( iJump );
+				EndBailOut( true );
+				TaskComplete();
+				return;
 			}
+			SetSequenceById( iJump );
+			SetCycle( 0.0f );
+			m_iBailPhase = 1;
+			m_flBailPhaseDur = MAX( SequenceDuration( iJump ), 0.1f );
+			m_flBailPhaseEnd = now + m_flBailPhaseDur;
 			return;
 		}
-		int iJump = GetSequence();
-		float flDur = MAX( SequenceDuration( iJump ), 0.1f );
-		float t = clamp( 1.0f - ( m_flBailPhaseEnd - now ) / flDur, 0.0f, 1.0f );
-		Vector p = m_vecBailHatch + ( m_vecBailGround - m_vecBailHatch ) * t;
-		p.z = m_vecBailHatch.z + ( m_vecBailGround.z - m_vecBailHatch.z ) * t * t + 10.0f * sinf( M_PI_F * t ) * ( 1.0f - t );
-		SetAbsOrigin( p );
-		if ( t >= 1.0f )
-		{
-			EndBailOut( true );
-			TaskComplete();
-		}
+		EndBailOut( true );
+		TaskComplete();
 		return;
 	}
 	// A3e: clearing - he's in sight in there: keep the route on him as he moves, and once he's
@@ -7128,9 +7121,53 @@ CON_COMMAND( npc_german_test_crouch, "Toggle forced crouching on the German sold
 // CoD1 pack (npc_ww2_anims_cod1, build_cod1_pack.py); a model without them can't, and the vehicle falls back to
 // putting him on the ground (the console says so once per map).
 //-----------------------------------------------------------------------------
+// The CoD1 tank_jump_off as retargeted (c1_tank_jump_off, 40 frames, measured from its SMD: foot bones 4-5 units over
+// the deck until frame 12, airborne 13..24, back on the ground at frame 25, then the landing crouch). It is made IN
+// PLACE - the pelvis rises 22 units and comes down again over the same spot - so the code carries his origin: outward
+// from frame 10 (fast first, so he clears the hull side before he drops much), down from frame 13 to 25 (a fall: slow,
+// then fast). A different animation in that slot needs these frames measured again (BeginBailOut checks the length).
+#define BAILJUMP_LAST		39.0f
+#define BAILJUMP_OUT		( 10.0f / BAILJUMP_LAST )
+#define BAILJUMP_TAKEOFF	( 13.0f / BAILJUMP_LAST )
+#define BAILJUMP_LAND		( 25.0f / BAILJUMP_LAST )
+
+// THE owner of where a bailing crewman is: in the hatch while he climbs (c1_tank_climb_out starts with his legs 23
+// units below vecHatch = inside the turret or hull), then along the jump. Set every tick (PhysicsSimulate).
+Vector CNPC_GermanSoldier::BailPosition( float flNow ) const
+{
+	if ( m_iBailPhase == 0 )
+		return m_vecBailHatch;
+	float c = clamp( 1.0f - ( m_flBailPhaseEnd - flNow ) / m_flBailPhaseDur, 0.0f, 1.0f );
+	float h = clamp( ( c - BAILJUMP_OUT ) / ( BAILJUMP_LAND - BAILJUMP_OUT ), 0.0f, 1.0f );
+	float v = clamp( ( c - BAILJUMP_TAKEOFF ) / ( BAILJUMP_LAND - BAILJUMP_TAKEOFF ), 0.0f, 1.0f );
+	h = 1.0f - ( 1.0f - h ) * ( 1.0f - h );
+	Vector p = m_vecBailHatch + ( m_vecBailGround - m_vecBailHatch ) * h;
+	p.z = m_vecBailHatch.z + ( m_vecBailGround.z - m_vecBailHatch.z ) * v * v;
+	return p;
+}
+
+void CNPC_GermanSoldier::PhysicsSimulate( void )
+{
+	if ( m_bBailOut && m_flBailPhaseDur > 0.0f && GetMoveType() == MOVETYPE_NONE && IsAlive() )
+		SetAbsOrigin( BailPosition( gpGlobals->curtime ) );
+	BaseClass::PhysicsSimulate();
+}
+
 bool CNPC_GermanSoldier::BeginBailOut( const Vector &vecHatch, const Vector &vecGround, const Vector &vecRun, float flYaw )
 {
-	if ( LookupSequence( "c1_tank_climb_out" ) < 0 || LookupSequence( "c1_tank_jump_off" ) < 0 )
+	int iJumpSeq = LookupSequence( "c1_tank_jump_off" );
+	if ( iJumpSeq >= 0 && GetModelPtr() )
+	{
+		int nFrames = Studio_MaxFrame( GetModelPtr(), iJumpSeq, GetPoseParameterArray() );
+		static bool s_bWarnedFrames = false;
+		if ( nFrames != (int)BAILJUMP_LAST && !s_bWarnedFrames )
+		{
+			s_bWarnedFrames = true;
+			Warning( "INVARIANT npc_german_soldier: c1_tank_jump_off has %d frames, the bail-out's take-off/landing were measured "
+					 "on %d - crews will float or sink during the jump (measure BAILJUMP_* again)\n", nFrames + 1, (int)BAILJUMP_LAST + 1 );
+		}
+	}
+	if ( LookupSequence( "c1_tank_climb_out" ) < 0 || iJumpSeq < 0 )
 	{
 		static char s_szWarnedMap[64] = "";
 		if ( Q_strcmp( s_szWarnedMap, STRING( gpGlobals->mapname ) ) )
@@ -7148,6 +7185,7 @@ bool CNPC_GermanSoldier::BeginBailOut( const Vector &vecHatch, const Vector &vec
 	m_vecBailRun = vecRun;
 	m_flBailYaw = flYaw;
 	m_iBailPhase = 0;
+	m_flBailPhaseDur = 0.0f;		// PhysicsSimulate leaves him alone until the climb starts
 	SetMoveType( MOVETYPE_NONE );
 	AddEffects( EF_NODRAW );		// until the climb starts (his first think): never seen standing on the ground first
 	SetAbsOrigin( vecHatch );
@@ -7159,6 +7197,7 @@ bool CNPC_GermanSoldier::BeginBailOut( const Vector &vecHatch, const Vector &vec
 void CNPC_GermanSoldier::EndBailOut( bool bRun )
 {
 	m_bBailOut = false;
+	m_flBailPhaseDur = 0.0f;
 	RemoveEffects( EF_NODRAW );
 	SetMoveType( MOVETYPE_STEP );
 	if ( bRun )
