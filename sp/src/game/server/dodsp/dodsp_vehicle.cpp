@@ -43,6 +43,8 @@
 #include "dodsp_factions.h"
 #include "dodsp_vehicle_armour.h"
 #include "soundchars.h"
+#include "smoke_trail.h"
+#include "itempents.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -54,6 +56,13 @@
 // whenever the code starts needing a new key in the script.
 #define DODSP_VEHICLE_SCRIPT_VERSION	"V4e"
 static char s_szVehicleScriptVersion[32] = "not loaded";
+
+// V4h: how a shell's strike on the armour went - what HitFeedback shows and plays (name table guarded below)
+enum VehicleHitFx_t { VHITFX_IN, VHITFX_STOPPED, VHITFX_RICOCHET, NUM_VHITFX };
+static const char *s_pszHitSound[] = { "DoDSP_Vehicle.HitPenetrate", "DoDSP_Vehicle.HitStopped", "DoDSP_Vehicle.HitRicochet" };
+COMPILE_TIME_ASSERT( ARRAYSIZE( s_pszHitSound ) == NUM_VHITFX );
+#define VEHICLE_HITFX_MIN_CALIBRE	15.0f		// mm: shells show their strike, bullets keep the engine's impacts
+#define VEHICLE_HIT_SOUNDLEVEL		SNDLVL_120dB
 #define VEHICLE_THINK			0.05f
 #define VEHICLE_STEP			24.0f		// what it climbs without noticing (kerbs, rubble)
 #define VEHICLE_MAX_STEP_PER_32	36.0f		// ground change between two samples 32 units apart (a slope of ~48 degrees)
@@ -704,6 +713,22 @@ static int VehicleSoundCheck( const char *pszName, char *pszWave, int nWave )
 	return 0;
 }
 
+// ONE list of every sound a vehicle type plays (V4h: precache and the map-load check used two copies): its own
+// script names (empty ones left out) + the shared hit sounds.
+#define VEHICLE_MAX_SOUNDS	16
+static int VehicleSoundNames( const VehicleType_t *pT, const char **ppszOut )
+{
+	const char *pszAll[] = { pT->gun.szSound, pT->coax.szSound, pT->szEngineIdle, pT->szEngineMove, pT->szTurretTurn,
+							 pT->szTurretStop, pT->szReload, pT->szExplode,
+							 s_pszHitSound[VHITFX_IN], s_pszHitSound[VHITFX_STOPPED], s_pszHitSound[VHITFX_RICOCHET] };
+	COMPILE_TIME_ASSERT( ARRAYSIZE( pszAll ) <= VEHICLE_MAX_SOUNDS );
+	int n = 0;
+	for ( int k = 0; k < ARRAYSIZE( pszAll ); k++ )
+		if ( pszAll[k] && pszAll[k][0] )
+			ppszOut[n++] = pszAll[k];
+	return n;
+}
+
 static void VehicleSoundsLevelInit( void )
 {
 	if ( !VehicleSoundEntryExists( "DoDSP_Vehicle.ShellExplode" ) )
@@ -717,12 +742,10 @@ static void VehicleSoundsLevelInit( void )
 	for ( int t = 0; t < s_Types.Count(); t++ )
 	{
 		VehicleType_t *pT = s_Types[t];
-		const char *pszNames[] = { pT->gun.szSound, pT->coax.szSound, pT->szEngineIdle, pT->szEngineMove, pT->szTurretTurn,
-								   pT->szTurretStop, pT->szReload, pT->szExplode };
-		for ( int k = 0; k < ARRAYSIZE( pszNames ); k++ )
+		const char *pszNames[VEHICLE_MAX_SOUNDS];
+		int nTypeNames = VehicleSoundNames( pT, pszNames );
+		for ( int k = 0; k < nTypeNames; k++ )
 		{
-			if ( !pszNames[k][0] )
-				continue;
 			nNames++;
 			char szWave[MAX_PATH] = "";
 			int eWhy = VehicleSoundCheck( pszNames[k], szWave, sizeof( szWave ) );
@@ -897,6 +920,8 @@ private:
 	void			BailOut( int eWhy, CBaseEntity *pAttacker );
 	bool			SpawnCrewman( const Vector &vecAwayFrom, int eRole );
 	bool			HatchFor( int eRole, Vector *pvecHatch );
+	void			HitFeedback( int eFx, const VehicleHit_t &hit, const Vector &vecPath, float flCalibre );
+	void			UpdateDamageSmoke( void );
 	void			KnockOut( bool bCatastrophic, CBaseEntity *pAttacker, const char *pszWhy );
 	void			Wreck( bool bBlowUp, CBaseEntity *pAttacker );
 	void			DamageStateThink( void );
@@ -1049,6 +1074,8 @@ private:
 	bool			m_bImmobile, m_bTurretJammed, m_bGunOut;
 	float			m_flBailAt, m_flCookOffAt, m_flBurnOutAt;
 	EHANDLE			m_hFire;
+	CHandle<SmokeTrail>	m_hDamageSmoke;			// V4h: grey / black smoke while it's hurt (UpdateDamageSmoke)
+	int				m_iDamageSmoke;				// 0 none, 1 light, 2 heavy
 	EHANDLE			m_hKiller;
 	int				m_iRounds, m_iMagLeft;
 	float			m_flPenTimes[2];
@@ -1123,6 +1150,8 @@ BEGIN_DATADESC( CDoDSPVehicle )
 	DEFINE_FIELD( m_flCookOffAt, FIELD_TIME ),
 	DEFINE_FIELD( m_flBurnOutAt, FIELD_TIME ),
 	DEFINE_FIELD( m_hFire, FIELD_EHANDLE ),
+	DEFINE_FIELD( m_hDamageSmoke, FIELD_EHANDLE ),
+	DEFINE_FIELD( m_iDamageSmoke, FIELD_INTEGER ),
 	DEFINE_FIELD( m_hKiller, FIELD_EHANDLE ),
 	DEFINE_FIELD( m_iRounds, FIELD_INTEGER ),
 	DEFINE_FIELD( m_iMagLeft, FIELD_INTEGER ),
@@ -1177,6 +1206,7 @@ CDoDSPVehicle::CDoDSPVehicle()
 	m_flNoRepositionUntil = 0.0f;
 	m_bPreferReverse = m_bReversing = false;
 	m_flSuspPitch = m_flSuspVel = m_flPrevSpeed = 0.0f;
+	m_iDamageSmoke = 0;
 	m_bHoldFire = false;
 	m_flNextScan = 0.0f;
 	m_flTurretYaw = m_flTurretPitch = 0.0f;
@@ -1246,11 +1276,10 @@ void CDoDSPVehicle::Precache( void )
 		UTIL_PrecacheOther( "env_fire" );
 		UTIL_PrecacheOther( "npc_german_soldier" );
 		VehicleSoundsLevelInit();
-		const char *pszNames[] = { m_pType->gun.szSound, m_pType->coax.szSound, m_pType->szEngineIdle, m_pType->szEngineMove,
-								   m_pType->szTurretTurn, m_pType->szTurretStop, m_pType->szReload, m_pType->szExplode };
-		for ( int k = 0; k < ARRAYSIZE( pszNames ); k++ )
-			if ( pszNames[k][0] )
-				PrecacheScriptSound( pszNames[k] );
+		const char *pszNames[VEHICLE_MAX_SOUNDS];
+		int nNames = VehicleSoundNames( m_pType, pszNames );
+		for ( int k = 0; k < nNames; k++ )
+			PrecacheScriptSound( pszNames[k] );
 	}
 	BaseClass::Precache();
 }
@@ -3157,11 +3186,92 @@ bool CDoDSPVehicle::TakeArmourHit( const VehicleHit_t &hit, const Vector &vecPat
 		Msg( "DOD-SP vehicle %s: %s hit its %s %s%s at %.0f deg (%.0f mm = %.0f mm effective) with %.0f mm penetration - %s\n", Label(),
 			 pszWhat, g_pszArmourPart[hit.ePart], g_pszArmourFace[hit.eFace], bOpen ? " (open)" : "", flAngle, plate.flMM, flEff,
 			 flRoll, bIn ? "IN" : bRicochet ? "ricochet" : "stopped" );
+	if ( flCalibre >= VEHICLE_HITFX_MIN_CALIBRE )
+		HitFeedback( bIn ? VHITFX_IN : bRicochet ? VHITFX_RICOCHET : VHITFX_STOPPED, hit, vecPath, flCalibre );
 	if ( bIn )
 		ApplyPenetration( hit.ePart, hit.eFace, flEffect, pAttacker, pszWhat );
 	else if ( flFiller >= 0.5f )
 		ExternalBlast( flFiller, 1.0f, pAttacker );
+	UpdateDamageSmoke();
 	return bIn;
+}
+
+// V4h (owner 2026-11-20: "extremely hard to tell what's happening on screen"): every shell that strikes the armour SHOWS
+// how it went, from THE one place every armour hit is judged (TakeArmourHit) - so no outcome can be silent:
+//   in        a white-hot flash and a shower of sparks, a deep metallic CLANG, the hull jolts away from the hit
+//   stopped   sparks and a high clang (the shell's own burst, if it has a filler, is FireMainGun's as before)
+//   ricochet  sparks thrown off along the deflected path and a whine
+// plus the damage smoke (UpdateDamageSmoke) that stays on a hurt vehicle. Bullets (< VEHICLE_HITFX_MIN_CALIBRE mm)
+// keep the engine's own bullet impacts.
+void CDoDSPVehicle::HitFeedback( int eFx, const VehicleHit_t &hit, const Vector &vecPath, float flCalibre )
+{
+	float k = clamp( flCalibre / 75.0f, 0.3f, 2.0f );
+	Vector vecOut = hit.vecNormal;
+	if ( eFx == VHITFX_RICOCHET )
+	{
+		vecOut = vecPath - 2.0f * DotProduct( vecPath, hit.vecNormal ) * hit.vecNormal;	// the deflected path
+		VectorNormalize( vecOut );
+	}
+	g_pEffects->Sparks( hit.vecPoint, (int)( 2 + 4 * k ), (int)( 2 + 3 * k ), &vecOut );
+	g_pEffects->MetalSparks( hit.vecPoint, vecOut );
+	CPVSFilter filter( hit.vecPoint );
+	if ( eFx == VHITFX_IN )
+	{
+		te->DynamicLight( filter, 0.0f, &hit.vecPoint, 255, 200, 120, 3, 220.0f * k, 0.25f, 0.0f );
+		g_pEffects->Sparks( hit.vecPoint, (int)( 4 + 6 * k ), (int)( 3 + 3 * k ), &hit.vecNormal );
+		// the hull rocks back from the blow: nose up when hit from ahead, down from behind, a jolt from the side
+		Vector vecFwd;
+		AngleVectors( GetAbsAngles(), &vecFwd );
+		float flAlong = -DotProduct( vecPath, vecFwd );
+		m_flSuspVel += k * ( 30.0f * flAlong + ( random->RandomInt( 0, 1 ) ? 10.0f : -10.0f ) * ( 1.0f - fabs( flAlong ) ) );
+	}
+	else
+		te->DynamicLight( filter, 0.0f, &hit.vecPoint, 255, 220, 160, 2, 90.0f * k, 0.1f, 0.0f );
+	CPASAttenuationFilter snd( hit.vecPoint, VEHICLE_HIT_SOUNDLEVEL );
+	EmitSound( snd, entindex(), s_pszHitSound[eFx], &hit.vecPoint );
+}
+
+// V4h: smoke from the engine deck while it's hurt - light grey under 2/3 of its structure, thick black under 1/3 - so a
+// damaged tank reads as damaged from across the map. One owner of the plume; it stays through burning and the wreck.
+void CDoDSPVehicle::UpdateDamageSmoke( void )
+{
+	if ( !m_pType || !m_pType->armour.bValid || m_pType->armour.flStructure <= 0.0f )
+		return;
+	float f = m_flStructure / m_pType->armour.flStructure;
+	int iLevel = ( m_eState != VSTATE_FIGHTING || f < 0.34f ) ? 2 : ( f < 0.67f ) ? 1 : 0;
+	if ( iLevel <= m_iDamageSmoke && m_hDamageSmoke.Get() )
+		return;
+	if ( iLevel == 0 )
+		return;
+	if ( !m_hDamageSmoke.Get() )
+	{
+		SmokeTrail *pSmoke = SmokeTrail::CreateSmokeTrail();
+		if ( !pSmoke )
+			return;
+		float x = m_pType->armour.iEngineAt == AFACE_FRONT ? 0.6f : m_pType->armour.iEngineAt == AFACE_REAR ? -0.6f : 0.0f;
+		pSmoke->SetLifetime( -1 );
+		pSmoke->SetParent( this );
+		pSmoke->SetLocalOrigin( Vector( x * m_flHalfLength, 0.0f, m_flBodyHeight * 0.75f ) );
+		pSmoke->SetLocalAngles( QAngle( -90.0f, 0.0f, 0.0f ) );		// "directed" speed = straight up
+		pSmoke->SetMoveType( MOVETYPE_NONE );
+		m_hDamageSmoke = pSmoke;
+	}
+	SmokeTrail *pSmoke = m_hDamageSmoke.Get();
+	bool bHeavy = iLevel >= 2;
+	pSmoke->m_SpawnRate = bHeavy ? 24.0f : 8.0f;
+	pSmoke->m_ParticleLifetime = bHeavy ? 4.0f : 3.0f;
+	pSmoke->m_StartColor.Init( bHeavy ? 0.12f : 0.45f, bHeavy ? 0.12f : 0.45f, bHeavy ? 0.12f : 0.45f );
+	pSmoke->m_EndColor.Init( bHeavy ? 0.05f : 0.6f, bHeavy ? 0.05f : 0.6f, bHeavy ? 0.05f : 0.6f );
+	pSmoke->m_StartSize = bHeavy ? 32.0f : 16.0f;
+	pSmoke->m_EndSize = bHeavy ? 160.0f : 96.0f;
+	pSmoke->m_SpawnRadius = 16.0f;
+	pSmoke->m_Opacity = bHeavy ? 0.6f : 0.35f;
+	pSmoke->m_MinSpeed = 4.0f;
+	pSmoke->m_MaxSpeed = 16.0f;
+	pSmoke->m_MinDirectedSpeed = bHeavy ? 60.0f : 40.0f;
+	pSmoke->m_MaxDirectedSpeed = bHeavy ? 100.0f : 70.0f;
+	pSmoke->SetEmit( true );
+	m_iDamageSmoke = iLevel;
 }
 
 // A big charge bursting outside: tracks, the gun, the turret ring - and the very big ones (152 mm) stun or kill
@@ -3432,6 +3542,7 @@ void CDoDSPVehicle::SetState( int eNew, CBaseEntity *pAttacker )
 	FireKnockedOut( pAttacker );
 	if ( eNew == VSTATE_ABANDONED && m_flIgniteAt <= 0.0f )
 		m_flIgniteAt = gpGlobals->curtime + random->RandomFloat( 4.0f, 8.0f );
+	UpdateDamageSmoke();		// V4h: out of the fight = thick smoke
 }
 
 void CDoDSPVehicle::HaltMotion( void )
@@ -3725,6 +3836,7 @@ void CDoDSPVehicle::DamageStateThink( void )
 {
 	float now = gpGlobals->curtime;
 	CheckHalted();
+	UpdateDamageSmoke();
 	if ( m_hLastCrewman.Get() && m_flCrewRunAt > 0.0f && now >= m_flCrewRunAt )
 	{
 		m_flCrewRunAt = 0.0f;
@@ -3820,6 +3932,7 @@ int CDoDSPVehicle::OnTakeDamage( const CTakeDamageInfo &info )
 		bool bOurs = g_DoDSPBlast.bActive;
 		BlastHit( bOurs ? g_DoDSPBlast.vecCentre : info.GetDamagePosition(), bOurs ? g_DoDSPBlast.flFiller : info.GetDamage() * 0.0008f,
 				  info.GetAttacker() );
+		UpdateDamageSmoke();
 	}
 	return 0;
 }

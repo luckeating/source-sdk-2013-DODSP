@@ -25,3 +25,11 @@
 
 // --- shell impact ---
 "DoDSP_Vehicle.ShellExplode" { "channel" "CHAN_STATIC"	"volume" "1"	"soundlevel" "SNDLVL_140dB"	"pitch" "95,105"	"wave" "dodsp/vehicles/explode.wav" }
+
+// --- V4h: a shell striking armour (HitFeedback in dodsp_vehicle.cpp; waves are HL2's own, mounted with HL2) ---
+"DoDSP_Vehicle.HitPenetrate" { "channel" "CHAN_STATIC"	"volume" "1"	"soundlevel" "SNDLVL_120dB"	"pitch" "70,85"
+	"rndwave" { "wave" "physics/metal/metal_solid_impact_hard1.wav" "wave" "physics/metal/metal_solid_impact_hard4.wav" "wave" "physics/metal/metal_solid_impact_hard5.wav" } }
+"DoDSP_Vehicle.HitStopped"	{ "channel" "CHAN_STATIC"	"volume" "0.9"	"soundlevel" "SNDLVL_110dB"	"pitch" "100,115"
+	"rndwave" { "wave" "physics/metal/metal_solid_impact_hard1.wav" "wave" "physics/metal/metal_solid_impact_hard4.wav" "wave" "physics/metal/metal_solid_impact_hard5.wav" } }
+"DoDSP_Vehicle.HitRicochet"	{ "channel" "CHAN_STATIC"	"volume" "1"	"soundlevel" "SNDLVL_110dB"	"pitch" "90,110"
+	"rndwave" { "wave" "weapons/fx/rics/ric1.wav" "wave" "weapons/fx/rics/ric2.wav" "wave" "weapons/fx/rics/ric3.wav" "wave" "weapons/fx/rics/ric4.wav" "wave" "weapons/fx/rics/ric5.wav" } }

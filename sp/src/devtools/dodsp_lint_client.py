@@ -173,6 +173,7 @@ def check_chatter():
 
 VEHICLE_SCRIPT = os.path.join(ROOT, "..", "..", "dodsp_tools", "content", "scripts", "dodsp_vehicles.txt")
 VEHICLE_SOUNDS = os.path.join(ROOT, "..", "..", "dodsp_tools", "content", "scripts", "game_sounds_dodsp_vehicles.txt")
+VEHICLE_CPP_PATH = os.path.join(ROOT, "game", "server", "dodsp", "dodsp_vehicle.cpp")
 
 
 def check_vehicle_sounds():
@@ -184,6 +185,12 @@ def check_vehicle_sounds():
         script = re.sub(r"//[^\n]*", "", f.read())
     used = set(re.findall(r'"(DoDSP_Vehicle\.[A-Za-z0-9_]+)"', script))
     bad = ["%s (named in dodsp_vehicles.txt)" % u for u in sorted(used) if u not in entries]
+    # V4h: and every one the code plays itself (the hit sounds)
+    with open(VEHICLE_CPP_PATH, encoding="latin-1") as f:
+        code_used = set(re.findall(r'"(DoDSP_Vehicle\.[A-Za-z0-9_]+)"', f.read()))
+    bad += ["%s (named in dodsp_vehicle.cpp)" % u for u in sorted(code_used) if u not in entries]
+    if len(code_used) < 3:
+        bad.append("found only %d DoDSP_Vehicle sounds in dodsp_vehicle.cpp - the lint's pattern is out of date" % len(code_used))
     # the file's shape: braces balance, ONE top block, every type has a model or a base (a stray header once
     # opened the top block twice - the loader would have read the real types as one type's keys)
     depth, tops = 0, 0

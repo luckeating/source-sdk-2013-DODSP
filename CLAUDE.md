@@ -730,6 +730,18 @@ If you learn something like this, add it here in the same commit as the fix.
   and timing wrong in one look. RULE (owner worried transports would go the same way): every crew / rider animation
   on a vehicle is PREVIEWED before a build - dodsp_tools/vehicle_preview draws the animation against the vehicle's
   real mesh with the game code's timing and positions, frame by frame, and the owner sees the strip first.
+  V4h (owner 2026-11-20, before testing V4g: "add a little indication that the tank has been hit, it's extremely hard to
+  tell what's happening on screen"): a penetrating AP round showed NOTHING (the blast is skipped for a round that got
+  in) and solid shot bouncing off showed nothing either. HitFeedback, called from TakeArmourHit = the one place every
+  armour hit is judged, so no outcome can be silent (VehicleHitFx_t, sound name table with COMPILE_TIME_ASSERT): IN =
+  white flash (te->DynamicLight) + spark shower + deep clang (DoDSP_Vehicle.HitPenetrate) + the hull jolts away from the
+  hit (suspension spring); STOPPED = sparks + high clang; RICOCHET = sparks along the deflected path + whine. Shells
+  only (>= 15 mm); bullets keep the engine's impacts. Damage smoke (UpdateDamageSmoke, one owner, SmokeTrail parented
+  over the engine): light grey under 2/3 structure, thick black under 1/3 or out of the fight. Hit sounds are HL2's
+  waves (physics/metal/metal_solid_impact_hard1/4/5, weapons/fx/rics/ric1-5) in game_sounds_dodsp_vehicles.txt; the
+  map-load sound check covers them (VehicleSoundNames = ONE list for precache and the check, it was two copies) and
+  the lint checks every DoDSP_Vehicle.* name in dodsp_vehicle.cpp exists in the sound script. Known: a knock-out's
+  jolt is cancelled by HaltMotion (the flash, clang, fire burst and smoke still show).
 - CoD1 set (owner's vehicles_part2.zip, 2026-11-19): REFERENCE ONLY except the **SU-152, which we keep**. One model per
   vehicle, turret/gun as BONES (tag_turret, tag_barrel, tag_flash = muzzle, tag_coaxel), faces +X (forward_yaw 0),
   CoD's rider tags tag_guy01..06 (Sherman, Elefant, SU-152: 6; Opel truck driver/passenger + 4), NO .phy (needs a
