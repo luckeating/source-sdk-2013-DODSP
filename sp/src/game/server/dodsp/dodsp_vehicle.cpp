@@ -45,6 +45,8 @@
 #define VEHICLE_STUCK_TIME		3.0f
 #define VEHICLE_MIN_GROUND_NZ	0.6f		// steepest ground the tracks take (normal z; ~53 degrees)
 #define VEHICLE_DIRECT_DIST		768.0f		// a goal this close is driven to straight, off the road
+#define VEHICLE_JOIN_NODES		6			// nodes considered for joining the road (and leaving it for the goal)
+#define VEHICLE_TURN_COST		512.0f		// an about-turn on the spot counts like this many units of driving
 #define VEHICLE_BADLINK_TIME	30.0f
 
 // How far a route may cut past a road node it skips: the blend between "every node" (0) and "any shortcut the
@@ -462,6 +464,8 @@ public:
 private:
 	bool			PlanRoute( void );
 	int				NearestNode( const Vector &vecPos, bool bFromHere );
+	int				NodeCandidates( const Vector &vecPos, bool bFromHere, int nMax, CUtlVector<int> &out );
+	float			TurnCost( const Vector &vecTo ) const;
 	void			SetStuck( VehicleStuck_t eWhy, CBaseEntity *pWho );
 	QAngle			BuildAngles( float flHeading, const Vector &vecPos, float *pflGroundZ );
 	void			MeasureBody( void );
@@ -707,12 +711,15 @@ QAngle CDoDSPVehicle::BuildAngles( float flHeading, const Vector &vecPos, float 
 //-----------------------------------------------------------------------------
 // Routes
 //-----------------------------------------------------------------------------
-int CDoDSPVehicle::NearestNode( const Vector &vecPos, bool bFromHere )
+// The graded nodes it can drive to (bFromHere: from vecPos) or from (to vecPos) straight - candidates by
+// distance within 1024 units, the first 16 tested, at most nMax returned (nearest first). One owner for "which
+// nodes join a spot to the road"; NearestNode is its first answer.
+int CDoDSPVehicle::NodeCandidates( const Vector &vecPos, bool bFromHere, int nMax, CUtlVector<int> &out )
 {
+	out.RemoveAll();
 	VehicleNav_t *pNav = GetVehicleNav( m_flHalfWidth, m_flBodyHeight, m_pType->szName );
 	if ( !pNav )
-		return -1;
-	// the nearest graded node it can drive to (or from) straight: candidates by distance, the first 16 tested
+		return 0;
 	struct Cand_t { float flDist; int i; };
 	CUtlVector<Cand_t> cands;
 	for ( int i = 0; i < pNav->nNodes; i++ )
@@ -726,7 +733,7 @@ int CDoDSPVehicle::NearestNode( const Vector &vecPos, bool bFromHere )
 			cands.AddToTail( c );
 		}
 	}
-	for ( int k = 0; k < cands.Count() && k < 16; k++ )
+	for ( int k = 0; k < cands.Count() && k < 16 && out.Count() < nMax; k++ )
 	{
 		int iMin = k;
 		for ( int m = k + 1; m < cands.Count(); m++ )
@@ -735,9 +742,26 @@ int CDoDSPVehicle::NearestNode( const Vector &vecPos, bool bFromHere )
 		Cand_t tmp = cands[k]; cands[k] = cands[iMin]; cands[iMin] = tmp;
 		const Vector &vecNode = g_pBigAINet->GetNode( cands[k].i, false )->GetOrigin();
 		if ( CorridorClear( bFromHere ? vecPos : vecNode, bFromHere ? vecNode : vecPos, m_flHalfWidth, m_flBodyHeight, this ) )
-			return cands[k].i;
+			out.AddToTail( cands[k].i );
 	}
-	return -1;
+	return out.Count();
+}
+
+int CDoDSPVehicle::NearestNode( const Vector &vecPos, bool bFromHere )
+{
+	CUtlVector<int> nodes;
+	return NodeCandidates( vecPos, bFromHere, 1, nodes ) ? nodes[0] : -1;
+}
+
+// What setting off toward vecTo costs in turning, in units of driving: 0 straight ahead, VEHICLE_TURN_COST
+// for a full about-turn (tracked vehicles pivot on the spot; either way it's time spent not getting anywhere).
+float CDoDSPVehicle::TurnCost( const Vector &vecTo ) const
+{
+	Vector vecDir( vecTo.x, vecTo.y, 0.0f );
+	if ( VectorNormalize( vecDir ) < 1.0f )
+		return 0.0f;
+	Vector vecFwd( cosf( DEG2RAD( m_flHeading ) ), sinf( DEG2RAD( m_flHeading ) ), 0.0f );
+	return VEHICLE_TURN_COST * 0.5f * ( 1.0f - DotProduct( vecDir, vecFwd ) );
 }
 
 bool CDoDSPVehicle::PlanRoute( void )
@@ -747,8 +771,13 @@ bool CDoDSPVehicle::PlanRoute( void )
 	Vector vecFrom = GetAbsOrigin();
 	// straight there only when the goal is close (or the map has no nodes): further away the nodes are the
 	// mapper's roads and the vehicle keeps to them (V1c test: it cut across country and through trees)
-	VehicleNav_t *pNavCheck = GetVehicleNav( m_flHalfWidth, m_flBodyHeight, m_pType->szName );
-	bool bNoNodes = !pNavCheck || NearestNode( vecFrom, true ) < 0;
+	// which nodes join it to the road, and the road to the goal: SEVERAL each (V1e test: it took the nearest
+	// node even when that lay behind it - "rotated all the way around to line up with a node, then all the
+	// way back"; and the end node before the goal made a hook). The search picks the pair that makes the
+	// cheapest whole drive, counting the turn it would have to make on the spot to reach the first node.
+	CUtlVector<int> starts, ends;
+	NodeCandidates( vecFrom, true, VEHICLE_JOIN_NODES, starts );
+	bool bNoNodes = !starts.Count();
 	if ( ( bNoNodes || ( m_vecGoal - vecFrom ).Length2D() <= VEHICLE_DIRECT_DIST ) &&
 		 CorridorClear( vecFrom, m_vecGoal, m_flHalfWidth, m_flBodyHeight, this ) )
 	{
@@ -756,21 +785,29 @@ bool CDoDSPVehicle::PlanRoute( void )
 		return true;
 	}
 	VehicleNav_t *pNav = GetVehicleNav( m_flHalfWidth, m_flBodyHeight, m_pType->szName );
-	int iStart = NearestNode( vecFrom, true );
-	int iEnd = NearestNode( m_vecGoal, false );
-	if ( !pNav || iStart < 0 || iEnd < 0 )
+	NodeCandidates( m_vecGoal, false, VEHICLE_JOIN_NODES, ends );
+	if ( !pNav || !starts.Count() || !ends.Count() )
 		return false;
 
-	// A* over the graded links, skipping links it got stuck on lately
+	// A* over the graded links from every start node (cost: the drive there + the turn) to any end node (cost:
+	// + the drive from it to the goal), skipping links it got stuck on lately
 	int n = pNav->nNodes;
 	CUtlVector<float> g; g.SetCount( n );
+	CUtlVector<float> flEndCost; flEndCost.SetCount( n );
 	CUtlVector<int> from; from.SetCount( n );
 	CUtlVector<char> closed; closed.SetCount( n );
-	for ( int i = 0; i < n; i++ ) { g[i] = FLT_MAX; from[i] = -1; closed[i] = 0; }
+	for ( int i = 0; i < n; i++ ) { g[i] = FLT_MAX; flEndCost[i] = -1.0f; from[i] = -1; closed[i] = 0; }
+	for ( int k = 0; k < ends.Count(); k++ )
+		flEndCost[ends[k]] = ( m_vecGoal - g_pBigAINet->GetNode( ends[k], false )->GetOrigin() ).Length();
 	CUtlVector<int> open;
-	g[iStart] = 0.0f;
-	open.AddToTail( iStart );
-	const Vector &vecEnd = g_pBigAINet->GetNode( iEnd, false )->GetOrigin();
+	for ( int k = 0; k < starts.Count(); k++ )
+	{
+		Vector vecTo = g_pBigAINet->GetNode( starts[k], false )->GetOrigin() - vecFrom;
+		g[starts[k]] = vecTo.Length() + TurnCost( vecTo );
+		open.AddToTail( starts[k] );
+	}
+	float flBestTotal = FLT_MAX;
+	int iEnd = -1;
 	float now = gpGlobals->curtime;
 	while ( open.Count() )
 	{
@@ -778,14 +815,19 @@ bool CDoDSPVehicle::PlanRoute( void )
 		float flBestF = FLT_MAX;
 		for ( int k = 0; k < open.Count(); k++ )
 		{
-			float f = g[open[k]] + ( g_pBigAINet->GetNode( open[k], false )->GetOrigin() - vecEnd ).Length();
+			float f = g[open[k]] + ( g_pBigAINet->GetNode( open[k], false )->GetOrigin() - m_vecGoal ).Length();
 			if ( f < flBestF ) { flBestF = f; iBestOpen = k; }
 		}
+		if ( flBestF >= flBestTotal )
+			break;		// nothing left can beat the best whole drive found
 		int cur = open[iBestOpen];
 		open.FastRemove( iBestOpen );
-		if ( cur == iEnd )
-			break;
 		closed[cur] = 1;
+		if ( flEndCost[cur] >= 0.0f && g[cur] + flEndCost[cur] < flBestTotal )
+		{
+			flBestTotal = g[cur] + flEndCost[cur];
+			iEnd = cur;
+		}
 		const Vector &vecCur = g_pBigAINet->GetNode( cur, false )->GetOrigin();
 		for ( int k = 0; k < pNav->links[cur].Count(); k++ )
 		{
@@ -808,7 +850,7 @@ bool CDoDSPVehicle::PlanRoute( void )
 			}
 		}
 	}
-	if ( g[iEnd] == FLT_MAX )
+	if ( iEnd < 0 )
 		return false;
 
 	CUtlVector<int> nodes;
