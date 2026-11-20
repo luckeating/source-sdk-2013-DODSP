@@ -770,6 +770,8 @@ If you learn something like this, add it here in the same commit as the fix.
   against Crowbar's own decompile of a compiled model (CoD2 officer: same positions, v, and winding 0-2-1) - LESSON:
   verify a file-format writer against a known-good converter's output BEFORE handing it over. Existing entities stay
   dodsp_vehicle until switched (Class box -> dodsp_vehicle_<type>; other keys carry over).
+  CONFIRMED 2026-11-20 (owner, Hammer++ screenshot, two Shermans + a Panzer II): previews right way out, textured, turrets
+  on, facing their entities - "perfect". KNOWN-GOOD for V4j's Hammer side (riders key: stored only until V3).
 - CoD1 set (owner's vehicles_part2.zip, 2026-11-19): REFERENCE ONLY except the **SU-152, which we keep**. One model per
   vehicle, turret/gun as BONES (tag_turret, tag_barrel, tag_flash = muzzle, tag_coaxel), faces +X (forward_yaw 0),
   CoD's rider tags tag_guy01..06 (Sherman, Elefant, SU-152: 6; Opel truck driver/passenger + 4), NO .phy (needs a
