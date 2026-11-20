@@ -61,6 +61,7 @@
 #include "KeyValues.h"
 #include "player.h"
 #include "german_chatter.h"
+#include "dodsp_npc_motion.h"
 #include "bone_setup.h"
 #include "utldict.h"
 #include "tier1/fmtstr.h"
@@ -308,7 +309,11 @@ public:
 	int			RideState( void ) const { return m_eRide; }
 	bool		RidePosition( float flNow, Vector *pvecPos, float *pflFrame ) const;
 	virtual void PhysicsSimulate( void );
-	void		ScriptedMoveTick( const Vector &vecPos, float flCycle );	// THE one way a get-out / bail-out moves him (V3c)
+	void		ScriptedMoveTick( const Vector &vecPos );	// THE one way a get-out / bail-out moves him (V3e: m_Motion)
+	float		SequenceFps( int iSequence );				// one owner: a sequence's real frame rate, from the model
+	// V3e: what is networked while code moves him (dodsp_npc_motion.cpp: position and pose equally late)
+	virtual const Vector *DoDSP_NetworkOrigin( void ) { return m_Motion.NetworkOrigin(); }
+	virtual const QAngle *DoDSP_NetworkAngles( void ) { return m_Motion.NetworkAngles(); }
 	bool		BecomeRagdoll( const CTakeDamageInfo &info, const Vector &forceVector );
 	bool		CanBecomeRagdoll( void );
 	Activity	GetDeathActivity( void );
@@ -475,6 +480,7 @@ private:
 	//-------------------------------------------------------------------------
 public:
 	CGermanChatter		m_Chatter;
+	CDoDSPNpcMotion		m_Motion;				// V3e: code-driven moves (not saved: a load ends any move)
 private:
 	// eCanSay: only squadmates who could say that line now (CGermanChatter::CanSay)
 	CNPC_GermanSoldier *NearestSquadmate( float flMaxDist, bool bMustSeeMe = false, ChatEvent_t eCanSay = NUM_CHAT_EVENTS );
@@ -845,6 +851,7 @@ private:
 	string_t			m_iszRideIdle, m_iszRideGetout;
 	Vector				m_vecRideTag;			// getting out: the seat in the world when he started
 	float				m_flRideTagYaw, m_flRideStart;
+	float				m_flRideFps;			// V3e: the get-out's real frame rate (SequenceFps) = RidePosition's frame clock
 	Vector				m_vecRideFix;			// V3d: where he really lands minus where the animation lands (added over the fall)
 	Vector				m_vecRideLand;			// V3d: where he really lands (RideLandingSpot) - EndRide checks he's there
 	bool		RideLandingSpot( CBaseEntity *pVehicle, const Vector &vecTag, const Vector &vecWant, Vector *pvecSpot, const char **ppszWhy );
@@ -884,6 +891,7 @@ BEGIN_DATADESC( CNPC_GermanSoldier )
 	DEFINE_FIELD( m_vecRideTag, FIELD_POSITION_VECTOR ),
 	DEFINE_FIELD( m_flRideTagYaw, FIELD_FLOAT ),
 	DEFINE_FIELD( m_flRideStart, FIELD_TIME ),
+	DEFINE_FIELD( m_flRideFps, FIELD_FLOAT ),
 	DEFINE_FIELD( m_vecRideFix, FIELD_VECTOR ),
 	DEFINE_FIELD( m_vecRideLand, FIELD_POSITION_VECTOR ),
 END_DATADESC()
@@ -896,7 +904,7 @@ CNPC_GermanSoldier::CNPC_GermanSoldier() : m_AnimMap( DefLessFunc( int ) )
 	m_flBailYaw = 0.0f;
 	m_eRide = GERMAN_RIDE_NONE;
 	m_vecRideSeat = m_vecRideTag = vec3_origin;
-	m_flRideYaw = m_flRideTagYaw = m_flRideStart = 0.0f;
+	m_flRideYaw = m_flRideTagYaw = m_flRideStart = m_flRideFps = 0.0f;
 	m_vecRideFix = m_vecRideLand = vec3_origin;
 	m_iszRideIdle = m_iszRideGetout = NULL_STRING;
 	m_iBailPhase = 0;
@@ -1118,6 +1126,7 @@ void CNPC_GermanSoldier::Precache( void )
 void CNPC_GermanSoldier::OnRestore( void )
 {
 	BaseClass::OnRestore();
+	m_Motion.Reset();			// V3e: nothing delayed survives a load
 	m_Chatter.Init( this, m_SquadName != NULL_STRING ? STRING( m_SquadName ) : NULL, true );
 	if ( m_bBailOut )
 		EndBailOut( true );		// loaded mid-climb: he's off the tank
@@ -5027,14 +5036,14 @@ void CNPC_GermanSoldier::UpdatePlaybackRate( void )
 	// moves only the origin per tick (RidePosition / BailPosition), on the same clock as the rate.
 	if ( m_eRide != GERMAN_RIDE_NONE )
 	{
-		SetPlaybackRate( 1.0f );		// 30 fps = RidePosition's frame clock
+		SetPlaybackRate( 1.0f );		// the model's own fps = RidePosition's frame clock (m_flRideFps, from SequenceFps)
 		return;
 	}
 	if ( m_bBailOut )
 	{
 		float t = gpGlobals->curtime - ( m_flBailPhaseEnd - m_flBailPhaseDur );
 		// the climb's frames 0..BAILCLIMB_UPFRAME over BAILCLIMB_RISE seconds (the lift's clock), then real time
-		SetPlaybackRate( ( m_iBailPhase == 0 && t < BAILCLIMB_RISE ) ? BAILCLIMB_UPFRAME / ( 30.0f * BAILCLIMB_RISE ) : 1.0f );
+		SetPlaybackRate( ( m_iBailPhase == 0 && t < BAILCLIMB_RISE ) ? BAILCLIMB_UPFRAME / ( SequenceFps( GetSequence() ) * BAILCLIMB_RISE ) : 1.0f );
 		return;
 	}
 	if ( m_bDeathAnim || !GetModelPtr() || GetSequence() < 0 )
@@ -5367,6 +5376,8 @@ void CNPC_GermanSoldier::StartTask( const Task_t *pTask )
 			SetAbsOrigin( m_vecBailHatch - Vector( 0.0f, 0.0f, BAILCLIMB_HIDE ) );
 			IncrementInterpolationFrame();
 			SetAbsAngles( QAngle( 0.0f, m_flBailYaw, 0.0f ) );
+			m_Motion.Reset();				// put in the hatch: nothing before this moment counts
+			m_Motion.Begin( this, "bail-out" );
 			SetIdealActivity( ACT_DO_NOT_DISTURB );
 			SetSequenceById( iClimb );
 			SetCycle( 0.0f );
@@ -5631,6 +5642,22 @@ void CNPC_GermanSoldier::RunTask( const Task_t *pTask )
 	{
 		if ( m_eRide == GERMAN_RIDE_NONE )
 			TaskComplete();		// off the vehicle (EndRide): his own AI from here
+		else if ( m_eRide == GERMAN_RIDE_GETOUT && GetModelPtr() )
+		{
+			// V3e watchdog: the pose's frame (the animation's own clock) and the path's frame (RidePosition) agree
+			Vector p;
+			float flFrame;
+			RidePosition( GetAnimTime(), &p, &flFrame );	// the cycle is as of the last animation advance
+			int nLast = Studio_MaxFrame( GetModelPtr(), GetSequence(), GetPoseParameterArray() );
+			float flPose = GetCycle() * (float)nLast;
+			static float s_flWarned = -100.0f;
+			if ( fabs( flPose - flFrame ) > 1.5f && flFrame < nLast - 0.5f && gpGlobals->curtime - s_flWarned > 10.0f )
+			{
+				s_flWarned = gpGlobals->curtime;
+				Warning( "INVARIANT npc_german_soldier %d: getting off, his pose is on frame %.1f but his path on %.1f (%s, %.0f fps) - body and position disagree\n",
+						 entindex(), flPose, flFrame, STRING( m_iszRideGetout ), m_flRideFps );
+			}
+		}
 		return;
 	}
 	if ( pTask->iTask == TASK_GERMAN_BAILOUT )
@@ -5647,6 +5674,7 @@ void CNPC_GermanSoldier::RunTask( const Task_t *pTask )
 				TaskComplete();
 				return;
 			}
+			m_Motion.SwitchSequence( this );
 			SetSequenceById( iJump );
 			SetCycle( 0.0f );
 			m_iBailPhase = 1;
@@ -7343,44 +7371,39 @@ void CNPC_GermanSoldier::PhysicsSimulate( void )
 		Vector p;
 		float flFrame;
 		bool bDone = RidePosition( gpGlobals->curtime, &p, &flFrame );
-		const GermanRidePath_t *pPath = GermanRidePath( STRING( m_iszRideGetout ) );
-		ScriptedMoveTick( p, ( pPath && pPath->nFrames > 1 ) ? flFrame / (float)( pPath->nFrames - 1 ) : -1.0f );
+		ScriptedMoveTick( p );
 		if ( bDone )
 			EndRide( true );
 	}
 	if ( m_bBailOut && m_flBailPhaseDur > 0.0f && GetMoveType() == MOVETYPE_NONE && IsAlive() )
 	{
-		ScriptedMoveTick( BailPosition( gpGlobals->curtime ), -1.0f );	// the climb's slow rise, then real time (its rate)
+		ScriptedMoveTick( BailPosition( gpGlobals->curtime ) );	// the climb's slow rise, then real time (its rate)
 		if ( IsEffectActive( EF_NODRAW ) && ( m_iBailPhase > 0 || gpGlobals->curtime >= m_flBailPhaseEnd - m_flBailPhaseDur + BAILCLIMB_SHOW ) )
 			RemoveEffects( EF_NODRAW );
 	}
 	BaseClass::PhysicsSimulate();
+	m_Motion.PostSimulate( this );		// after the think: its moves are the walk's samples, and the delay drains
 }
 
-// V3c: THE one way a scripted move (a rider's get-out, a crewman's bail-out) moves him, every tick. His position and
-// his pose must reach the client on ONE clock. A frozen NPC (MOVETYPE_NONE) is "simulated every tick" but not
-// "animated every tick", so the client draws his position one tick late and his pose 0.1 s late (cl_interp): in a
-// 0.2 s fall the late pose bobbed ("stutter on the way down") and his feet were drawn 10-13 units under the ground
-// before he landed ("stuck in the ground"). So: animated every tick, the animation advanced on this tick, and the
-// frame (when the caller owns it) taken from the same clock as the position. flCycle < 0 = the playback rate runs it.
-void CNPC_GermanSoldier::ScriptedMoveTick( const Vector &vecPos, float flCycle )
+// V3e: THE one way a scripted move (a rider's get-out, a crewman's bail-out) moves him, every tick - through
+// m_Motion (dodsp_npc_motion.cpp), which networks his position as late as the client draws his pose. (V3c set
+// "animated every tick" instead: as exact while it lasts, but walking soldiers are drawn ~0.1 s late, so he jumped
+// ahead at the start of every move and stalled at its end, and pose parameters set at thinks - aim - stepped.)
+// The animation itself runs at its rate (UpdatePlaybackRate) on the model's own frame rate (SequenceFps).
+void CNPC_GermanSoldier::ScriptedMoveTick( const Vector &vecPos )
 {
-	if ( GetMoveType() != MOVETYPE_NONE || GetMoveParent() )
-	{
-		static float s_flWarned = -1.0f;
-		if ( s_flWarned != gpGlobals->curtime )
-			Warning( "INVARIANT npc_german_soldier %d: a scripted move with movetype %d%s - the engine would move him too\n",
-					 entindex(), (int)GetMoveType(), GetMoveParent() ? " and a parent" : "" );
-		s_flWarned = gpGlobals->curtime;
-	}
-	SetAnimatedEveryTick( true );		// the client's pose window = one tick, like his position's (MOVETYPE_NONE has that)
-	SetSimulatedEveryTick( true );
 	UpdatePlaybackRate();
-	StudioFrameAdvance();				// anim time = now; the AI think's own advance this tick then does nothing
-	if ( flCycle >= 0.0f )
-		SetCycle( clamp( flCycle, 0.0f, 1.0f ) );
-	SetAbsOrigin( vecPos );
-	SetSimulationTime( gpGlobals->curtime );
+	m_Motion.Move( this, vecPos );
+}
+
+// One owner: frames per second a sequence really plays at (the QC's fps - the packs mix 24 and 30)
+float CNPC_GermanSoldier::SequenceFps( int iSequence )
+{
+	if ( iSequence < 0 || !GetModelPtr() )
+		return 30.0f;
+	int nLast = Studio_MaxFrame( GetModelPtr(), iSequence, GetPoseParameterArray() );
+	float flFps = GetSequenceCycleRate( iSequence ) * (float)MAX( nLast, 1 );
+	return flFps > 0.0f ? flFps : 30.0f;
 }
 
 bool CNPC_GermanSoldier::BeginBailOut( const Vector &vecHatch, const Vector &vecGround, const Vector &vecRun, float flYaw )
@@ -7432,10 +7455,12 @@ void CNPC_GermanSoldier::EndBailOut( bool bRun )
 	m_bBailOut = false;
 	m_flBailPhaseDur = 0.0f;
 	RemoveEffects( EF_NODRAW );
+	if ( bRun )
+		SetAbsOrigin( m_vecBailGround );
+	m_Motion.End( this );
 	SetMoveType( MOVETYPE_STEP );
 	if ( bRun )
 	{
-		SetAbsOrigin( m_vecBailGround );
 		SetIdealActivity( ACT_IDLE );
 		m_bBailRun = true;
 	}
@@ -7554,9 +7579,11 @@ int CNPC_GermanSoldier::RideGetOut( bool bForce )
 	m_vecRideLand = vecLand;
 	m_vecRideFix = vecLand - vecWant;
 	m_eRide = GERMAN_RIDE_GETOUT;
+	m_flRideFps = SequenceFps( iSeq );
 	SetParent( NULL );
 	SetAbsOrigin( vecTag );
 	SetAbsAngles( QAngle( 0.0f, m_flRideTagYaw, 0.0f ) );
+	m_Motion.Begin( this, "ride get-out" );		// V3e: stamps the animation clock before the get-out starts
 	SetIdealActivity( ACT_DO_NOT_DISTURB );
 	SetSequenceById( iSeq );
 	SetCycle( 0.0f );
@@ -7614,7 +7641,7 @@ bool CNPC_GermanSoldier::RidePosition( float flNow, Vector *pvecPos, float *pflF
 		return true;
 	}
 	float flLast = (float)( pPath->nFrames - 1 );
-	float f = clamp( ( flNow - m_flRideStart ) * 30.0f, 0.0f, flLast );
+	float f = clamp( ( flNow - m_flRideStart ) * ( m_flRideFps > 0.0f ? m_flRideFps : 30.0f ), 0.0f, flLast );
 	int i0 = (int)f, i1 = MIN( i0 + 1, pPath->nFrames - 1 );
 	float t = f - i0;
 	Vector4D v;
@@ -7632,6 +7659,7 @@ void CNPC_GermanSoldier::EndRide( bool bLanded )
 	m_eRide = GERMAN_RIDE_NONE;
 	if ( GetMoveParent() )
 		SetParent( NULL );		// keeps where he is in the world
+	m_Motion.End( this );		// V3e: (does nothing for a seated rider - no motion was running)
 	SetAbsAngles( QAngle( 0.0f, GetAbsAngles().y, 0.0f ) );
 	SetMoveType( MOVETYPE_STEP );
 	if ( bLanded )

@@ -9611,6 +9611,13 @@ bool CBaseEntity::UseStepSimulationNetworkOrigin( const Vector **out_v )
 {
 	Assert( out_v );
 
+	// DOD-SP: a code-driven NPC move (dodsp/dodsp_npc_motion.cpp) - lint check_npc_motion keeps this here
+	if ( const Vector *pDoDSP = DoDSP_NetworkOrigin() )
+	{
+		*out_v = pDoDSP;
+		return true;
+	}
+
 
 	if ( g_bTestMoveTypeStepSimulation &&
 		GetMoveType() == MOVETYPE_STEP &&
@@ -9630,6 +9637,13 @@ bool CBaseEntity::UseStepSimulationNetworkOrigin( const Vector **out_v )
 bool CBaseEntity::UseStepSimulationNetworkAngles( const QAngle **out_a )
 {
 	Assert( out_a );
+
+	// DOD-SP: a code-driven NPC move (dodsp/dodsp_npc_motion.cpp) - lint check_npc_motion keeps this here
+	if ( const QAngle *pDoDSP = DoDSP_NetworkAngles() )
+	{
+		*out_a = pDoDSP;
+		return true;
+	}
 
 	if ( g_bTestMoveTypeStepSimulation &&
 		GetMoveType() == MOVETYPE_STEP &&

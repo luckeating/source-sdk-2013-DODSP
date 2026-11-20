@@ -825,7 +825,36 @@ If you learn something like this, add it here in the same commit as the fix.
   origin + simulation time; SetMoveType at the end resets the flags. INVARIANT if it runs with a movetype or parent
   the engine would also move. Lint check_scripted_moves: PhysicsSimulate never sets origin/cycle itself, only
   ScriptedMoveTick sets the every-tick flags. LESSON: anything the code moves per tick must also ANIMATE per tick -
-  position and pose on one interpolation window. The preview draws pose and path on one clock, so it can't show this. (2) Landing on raised
+  position and pose on one interpolation window. The preview draws pose and path on one clock, so it can't show this.
+  **V3e (owner 2026-11-20: "make that a big base addition ... vaulting, jumping, parachutes")** - V3c's tick clock was
+  replaced before it shipped. dodsp_tools/motion_sim.py simulates what the client draws (engine rules copied from
+  c_baseentity.cpp / baseentity.cpp) for EVERY code-moved animation we have: 3 get-outs, the bail-out, six CoD2
+  traversals (jump_down_40/56/96, low wall, fence, window - root motion split off like the rides), a parachute
+  touchdown. Worst drawn bone vs the true motion: stock 24-38 units on ALL of them (the bug is universal, not the
+  tanks'); the engine's own way for traversals (root motion + AutoMovement, glided) 8-13; V3c tick clock ~0.5 BUT a
+  13-unit jump when a running soldier starts a move (walking NPCs are drawn ~0.1 s late, the tick clock 1 tick) and
+  think-set pose parameters (aim; we run AimGun every think, also during moves) step 4.7 degrees at a time. KEY ENGINE
+  FACT: Valve squares pose and position for WALKING NPCs on the SERVER - ComputeStepSimulationNetwork networks the
+  origin gliding from the last think's spot to this one (one think late) - and drops the glide the moment "external
+  code moved the entity". So the base = the same trick for code-driven moves: CDoDSPNpcMotion
+  (dodsp/dodsp_npc_motion.cpp/.h, one owner) keeps a ring of real positions (every tick while code moves him, at
+  thinks otherwise) and NETWORKS the one from DelayTicks ago (= the client's NPC pose window - 1 tick, computed from
+  the player's cl_interp / cl_interp_ratio / cl_updaterate / cl_interp_npcs like the client does; load line `DOD-SP NPC
+  motion: ...`); the real origin stays current. Hook: virtual CBaseEntity::DoDSP_NetworkOrigin/Angles, asked first by
+  UseStepSimulationNetworkOrigin/Angles (baseentity.h/.cpp - every NPC's origin goes through SendProxy_Origin). It
+  stamps the animation clock (StudioFrameAdvance) at Begin, SwitchSequence and End; after End the delay drains and it
+  hands back to the engine's glide on a think (both then read the same two think positions). Measured: <= 1.7 units on
+  every case, hand-off at a run 1.7 units per frame throughout, aim poses smooth. Frame clock: SequenceFps (the
+  model's own fps - the packs mix 24 and 30; RidePosition used a fixed 30) -> m_flRideFps, the bail climb's rate.
+  Guards: lint check_npc_motion (no Set*EveryTick in our code; PhysicsSimulate moves only via ScriptedMoveTick ->
+  m_Motion.Move; any owner of a CDoDSPNpcMotion overrides both hooks and calls PostSimulate; the engine hook stays in
+  both baseentity.cpp functions - tested by breaking each), INVARIANTs (moved by code outside a motion / with a
+  movetype or parent the engine would also move / parented while delayed; getting off, the pose's frame and the path's
+  frame more than 1.5 apart). RULE: every new code-driven animation goes through CDoDSPNpcMotion and is run through
+  motion_sim.py (clock 'delay') before a build. Known: a sequence switch inside a move shows the new sequence ~0.1 s
+  early on every Source NPC (m_nSequence isn't interpolated; the 0.2 s blend covers it) - switch at slow moments.
+  Leaving a MOVING parent mid-move would pop (the client resets interpolation on a parent change): today every
+  vehicle halts before anyone gets off. Undo: V3d's server.dll + revert this commit (V3c's tick clock comes back). (2) Landing on raised
   ground they "get stuck in the ground": the ground trace started 72 units above where the ANIMATION lands, i.e.
   inside any bank higher than that. V3b: the trace starts above the seat, and on landing his whole hull is dropped
   from 48 units up onto what's there (INVARIANT once per map if it can't fit).

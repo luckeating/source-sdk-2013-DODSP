@@ -70,6 +70,10 @@ or a release frame timed in code.
   - `DEATH_LEGHIT` and the CoD2 `DEATH_CORNER_*` are also unused (the code uses the CoD1 corner deaths).
 
 ### Movement stage: obstacle course
+- Before any of these is wired: the CoD2 ones carry their motion in the animation (jump_down_56 travels 76 forward and
+  57 down), the CoD1 ones are made in place - either way code moves him, so each goes through CDoDSPNpcMotion
+  (dodsp_npc_motion.cpp) with an in-place animation + a path table (like the ride get-outs), and through
+  dodsp_tools/motion_sim.py before a build. Their QCs mix fps 24 and 30: the code reads SequenceFps, never assumes.
 - **Vaulting**
   - CoD2: `JUMP_LOWWALL`.
   - CoD1: `MANTLE_LOW`, `MANTLE_HIGH`, `TRAV_WALL`.

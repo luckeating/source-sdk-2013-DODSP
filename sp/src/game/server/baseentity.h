@@ -1768,6 +1768,10 @@ private:
 public:
 	bool					UseStepSimulationNetworkOrigin( const Vector **out_v );
 	bool					UseStepSimulationNetworkAngles( const QAngle **out_a );
+	// DOD-SP: an NPC moved by code networks where it was one think ago, like the walking glide above, so its position
+	// and its pose reach the screen equally late (dodsp/dodsp_npc_motion.cpp). NULL = the engine's own rules.
+	virtual const Vector	*DoDSP_NetworkOrigin( void ) { return NULL; }
+	virtual const QAngle	*DoDSP_NetworkAngles( void ) { return NULL; }
 
 public:
 	// Add a discontinuity to a step

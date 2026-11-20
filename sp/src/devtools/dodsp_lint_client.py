@@ -474,11 +474,32 @@ def check_vehicle_damage():
     return bad
 
 
-def check_scripted_moves():
-    """V3c: a rider's get-out and a crewman's bail-out move him every tick, and the client must get his position AND his
-    pose on that one clock (otherwise the pose is drawn 0.1 s late: mid-air stutter, feet in the ground). ScriptedMoveTick
-    is the one way: PhysicsSimulate moves him only through it, and only it tells the engine he animates every tick."""
+def check_npc_motion():
+    """V3e: INVARIANT - an NPC's position and pose reach the screen equally late. Code-driven moves (ride get-outs,
+    bail-outs, later vaults/climbs/parachutes) go through CDoDSPNpcMotion (dodsp_npc_motion.cpp), which networks the
+    position as late as the client draws the pose - like the engine's own walking glide. So:
+      - nothing of ours sets "animated/simulated every tick" (that changes the client's windows: V3c did, and moves
+        then jumped ahead of the walking soldiers around them and aim poses stepped);
+      - the soldier's PhysicsSimulate moves/animates him only through ScriptedMoveTick -> m_Motion.Move;
+      - every class that owns a CDoDSPNpcMotion overrides DoDSP_NetworkOrigin AND DoDSP_NetworkAngles and calls
+        PostSimulate (else the delay line is never networked or never drains);
+      - CBaseEntity's two networked-origin/angle functions still ask the hook first (a Mapbase merge must not drop it).
+    motion_sim.py (dodsp_tools) is the preview check for any new code-driven animation."""
     bad = []
+    srv = os.path.join(ROOT, "game", "server")
+    for root, _, files in os.walk(os.path.join(srv, "dodsp")):
+        for fn in files:
+            if not fn.endswith((".cpp", ".h")):
+                continue
+            path = os.path.join(root, fn)
+            text = open(path, encoding="utf-8", errors="replace").read()
+            for n, line in enumerate(text.split("\n"), 1):
+                if re.search(r"\bSet(Animated|Simulated)EveryTick\s*\(", line.split("//")[0]):
+                    bad.append("%s:%d sets the every-tick flags - code-driven moves go through CDoDSPNpcMotion" % (fn, n))
+            if re.search(r"\bCDoDSPNpcMotion\s+m_\w+\s*;", text):
+                for need in ("DoDSP_NetworkOrigin", "DoDSP_NetworkAngles", "PostSimulate("):
+                    if need not in text:
+                        bad.append("%s owns a CDoDSPNpcMotion but has no %s" % (fn, need))
     with open(SOLDIER_CPP, encoding="utf-8") as f:
         lines = f.read().split("\n")
     func = None
@@ -489,10 +510,19 @@ def check_scripted_moves():
         code = line.split("//")[0]
         if func == "PhysicsSimulate" and re.search(r"\b(SetAbsOrigin|SetLocalOrigin|SetCycle|SetSimulationTime)\s*\(", code):
             bad.append("npc_german_soldier.cpp:%d: PhysicsSimulate moves or animates him itself - go through ScriptedMoveTick" % n)
-        if re.search(r"\bSet(Animated|Simulated)EveryTick\s*\(", code) and func != "ScriptedMoveTick":
-            bad.append("npc_german_soldier.cpp:%d (%s) sets the every-tick flags - only ScriptedMoveTick may" % (n, func))
-    if not any("CNPC_GermanSoldier::ScriptedMoveTick" in l for l in lines):
-        bad.append("npc_german_soldier.cpp has no ScriptedMoveTick")
+    body = "\n".join(lines)
+    m = re.search(r"void CNPC_GermanSoldier::ScriptedMoveTick\([^)]*\)\s*\{(.*?)\n\}", body, re.S)
+    if not m or "m_Motion.Move(" not in m.group(1):
+        bad.append("npc_german_soldier.cpp: ScriptedMoveTick doesn't move him through m_Motion.Move")
+    be = open(os.path.join(srv, "baseentity.cpp"), encoding="utf-8", errors="replace").read()
+    for fn_name, hook in (("UseStepSimulationNetworkOrigin", "DoDSP_NetworkOrigin()"), ("UseStepSimulationNetworkAngles", "DoDSP_NetworkAngles()")):
+        mm = re.search(r"bool CBaseEntity::%s\([^)]*\)\s*\{(.*?)\n\}" % fn_name, be, re.S)
+        if not mm or hook not in mm.group(1):
+            bad.append("baseentity.cpp: CBaseEntity::%s no longer asks %s first" % (fn_name, hook))
+    beh = open(os.path.join(srv, "baseentity.h"), encoding="utf-8", errors="replace").read()
+    for hook in ("DoDSP_NetworkOrigin", "DoDSP_NetworkAngles"):
+        if not re.search(r"virtual\s+const\s+\w+\s*\*\s*%s" % hook, beh):
+            bad.append("baseentity.h: the virtual %s hook is gone" % hook)
     return bad
 
 
@@ -508,7 +538,7 @@ def main():
                      ("the vehicle damage state is written outside its owner (V4)", check_vehicle_damage),
                      ("the Hammer FGD doesn't match the vehicle types (V4j)", check_vehicle_fgd),
                      ("a rider seat or ride path is broken (V3)", check_vehicle_seats),
-                     ("a get-out / bail-out moves the soldier outside ScriptedMoveTick (V3c)", check_scripted_moves)):
+                     ("an NPC is moved by code outside CDoDSPNpcMotion (V3e: position and pose drawn equally late)", check_npc_motion)):
         vbad = fn()
         if vbad:
             print("dodsp_lint_client: %s:" % what)
