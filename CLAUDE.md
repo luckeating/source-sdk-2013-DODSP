@@ -488,6 +488,9 @@ If you learn something like this, add it here in the same commit as the fix.
   stretch is clear, `INVARIANT ... the sweep found a wall (...) where CorridorClear says it can drive` with the hit's
   normal/height/position. Known gap: CorridorClear samples GROUND on the centre line only (the sides are checked by
   lines at 24/64 units up), so a steep bump under one track is found only by the sweep - the INVARIANT shows it.
+  V1c TESTED 2026-11-19 (build 44648397962, same map): "working pretty well" - drives the forest road, arrives, sits on
+  the ground right. Note: route straightening (CorridorClear) cuts across open ground on the inside of road bends - it
+  is drivable, so allowed; a "keep to the road" mode is an option for later, if the owner wants it.
 - CoD1 set (owner's vehicles_part2.zip, 2026-11-19): REFERENCE ONLY except the **SU-152, which we keep**. One model per
   vehicle, turret/gun as BONES (tag_turret, tag_barrel, tag_flash = muzzle, tag_coaxel), faces +X (forward_yaw 0),
   CoD's rider tags tag_guy01..06 (Sherman, Elefant, SU-152: 6; Opel truck driver/passenger + 4), NO .phy (needs a
