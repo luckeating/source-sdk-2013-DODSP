@@ -523,6 +523,7 @@ If you learn something like this, add it here in the same commit as the fix.
   gives VEHICLE_JOIN_NODES (6) start and end nodes; the A* starts from all of them (cost = drive there + TurnCost:
   VEHICLE_TURN_COST 512 units for a full about-turn, 0 straight ahead) and ends at whichever end node makes the
   cheapest whole drive (+ the distance on to the goal); it stops once nothing left can beat the best found.
+  OWNER 2026-11-19 (build 44663089277): "good enough for now" - V1 (driving) parked as KNOWN-GOOD; slack default 160 kept.
 - CoD1 set (owner's vehicles_part2.zip, 2026-11-19): REFERENCE ONLY except the **SU-152, which we keep**. One model per
   vehicle, turret/gun as BONES (tag_turret, tag_barrel, tag_flash = muzzle, tag_coaxel), faces +X (forward_yaw 0),
   CoD's rider tags tag_guy01..06 (Sherman, Elefant, SU-152: 6; Opel truck driver/passenger + 4), NO .phy (needs a
