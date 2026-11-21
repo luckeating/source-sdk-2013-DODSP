@@ -218,3 +218,11 @@ New sequences are ADDED to that list (never replace it) and the rebuild is check
 dodsp_ride_paths.txt unchanged. Animations the port doesn't have come from CoD2's raw xanims
 (vehicle_preview/cod2_xanim.py + xanim_to_smd.py convert -> SMDs in the port's own format, appended to a copy of the
 officer QC as `$animation "a_<name>"` + `$sequence "cod2_vi_<name>"`).
+
+H2 (2026-11-21): after the ride pack command, the halftrack driver's steering:
+
+    python3 vehicle_preview/steer_compose.py <pack out dir> <pack out dir> <pack out dir>/npc_ww2_anims_ride.qc
+
+writes the two one-frame steering poses and adds (once) $poseparameter "steer" + $sequence "ww2_halftrack_driver"
+(steer_right / halftrack_driver_idle / steer_left on steer -1..1). The pack's 9 driver animations come from the
+owner's CoD2 xanims (vehicle_preview/xanim_to_smd.py convert) as recorded above.

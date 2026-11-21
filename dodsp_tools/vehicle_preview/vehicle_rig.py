@@ -40,7 +40,7 @@ import os, re, sys, numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from editor_models import mesh
 from cod2_xmodel import parts, surfs
-from phy_fit import write_from_phy, phy_pieces, phy_settings, read_physics_smd, G_from_mesh
+from phy_fit import write_from_phy, write_pieces, phy_pieces, phy_settings, read_physics_smd, G_from_mesh
 
 PORT_SCALE = 1.0284           # measured on the halftrack (median miss 0.004); the tanks fit it to 0.03-0.05
 MATCH = 0.1                   # units: a port triangle's middle this close to a CoD triangle's middle is that triangle
@@ -52,6 +52,20 @@ DOOR_OPEN = 100.0             # degrees, the halftrack's doors at "doors" = 1
 # Tiger's foliage hangs over its tracks (measured 1.9 / 6.9 / 2.9 against the leaves vs the Tiger's 6.2 / 10.3 / 6.3)
 SUSP_FROM = {'tiger_brush_hull': 'tiger_hull'}
 MEASURED = {}                 # variant -> its suspension facts, for SUSP_FROM
+# OPEN TOPS (owner 2026-11-20): every port's collision is ONE convex shell, so over an open cab / troop bay it closes a
+# lid at the top - bullets stopped in the air over the crew and riders. For these the collision is built instead from
+# convex pieces with the top left open (game frame, units; measured on the halftrack mesh 2026-11-21: bay floor z 30,
+# walls up to z 77 with their inner face beyond |y| 30, the bay from the rear doors (x -105) to the cab's armoured
+# front plate and visor (x 20 - ahead of the driver's hands, x 8-17); the engine and front armour ahead of it):
+#   floor  = the compiled shell cut at z <= floor + 2 (the running gear and everything below the floor)
+#   front  = the hull of every mesh corner ahead of x1 (engine, front armour, front tyres)
+#   rear   = the hull of every mesh corner behind x0 above the floor (rear plate and doors)
+#   walls  = the hull of every mesh corner between x0 and x1 above the floor and further out than wall_y, per side
+# Checked: every seat in the bay (and the driver's) stays OUT of every piece up to head height, and the pieces' bounds
+# are the shell's within 1 unit.
+OPEN_TOP = {'halftrack': dict(x0=-105.0, x1=20.0, floor=30.0, wall_y=30.0,
+                              keep_open=[(11.3, 15.2, 29.1), (-26.0, 17.9, 41.8), (-32.2, -17.9, 41.8), (-88.7, 17.9, 41.8),
+                                         (-59.2, -17.8, 41.8), (-86.8, -17.4, 41.8), (-53.1, 17.9, 41.8)])}
 
 # rig name: (CoD2 model, steers, has doors, [port variants])
 VEHICLES = {
@@ -288,14 +302,27 @@ def write_variant(rig, var, ports, out, cod, steers, doors):
     else:
         open(os.path.join(out, var + '_idle.smd'), 'w', newline='\n').write('version 1\n' + nodes + skeleton_text(skel, order))
         seq = '$sequence "idle" "%s_idle.smd" { fps 1 }\n' % var
-    # collision: the compiled .phy itself (phy_fit.py: a decompile's collision may be turned; the .phy can't be)
-    pieces = write_from_phy(phy, os.path.join(out, var + '_physics.smd'))
-    _, ptris = read_physics_smd(os.path.join(out, var + '_physics.smd'))
+    # collision: the compiled .phy itself (phy_fit.py: a decompile's collision may be turned; the .phy can't be), or for an
+    # open-topped vehicle pieces that leave the top open (OPEN_TOP)
     from scipy.spatial import cKDTree
-    W = np.array([p for _, vs in ptris for p, n, r in vs]) @ G_from_mesh().T
-    Q = np.concatenate(phy_pieces(phy))
-    miss = max(cKDTree(Q).query(W)[0].max(), cKDTree(W).query(Q)[0].max())
-    if miss > 0.5: raise SystemExit('%s: the written collision misses the compiled one by %.2f' % (var, miss))
+    if rig in OPEN_TOP:
+        pc = open_top_pieces(rows, phy, OPEN_TOP[rig], var)
+        pieces = write_pieces(pc, os.path.join(out, var + '_physics.smd'))
+        Q = np.concatenate(phy_pieces(phy)); W = np.concatenate(pc)
+        n = connected_pieces(os.path.join(out, var + '_physics.smd'))
+        if n != len(pc): raise SystemExit('%s: the collision file splits into %d connected pieces, not %d - studiomdl would weld them' % (var, n, len(pc)))
+        # the same footprint and floor as the shell; the top may be lower (that's the open top: the shell's highest
+        # point stood over the bay, the front MG's shield)
+        miss = float(np.abs(np.r_[W.min(0) - Q.min(0), W.max(0)[:2] - Q.max(0)[:2]]).max())
+        if W.max(0)[2] > Q.max(0)[2] + 1.0: miss = max(miss, float(W.max(0)[2] - Q.max(0)[2]))
+        if miss > 1.0: raise SystemExit('%s: the open-top pieces span %.2f units beyond / short of the shell (pieces %s..%s, shell %s..%s)' % (var, miss, W.min(0).round(1), W.max(0).round(1), Q.min(0).round(1), Q.max(0).round(1)))
+    else:
+        pieces = write_from_phy(phy, os.path.join(out, var + '_physics.smd'))
+        _, ptris = read_physics_smd(os.path.join(out, var + '_physics.smd'))
+        W = np.array([p for _, vs in ptris for p, n, r in vs]) @ G_from_mesh().T
+        Q = np.concatenate(phy_pieces(phy))
+        miss = max(cKDTree(Q).query(W)[0].max(), cKDTree(W).query(Q)[0].max())
+        if miss > 0.5: raise SystemExit('%s: the written collision misses the compiled one by %.2f' % (var, miss))
     ps = phy_settings(phy)
     il = h['illum']
     qc = ('// DOD-SP: %s rigged by dodsp_tools/vehicle_preview/vehicle_rig.py (CoD2 %s bones and weights on the port mesh).\n\n'
@@ -327,6 +354,52 @@ def write_variant(rig, var, ports, out, cod, steers, doors):
     print('    wheels: ' + ', '.join('%s r%.1f%s' % (k[6:], v[0], ' steer' if v[1] else '') for k, v in sorted(wf.items()) if 'left' in k)
           + ('; wheelbase %.1f, body pivot %.1f' % (wb, pivot) if wb is not None else ''))
     return order, wf, sf
+
+def connected_pieces(smd):
+    """how many pieces studiomdl's $concave will see: triangles joined by shared corner positions"""
+    _, tris = read_physics_smd(smd)
+    par = {}
+    def find(a):
+        while par[a] != a: par[a] = par[par[a]]; a = par[a]
+        return a
+    for _, vs in tris:
+        ks = [tuple(np.round(p, 4)) for p, n, r in vs]
+        for k in ks: par.setdefault(k, k)
+        for k in ks[1:]: par[find(k)] = find(ks[0])
+    return len({find(k) for k in par})
+
+def open_top_pieces(rows, phy, c, var):
+    """the convex pieces of an open-topped vehicle's collision (OPEN_TOP), game frame; stops if a seat ends up inside"""
+    from scipy.spatial import ConvexHull, HalfspaceIntersection, Delaunay
+    V = np.array([mesh_to_game(p) for mat, vs in rows for p, n, uv, w in vs])
+    shell = np.concatenate(phy_pieces(phy)); h = ConvexHull(shell)
+    # floor: the shell cut by z <= floor + 2 (a point inside both: low in the middle of the shell)
+    hs = np.vstack([h.equations, [0, 0, 1, -(c['floor'] + 2.0)]])
+    inside = np.array([shell[:, 0].mean(), shell[:, 1].mean(), (shell[:, 2].min() + c['floor']) / 2])
+    floor = HalfspaceIntersection(hs, inside).intersections
+    up = V[:, 2] >= c['floor'] - 2.0
+    mid = (V[:, 0] > c['x0']) & (V[:, 0] < c['x1'])
+    pieces = [floor, V[V[:, 0] >= c['x1']], V[(V[:, 0] <= c['x0']) & up],
+              V[mid & up & (V[:, 1] >= c['wall_y'])], V[mid & up & (V[:, 1] <= -c['wall_y'])]]
+    names = ['floor', 'front', 'rear', 'left wall', 'right wall']
+    for nm, P in zip(names, pieces):
+        if len(P) < 4: raise SystemExit('%s: open-top piece "%s" has %d corners' % (var, nm, len(P)))
+    # every seat stays open from the seat up to head height (a man sitting there can be shot from above)
+    for s in c['keep_open']:
+        for dz in (8.0, 20.0, 32.0):
+            q = np.array(s) + [0, 0, dz]
+            for nm, P in zip(names, pieces):
+                if Delaunay(P).find_simplex(q) >= 0:
+                    raise SystemExit('%s: the seat at %s is inside the "%s" piece %.0f units up' % (var, s, nm, dz))
+    print('    open top: %s' % ', '.join('%s %d corners' % (nm, len(ConvexHull(P).vertices)) for nm, P in zip(names, pieces)))
+    # studiomdl ($concave) splits the collision into convex pieces by CONNECTED triangles - pieces that share a corner
+    # position would be welded into one and wrapped in one hull (the lid again). Each piece is drawn in by 0.05 units
+    # toward its middle, so no two share a corner; write_variant checks the written file splits into len(pieces).
+    out = []
+    for P in pieces:
+        H = P[ConvexHull(P).vertices]; c = H.mean(0)
+        out.append(c + (H - c) * (1.0 - 0.05 / max(np.linalg.norm(H - c, axis=1).max(), 1.0)))
+    return out
 
 def fmt(v): return ('%.3f' % float(v)).rstrip('0').rstrip('.')
 def cod_name(rig): return VEHICLES[rig][0]

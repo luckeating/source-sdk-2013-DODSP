@@ -7528,16 +7528,19 @@ bool CNPC_GermanSoldier::BeginRide( CBaseEntity *pVehicle, const Vector &vecSeat
 {
 	if ( !pVehicle || !GetModelPtr() )
 		return false;
-	int iIdle = LookupSequence( pszIdle ), iGetout = LookupSequence( pszGetout );
-	if ( iIdle < 0 || iGetout < 0 )
+	// H2: a CREW seat (the halftrack's driver) has no get-out - he stays aboard; the vehicle hands his role to a crewman
+	// climbing out of its hatch when it's abandoned (CDoDSPVehicle::SpawnCrewman), and that removes him
+	bool bCrew = !pszGetout || !pszGetout[0];
+	int iIdle = LookupSequence( pszIdle ), iGetout = bCrew ? -1 : LookupSequence( pszGetout );
+	if ( iIdle < 0 || ( !bCrew && iGetout < 0 ) )
 	{
 		RideWarnOnce( "riders need npc_ww2_anims_ride (the V3 ride pack, $includemodel in the soldier's .qc) - no riders spawned",
 					  iIdle < 0 ? pszIdle : pszGetout );
 		return false;
 	}
-	const GermanRidePath_t *pPath = GermanRidePath( pszGetout );
-	int nFrames = Studio_MaxFrame( GetModelPtr(), iGetout, GetPoseParameterArray() ) + 1;
-	if ( !pPath || pPath->nFrames != nFrames )
+	const GermanRidePath_t *pPath = bCrew ? NULL : GermanRidePath( pszGetout );
+	int nFrames = bCrew ? 0 : Studio_MaxFrame( GetModelPtr(), iGetout, GetPoseParameterArray() ) + 1;
+	if ( !bCrew && ( !pPath || pPath->nFrames != nFrames ) )
 	{
 		char sz[160];
 		Q_snprintf( sz, sizeof( sz ), "%s: the model has %d frames, %s %s", pszGetout, nFrames, GERMAN_RIDE_PATHS,
@@ -7561,7 +7564,7 @@ bool CNPC_GermanSoldier::BeginRide( CBaseEntity *pVehicle, const Vector &vecSeat
 			RideWarnOnce( "a seat's \"fidget\" isn't in the model (the ride pack) - that rider only idles", pszFidget );
 	}
 	m_flRideFidgetAt = gpGlobals->curtime + random->RandomFloat( GERMAN_RIDE_FIDGET_MIN, GERMAN_RIDE_FIDGET_MAX );
-	m_iszRideGetout = AllocPooledString( pszGetout );
+	m_iszRideGetout = bCrew ? NULL_STRING : AllocPooledString( pszGetout );
 	m_bBailOut = m_bBailRun = false;
 	SetMoveType( MOVETYPE_NONE );
 	SetGroundEntity( NULL );

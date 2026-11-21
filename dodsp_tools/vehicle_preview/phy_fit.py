@@ -57,8 +57,11 @@ def phy_settings(path):
 def write_from_phy(phy, out):
     """the compiled collision itself as a collision SMD in the reference mesh's frame: every convex piece's hull.
     Returns the number of pieces (more than one = the QC needs $concave)."""
+    return write_pieces(phy_pieces(phy), out)
+
+def write_pieces(pieces, out):
+    """convex pieces (point arrays, game frame) as a collision SMD in the reference mesh's frame, each piece its hull"""
     from scipy.spatial import ConvexHull
-    pieces = phy_pieces(phy)
     Gt = G_from_mesh().T                                        # game -> mesh
     with open(out, 'w', newline='\n') as f:
         f.write('version 1\nnodes\n0 "root" -1\nend\nskeleton\ntime 0\n0 0 0 0 0 0 0\nend\ntriangles\n')

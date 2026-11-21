@@ -59,7 +59,7 @@
 // this; the lint checks the repo copy against it, the loader checks the owner's copy (V4e's first run: the old script
 // had no hatches, every crewman got out beside the tank and nothing at bail time said why). Bump both together
 // whenever the code starts needing a new key in the script.
-#define DODSP_VEHICLE_SCRIPT_VERSION	"V3e"
+#define DODSP_VEHICLE_SCRIPT_VERSION	"H2"
 static char s_szVehicleScriptVersion[32] = "not loaded";
 
 // V4h: how a shell's strike on the armour went - what HitFeedback shows and plays (name table guarded below)
@@ -237,6 +237,7 @@ extern int GermanSoldier_RideGetOut( CBaseEntity *pEnt, bool bForce );	// 1 goin
 extern void GermanSoldier_RideAbort( CBaseEntity *pEnt );
 extern int GermanSoldier_RideState( CBaseEntity *pEnt );		// 0 off, 1 seated, 2 getting off
 #define VEHICLE_MAX_SEATS		8
+#define VEHICLE_MAX_CREW_SEATS	2			// H2: crew members you can see in their seats (the halftrack's driver)
 #define VEHICLE_RIDERS_CONTACT	1200.0f		// riders get off when an enemy it knows of is this close (dismount "contact")
 #define VEHICLE_RIDERS_SPAWN	0.2f		// riders are put aboard this long after the vehicle activates
 #define VEHICLE_RIDER_WAIT		0.25f		// a rider whose landing spot is taken tries again this often ...
@@ -311,6 +312,12 @@ struct VehicleType_t
 	// sequences of npc_ww2_anims_ride), and how long after the dismount order he goes
 	struct Seat_t { Vector vecOrigin; float flYaw; char szIdle[64], szGetout[64], szFidget[64]; float flDelay; };	// V3e: fidget = played now and then while seated
 	CUtlVector<Seat_t> seats;
+	// H2: a crew member you can SEE in his seat ("crew_seats": role -> origin, yaw, idle, steer) - he IS that crew role:
+	// shot in his seat = the role is dead; the role killed inside = so is he; abandoned = a crewman climbs out of the
+	// role's hatch and he leaves the seat. steer 1 = the idle is a blend on the pose parameter "steer" (-1 full right ..
+	// 1 full left) and follows the steering angle.
+	struct CrewSeat_t { int eRole; Vector vecOrigin; float flYaw; char szIdle[64]; bool bSteer; };
+	CUtlVector<CrewSeat_t> crewSeats;
 	// V4e: where each crew role gets out ("hatches": role -> "turret x y z" in the turret model's space, or "hull x y z"
 	// in the hull's) = the roof his feet end up on, measured from the meshes. Roles at the same spot share a hatch
 	// (iShare = the first role there): the next man waits until the one before has left it.
@@ -554,6 +561,29 @@ static void LoadVehicleTypes( bool bForce )
 				break;
 			}
 			t->seats.AddToTail( seat );
+		}
+		KeyValues *pCrewSeats = pType->FindKey( "crew_seats" );
+		for ( KeyValues *pSeat = pCrewSeats ? pCrewSeats->GetFirstTrueSubKey() : NULL; pSeat; pSeat = pSeat->GetNextTrueSubKey() )
+		{
+			VehicleType_t::CrewSeat_t cs;
+			cs.eRole = -1;
+			for ( int r = 0; r < NUM_CREW_ROLES; r++ )
+				if ( !Q_stricmp( pSeat->GetName(), g_pszCrewRole[r] ) )
+					cs.eRole = r;
+			bool bInCrew = false;
+			for ( int i = 0; i < t->armour.nCrew; i++ )
+				bInCrew |= ( cs.eRole >= 0 && t->armour.eCrew[i] == cs.eRole );
+			ParseVector( pSeat->GetString( "origin" ), cs.vecOrigin );
+			cs.flYaw = pSeat->GetFloat( "yaw" );
+			Q_strncpy( cs.szIdle, pSeat->GetString( "idle" ), sizeof( cs.szIdle ) );
+			cs.bSteer = pSeat->GetBool( "steer" );
+			if ( !bInCrew || !cs.szIdle[0] || t->crewSeats.Count() >= VEHICLE_MAX_CREW_SEATS )
+			{
+				Warning( "INVARIANT DOD-SP vehicles: type '%s' crew seat \"%s\" skipped - %s\n", t->szName, pSeat->GetName(),
+						 !bInCrew ? "not a crew role this vehicle has" : !cs.szIdle[0] ? "no \"idle\"" : "too many crew seats" );
+				continue;
+			}
+			t->crewSeats.AddToTail( cs );
 		}
 		if ( !t->szModel[0] )
 		{
@@ -1095,6 +1125,17 @@ private:
 	float			m_flRidersOffAt;			// when they started getting off (a rider waits for his landing spot at most VEHICLE_RIDER_WAIT_MAX)
 	COutputEvent	m_OnRidersOff;
 	void			RidersThink( void );
+	// H2: crew you can see in their seats (the type's "crew_seats") - CrewSeatsThink is the one owner of keeping each
+	// in step with his crew role, and of the driver's steering pose
+	EHANDLE			m_hCrewSeat[VEHICLE_MAX_CREW_SEATS];
+	bool			m_bCrewSeatsSpawned;
+	float			m_flCrewSeatsAt;
+	int				m_iSteerPose;				// the driver's "steer" pose parameter (looked up once; -2 = not yet)
+	void			CrewSeatsThink( void );
+	void			SpawnCrewSeats( void );
+	void			LeaveCrewSeat( int eRole );
+	void			CrewmanShot( int iCrew, const char *pszWhy );
+	int				CrewIndexOf( int eRole ) const;
 	void			SpawnRiders( void );
 	void			OrderDismount( const char *pszWhy );
 	int				RidersAboard( void );
@@ -1244,6 +1285,9 @@ BEGIN_DATADESC( CDoDSPVehicle )
 	DEFINE_FIELD( m_bRidersSpawned, FIELD_BOOLEAN ),
 	DEFINE_FIELD( m_flRidersSpawnAt, FIELD_TIME ),
 	DEFINE_AUTO_ARRAY( m_hRider, FIELD_EHANDLE ),
+	DEFINE_AUTO_ARRAY( m_hCrewSeat, FIELD_EHANDLE ),
+	DEFINE_FIELD( m_bCrewSeatsSpawned, FIELD_BOOLEAN ),
+	DEFINE_FIELD( m_flCrewSeatsAt, FIELD_TIME ),
 	DEFINE_AUTO_ARRAY( m_flRiderGo, FIELD_TIME ),
 	DEFINE_FIELD( m_bDismountOrder, FIELD_BOOLEAN ),
 	DEFINE_FIELD( m_flRidersOffAt, FIELD_TIME ),
@@ -1416,6 +1460,9 @@ CDoDSPVehicle::CDoDSPVehicle()
 	m_flRidersSpawnAt = m_flRidersOffAt = 0.0f;
 	for ( int i = 0; i < VEHICLE_MAX_SEATS; i++ )
 		m_flRiderGo[i] = 0.0f;
+	m_bCrewSeatsSpawned = false;
+	m_flCrewSeatsAt = 0.0f;
+	m_iSteerPose = -2;
 	s_All.AddToTail( this );
 }
 
@@ -1425,6 +1472,9 @@ void CDoDSPVehicle::UpdateOnRemove( void )
 	for ( int i = 0; i < VEHICLE_MAX_SEATS; i++ )
 		if ( m_hRider[i].Get() )
 			GermanSoldier_RideAbort( m_hRider[i].Get() );		// still aboard: off where they are, not left on nothing
+	for ( int i = 0; i < VEHICLE_MAX_CREW_SEATS; i++ )
+		if ( m_hCrewSeat[i].Get() )
+			UTIL_Remove( m_hCrewSeat[i].Get() );				// the vehicle's own crew goes with it
 	StopSounds();
 	if ( m_hTurret.Get() )
 		UTIL_Remove( m_hTurret.Get() );
@@ -1606,7 +1656,11 @@ static void CheckVehicleCollision( CBaseEntity *pVehicle, const char *pszLabel )
 	Vector vecPhys = vecMaxs - vecMins;
 	for ( int k = 0; k < 3; k++ )
 	{
-		if ( fabs( vecPhys[k] - vecMesh[k] ) > MAX( VEHICLE_COLLIDE_MIN, VEHICLE_COLLIDE_SLACK * vecMesh[k] ) )
+		// an open-topped vehicle's collision stops short of its highest part (vehicle_rig.py OPEN_TOP: the bay is open, so
+		// the top over it is too) - up to half its height lower is fine; anything else is measured both ways
+		float flSlack = MAX( VEHICLE_COLLIDE_MIN, VEHICLE_COLLIDE_SLACK * vecMesh[k] );
+		bool bOK = ( k == 2 ) ? ( vecPhys[k] <= vecMesh[k] + flSlack && vecPhys[k] >= 0.5f * vecMesh[k] ) : fabs( vecPhys[k] - vecMesh[k] ) <= flSlack;
+		if ( !bOK )
 		{
 			Warning( "INVARIANT DOD-SP vehicle %s: %s's collision is %.0f x %.0f x %.0f but its mesh %.0f x %.0f x %.0f (length x width x height) "
 					 "- the collision is turned or the wrong one; recompile the model from its rig\n", pszLabel, pszModel,
@@ -1670,6 +1724,8 @@ void CDoDSPVehicle::Activate( void )
 	BaseClass::Activate();
 	if ( m_bRiders && !m_bRidersSpawned && m_flRidersSpawnAt <= 0.0f )
 		m_flRidersSpawnAt = gpGlobals->curtime + VEHICLE_RIDERS_SPAWN;
+	if ( m_pType && m_pType->crewSeats.Count() && !m_bCrewSeatsSpawned && m_flCrewSeatsAt <= 0.0f )
+		m_flCrewSeatsAt = gpGlobals->curtime + VEHICLE_RIDERS_SPAWN;
 	m_flNavCheckTime = gpGlobals->curtime + 1.5f;		// grade and set off once the node graph is built (DriveThink)
 }
 
@@ -2191,6 +2247,7 @@ void CDoDSPVehicle::DriveThink( void )
 	if ( !m_pType )
 		return;
 	RidersThink();
+	CrewSeatsThink();
 	if ( m_eState != VSTATE_FIGHTING )
 	{
 		DamageStateThink();		// burning / abandoned: no driving, no guns
@@ -4124,6 +4181,120 @@ void CDoDSPVehicle::RidersThink( void )
 	}
 }
 
+//-----------------------------------------------------------------------------
+// H2: crew you can see in their seats. A seated man IS his crew role (one owner: m_iCrewAlive), so the two never
+// disagree: shot in his seat -> CrewmanShot kills the role; the role killed inside (spall, the wreck) -> he dies;
+// the vehicle abandoned -> the role's crewman climbs out of its hatch (SpawnCrewman) and LeaveCrewSeat removes him first.
+//-----------------------------------------------------------------------------
+int CDoDSPVehicle::CrewIndexOf( int eRole ) const
+{
+	for ( int i = 0; i < m_pType->armour.nCrew; i++ )
+		if ( m_pType->armour.eCrew[i] == eRole )
+			return i;
+	return -1;
+}
+
+void CDoDSPVehicle::SpawnCrewSeats( void )
+{
+	m_bCrewSeatsSpawned = true;
+	if ( m_eFaction != DoDSP_FactionFromName( "axis" ) || m_eState != VSTATE_FIGHTING )
+		return;		// German soldiers only so far (like the riders); a vehicle already out of the fight has no one to show
+	char szSquad[32];
+	Q_snprintf( szSquad, sizeof( szSquad ), "tankcrew%d", entindex() );
+	for ( int i = 0; i < m_pType->crewSeats.Count() && i < VEHICLE_MAX_CREW_SEATS; i++ )
+	{
+		const VehicleType_t::CrewSeat_t &cs = m_pType->crewSeats[i];
+		int iCrew = CrewIndexOf( cs.eRole );
+		if ( iCrew < 0 || !( m_iCrewAlive & ( 1 << iCrew ) ) )
+			continue;
+		CBaseEntity *pNPC = CreateEntityByName( "npc_german_soldier" );
+		if ( !pNPC )
+			break;
+		Vector vecWorld;
+		VectorTransform( cs.vecOrigin, EntityToWorldTransform(), vecWorld );
+		pNPC->KeyValue( "additionalequipment", "weapon_mp40" );
+		pNPC->KeyValue( "squadname", szSquad );
+		pNPC->AddSpawnFlags( SF_NPC_FALL_TO_GROUND );
+		pNPC->SetAbsOrigin( vecWorld );
+		pNPC->SetAbsAngles( QAngle( 0.0f, GetAbsAngles().y + cs.flYaw, 0.0f ) );
+		DispatchSpawn( pNPC );
+		pNPC->Activate();
+		if ( !GermanSoldier_BeginRide( pNPC, this, cs.vecOrigin, cs.flYaw, cs.szIdle, "", "" ) )
+		{
+			UTIL_Remove( pNPC );		// the soldier said why (once per map): the ride pack's driver sequence is missing
+			continue;
+		}
+		m_hCrewSeat[i] = pNPC;
+		Msg( "DOD-SP vehicle %s: its %s is in his seat%s\n", Label(), g_pszCrewRole[cs.eRole], cs.bSteer ? " (steering)" : "" );
+	}
+}
+
+void CDoDSPVehicle::LeaveCrewSeat( int eRole )
+{
+	for ( int i = 0; i < m_pType->crewSeats.Count() && i < VEHICLE_MAX_CREW_SEATS; i++ )
+		if ( m_pType->crewSeats[i].eRole == eRole && m_hCrewSeat[i].Get() )
+		{
+			UTIL_Remove( m_hCrewSeat[i].Get() );
+			m_hCrewSeat[i] = NULL;
+		}
+}
+
+void CDoDSPVehicle::CrewmanShot( int iCrew, const char *pszWhy )
+{
+	if ( iCrew < 0 || !( m_iCrewAlive & ( 1 << iCrew ) ) )
+		return;
+	m_iCrewAlive &= ~( 1 << iCrew );
+	Msg( "DOD-SP vehicle %s: its %s is killed (%s) - crew %d of %d left\n", Label(), g_pszCrewRole[m_pType->armour.eCrew[iCrew]], pszWhy,
+		 CrewAlive(), m_pType->armour.nCrew );
+	if ( !CrewHas( CREW_DRIVER ) && !CrewHas( CREW_RADIO ) )
+		SetImmobile( "no one left to drive it", NULL );
+	if ( m_eState == VSTATE_FIGHTING )
+		CheckMorale( NULL );
+}
+
+void CDoDSPVehicle::CrewSeatsThink( void )
+{
+	if ( !m_pType->crewSeats.Count() )
+		return;
+	if ( !m_bCrewSeatsSpawned && m_flCrewSeatsAt > 0.0f && gpGlobals->curtime >= m_flCrewSeatsAt )
+		SpawnCrewSeats();
+	float flLock = ( m_flWheelbase > 0.0f ) ? RAD2DEG( atanf( m_flWheelbase / MAX( m_pType->flMinTurnRadius, 50.0f ) ) ) : 0.0f;
+	for ( int i = 0; i < m_pType->crewSeats.Count() && i < VEHICLE_MAX_CREW_SEATS; i++ )
+	{
+		CBaseEntity *pMan = m_hCrewSeat[i].Get();
+		if ( !pMan )
+			continue;
+		const VehicleType_t::CrewSeat_t &cs = m_pType->crewSeats[i];
+		int iCrew = CrewIndexOf( cs.eRole );
+		if ( GermanSoldier_RideState( pMan ) == 0 )
+		{
+			m_hCrewSeat[i] = NULL;			// dead (or off his seat some other way): the role goes with him
+			CrewmanShot( iCrew, "shot in his seat" );
+			continue;
+		}
+		if ( iCrew < 0 || ( !( m_iCrewAlive & ( 1 << iCrew ) ) && !( m_iBailMask & ( 1 << iCrew ) ) ) )
+		{
+			m_hCrewSeat[i] = NULL;			// his role was killed inside the vehicle - so is he, where he sits
+			CTakeDamageInfo info( this, this, 10000.0f, DMG_BLAST );
+			pMan->TakeDamage( info );
+			continue;
+		}
+		if ( cs.bSteer && flLock > 0.0f )
+		{
+			CBaseAnimating *pAnim = pMan->GetBaseAnimating();
+			if ( m_iSteerPose == -2 )
+			{
+				m_iSteerPose = pAnim ? pAnim->LookupPoseParameter( "steer" ) : -1;
+				if ( m_iSteerPose < 0 )
+					Warning( "INVARIANT DOD-SP vehicle %s: its %s's model has no \"steer\" pose parameter - he won't turn the wheel "
+							 "(recompile npc_ww2_anims_ride from the H2 pack)\n", Label(), g_pszCrewRole[cs.eRole] );
+			}
+			if ( pAnim && m_iSteerPose >= 0 )
+				pAnim->SetPoseParameter( m_iSteerPose, clamp( m_flSteer / flLock, -1.0f, 1.0f ) );	// + = left, like m_flSteer
+		}
+	}
+}
+
 void CDoDSPVehicle::SetBurning( bool bAmmo, CBaseEntity *pAttacker )
 {
 	if ( m_eState == VSTATE_BURNING || m_eState == VSTATE_WRECKED )
@@ -4350,6 +4521,7 @@ void CDoDSPVehicle::Wreck( bool bBlowUp, CBaseEntity *pAttacker )
 	m_iCrewAlive = 0;
 	m_nBailPending = 0;
 	m_iBailMask = 0;
+	CrewSeatsThink();			// H2: whoever you could see in a seat dies with it
 	if ( pAttacker )
 		m_hKiller = pAttacker;
 	SetState( VSTATE_BURNING, pAttacker );		// out of the fight now (halted, nobody shoots it) - wrecked at the swap
@@ -4500,6 +4672,7 @@ void CDoDSPVehicle::DamageStateThink( void )
 		{
 			m_nBailPending--;
 			m_iBailMask &= ~( 1 << iSeat );
+			LeaveCrewSeat( m_pType->armour.eCrew[iSeat] );		// H2: the man you saw in the seat is the one climbing out
 			if ( !SpawnCrewman( m_vecBailFrom, m_pType->armour.eCrew[iSeat] ) )
 				Msg( "DOD-SP vehicle %s: no room beside it for a crewman to get out\n", Label() );
 			m_flNextBailAt = now + random->RandomFloat( 0.6f, 1.0f );

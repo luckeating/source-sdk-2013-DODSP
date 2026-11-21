@@ -354,6 +354,16 @@ def check_vehicle_types():
                     bad.append("%s: hatch '%s' is '%s' - want a crew role and \"turret x y z\" / \"hull x y z\"" % (name, r, v))
                 elif parts[0] == "turret" and "turret_model" not in t:
                     bad.append("%s: hatch '%s' is on a turret it hasn't got" % (name, r))
+            # H2: a crew member you can see in his seat IS a crew role of this vehicle; one that steers needs steered wheels
+            cs = t.get("crew_seats")
+            for r, v in (cs if isinstance(cs, list) else []):
+                d = dict(v) if isinstance(v, list) else {}
+                if r not in a.get("crew", "").split():
+                    bad.append("%s: crew seat '%s' isn't one of its crew (%s)" % (name, r, a.get("crew", "")))
+                if len(d.get("origin", "").split()) != 3 or not d.get("idle"):
+                    bad.append("%s: crew seat '%s' needs \"origin\" x y z and \"idle\"" % (name, r))
+                if d.get("steer") == "1" and t.get("tracked", "0") != "0":
+                    bad.append("%s: crew seat '%s' steers, but a tracked vehicle has no steering wheel" % (name, r))
         # V3e: machine guns on their real mounts; no pre-V3e "coax" (it fired from the main gun's muzzle)
         if "coax" in t:
             bad.append("%s: has the old \"coax\" block - V3e machine guns go in \"mgs\" on their mounts" % name)
@@ -422,7 +432,7 @@ def check_vehicle_types():
 # through the ground at its last velocity), plus the constructor.
 DAMAGE_WRITERS = {
     "m_flStructure": {"ApplyPenetration", "BlastHit", "Spawn", "CDoDSPVehicle"},
-    "m_iCrewAlive": {"KillCrew", "BailOut", "Wreck", "Spawn", "CDoDSPVehicle"},
+    "m_iCrewAlive": {"KillCrew", "CrewmanShot", "BailOut", "Wreck", "Spawn", "CDoDSPVehicle"},   # H2: CrewmanShot = a seated crewman shot
     "m_eState": {"SetState", "CDoDSPVehicle"},   # SetState halts the vehicle when it leaves the fight (V4b)
 }
 

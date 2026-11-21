@@ -1062,6 +1062,7 @@ If you learn something like this, add it here in the same commit as the fix.
     their own radius; texture scroll stays (dodsp_treads.txt). Tanks keep their whole-hull lurch. Preview (wheel_preview
     style, over a bumpy profile) before any build; the owner recompiles the hulls with Crowbar.
   - Rides with it: the collision-vs-mesh INVARIANT (H1b) and, once the owner approves the preview, H2 (driver).
+  ALL THREE BUILT TOGETHER 2026-11-21 (owner: "start the next big build") - see T1, OPEN-TOP and H2 below.
   **T1 PREPARED 2026-11-20 (tracks like the wheels; code in, NOT built - previews t1_tracks_<vehicle>.gif with the owner).**
   ONE rig tool: dodsp_tools/vehicle_preview/vehicle_rig.py (replaces halftrack_rig.py) for panzer2 (+winter), tiger,
   tiger_brush, sherman (+desert), crusader, carrier (+desert), halftrack (5 variants). Every port triangle of every one of
@@ -1091,6 +1092,35 @@ If you learn something like this, add it here in the same commit as the fix.
   edge growth 0.9 Sherman/halftrack .. 5.2 Tiger units - a skinned belt stretches, it can't tear). Owner side once
   approved: compile every variant's QC from dodsp_vehicle_rigs_t1.zip with Crowbar (replaces the hulls in place).
   Undo: the previous client.dll + the old models.
+  OWNER 2026-11-21 on the previews: "fantastic ... the last finishing touch" - approved, built with H2 below.
+  **OPEN-TOP COLLISION BUILT (rig) 2026-11-21 (adjustment list item 1).** vehicle_rig.py OPEN_TOP (halftrack only - the
+  carrier has the same lid, offered, owner hasn't answered): collision = 5 convex pieces instead of the port's one shell -
+  floor (the shell cut at z 32), front (every corner ahead of x 20: engine, front armour, the cab's front plate and visor
+  - ahead of the driver's hands at x 8-17), rear (behind x -105: rear plate, doors), left/right walls (x -105..20, above
+  the floor, |y| >= 30). Checks in the tool: every rider seat and the driver's seat open from 8 to 32 units up (stops
+  otherwise), the pieces' footprint and floor = the shell's (top may be lower: the shell's highest point stood over the
+  bay - the front MG shield, not armour yet), and the written file splits into exactly 5 CONNECTED pieces (studiomdl's
+  $concave splits by connectivity: pieces sharing a corner position would be welded and wrapped in one hull - the lid
+  again - so each piece is drawn in 0.05 units toward its middle). Outer skin covered: all but interior fittings at
+  |y| 26-30 (stowage on the inside of the walls). Game guard: the collision-vs-mesh INVARIANT accepts a collision up to
+  half the mesh's height lower (an open top), never higher, and x/y as before.
+  **H2 BUILT 2026-11-21 (the driver; owner approved the preview: "package it ... along with the driver").** Pack: the ride
+  pack + 9 converted CoD2 driver animations (cod2_xanim / xanim_to_smd) + steer_compose.py: the steering poses are ONE
+  frame each (a blend's animations must match; the frame turned furthest from the idle: hardleft frame 37, hardright 31)
+  and with the pack .qc it adds (once) $poseparameter "steer" -1 1 + $sequence "ww2_halftrack_driver" blending
+  steer_right / idle / steer_left. Owner compiles dodsp_npc_ww2_anims_ride_h2.zip (replaces npc_ww2_anims_ride.mdl; the 39
+  V3 sequences and dodsp_ride_paths.txt unchanged). Script (script_version H2): type key "crew_seats" { <crew role> {
+  origin, yaw, idle, steer } } - the halftrack's driver at CoD2's tag_driver 11.3 15.2 29.1. Server: a seated crewman IS
+  his crew role (one owner m_iCrewAlive): CrewSeatsThink (DriveThink + Wreck) = THE owner of keeping them in step - he
+  dies/leaves his seat -> CrewmanShot (the role dies; no driver and no radio = immobile; morale check); the role killed
+  inside (spall, the wreck) -> he dies where he sits; abandoned -> LeaveCrewSeat removes him as the role's crewman climbs
+  out of its hatch (SpawnCrewman). Steering: the "steer" pose = m_flSteer / full lock (+ = left), looked up once
+  (INVARIANT if the model hasn't got it - the old pack). Soldier: BeginRide with an empty get-out = a crew seat (no ride
+  path needed, never gets off by himself). Spawned 0.2 s after activation, axis vehicles only, like the riders. Lint:
+  crew seat roles are the type's crew, origin + idle present, a steering seat only on a wheeled type (tested with a
+  wrong role); m_iCrewAlive writers += CrewmanShot. Known: no death animation yet (a seated driver ragdolls from his seat;
+  CoD2's halftrack_driver_death is in the pack for later); he doesn't tip with the sprung body (~1 unit).
+  Undo: script_version V3e script + the previous server.dll (the driver isn't spawned), or delete "crew_seats".
   **H1 BUILD 2026-11-20: 44846448265** (owner asleep, said "go ahead and build this whole thing" + anything that improves
   the experience): wheels, steering, sprung body, measured track scroll, dust. Not yet tested in game.
   **H2 PREPARED 2026-11-20 (not built - the driver's animations wait for the owner's look at the preview).**

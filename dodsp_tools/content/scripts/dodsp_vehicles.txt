@@ -87,7 +87,7 @@
 "DoDSP_Vehicles"
 {
 	// Must match DODSP_VEHICLE_SCRIPT_VERSION in server.dll (dodsp_vehicle.cpp): use this file with the server.dll of the same build.
-	"script_version"	"V3e"
+	"script_version"	"H2"
 
 	"panzer2"
 	{
@@ -424,6 +424,12 @@
 		{
 			"driver"			"hull -20 15 70"
 			"commander"		"hull -20 -15 70"
+		}
+		// H2: the driver you can see, in CoD2's own driver seat (tag_driver x 1.0284, cod2_vehicle_tags.txt); he steers
+		// (ww2_halftrack_driver blends on "steer" with the steering angle - steer_compose.py, previewed by the owner)
+		"crew_seats"
+		{
+			"driver"	{ "origin" "11.3 15.2 29.1"	"yaw" "0"	"idle" "ww2_halftrack_driver"	"steer" "1" }
 		}
 		"sounds"	{ "engine_idle" "DoDSP_Vehicle.TruckIdle"	"engine_move" "DoDSP_Vehicle.TruckMove" }
 	}
