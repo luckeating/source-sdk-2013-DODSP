@@ -1234,6 +1234,22 @@ If you learn something like this, add it here in the same commit as the fix.
   dodsp_lint_client.py. Undo: the H2b server.dll + script (H2b ignores the new keys - but then the halftrack spawns no
   riders only if "riders" is 0 on the entity: H2b's code would seat them with the V3 path, aisle men getting out through
   the wall - keep "riders" 0 with an H2b build), or delete the halftrack's "seats".
+  FIRST H3 TEST 2026-11-21 (build 44890308250): every animation played, but the halftrack CRAWLED with riders aboard -
+  tracks/wheels at full speed, the hull "stuck at 10 fps, 1-2 mph", worse with more riders; the same with the PLAYER
+  standing on it or in its empty bay. Cause (engine code): our vehicle is a SOLID_VPHYSICS MOVETYPE_PUSH with a physics
+  shadow, and baseentity.cpp VPhysicsUpdatePusher moves such a pusher BACK by its shadow's lag after every successful
+  game push (with a push list it undoes the whole push): the player's physics object is a player controller, not a
+  shadow, so it collides with our shadow; the seated riders' shadows are children, checked one by one. The game push
+  had already moved the vehicle and carried what stands on it - VPhysics then took most moves back. func_tracktrain is
+  SOLID_BSP, which the engine never lets VPhysics block. V3's tank riders sat on the deck (no player aboard in tests).
+  **H3b (prepared):** CDoDSPVehicle::VPhysicsUpdate - for MOVETYPE_PUSH it frees the push list and returns (never the
+  engine's pusher check); the shadow still follows every move (FinishPushers), so loose props are still shoved aside;
+  people are pushed or block (Blocked -> it waits) by the game push as before. Guards: CreepWatchdog (DriveThink: real
+  travel vs what its speed asked for over 1 s; under 60% of >= 64 units = `INVARIANT ... its moves are being taken
+  back (last blocker: ...)`) - the whole class "wheels turn, hull doesn't follow"; lint check_vehicle_push (the override
+  exists, doesn't hand a PUSH vehicle to the engine's check, DriveThink runs the watchdog; tested by putting the call
+  back). Known: a heavy loose prop can no longer stop a vehicle (it's shoved by the shadow). Files: dodsp_vehicle.cpp,
+  dodsp_lint_client.py. Undo: the H3 server.dll (build 44890308250).
   **H1 BUILD 2026-11-20: 44846448265** (owner asleep, said "go ahead and build this whole thing" + anything that improves
   the experience): wheels, steering, sprung body, measured track scroll, dust. Not yet tested in game.
   **H2 PREPARED 2026-11-20 (not built - the driver's animations wait for the owner's look at the preview).**

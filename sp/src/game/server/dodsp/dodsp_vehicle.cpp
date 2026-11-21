@@ -69,6 +69,9 @@ COMPILE_TIME_ASSERT( ARRAYSIZE( s_pszHitSound ) == NUM_VHITFX );
 #define VEHICLE_HITFX_MIN_CALIBRE	15.0f		// mm: shells show their strike, bullets keep the engine's impacts
 #define VEHICLE_HIT_SOUNDLEVEL		SNDLVL_120dB
 #define VEHICLE_THINK			0.05f
+#define VEHICLE_CREEP_WINDOW	1.0f		// H3b: the watchdog compares real and wanted travel over this long ...
+#define VEHICLE_CREEP_MIN		64.0f		// ... once the speed asked for at least this far ...
+#define VEHICLE_CREEP_SHARE		0.6f		// ... and calls it creeping below this share of it
 #define VEHICLE_STEER_RATE		90.0f		// H1: degrees/s the steered wheels turn at (a driver winding the wheel)
 #define VEHICLE_STEP			24.0f		// what it climbs without noticing (kerbs, rubble)
 #define VEHICLE_MAX_STEP_PER_32	36.0f		// ground change between two samples 32 units apart (a slope of ~48 degrees)
@@ -1047,6 +1050,11 @@ public:
 	virtual void	OnRestore( void );
 	virtual void	UpdateOnRemove( void );
 	virtual void	Blocked( CBaseEntity *pOther );
+	virtual void	VPhysicsUpdate( IPhysicsObject *pPhysics );	// H3b: its physics shadow never takes a move back
+	// H3b watchdog: how far it really went vs how far its speed said, over VEHICLE_CREEP_WINDOW (not saved)
+	Vector			m_vecCreepFrom;
+	float			m_flCreepStart, m_flCreepWant, m_flCreepWarned;
+	void			CreepWatchdog( const Vector &vecPos, float dt );
 	virtual int		DrawDebugTextOverlays( void );
 	// one owner: dodsp_factions. Out of the fight (burning / abandoned / wrecked) it's no side: nobody shoots it
 	virtual Class_T	Classify( void ) { return m_eState == VSTATE_FIGHTING ? DoDSP_ClassForFaction( m_eFaction ) : CLASS_NONE; }
@@ -1520,6 +1528,8 @@ CDoDSPVehicle::CDoDSPVehicle()
 	m_iSteerPose = -2;
 	m_flDoorsStart = 0.0f;
 	m_iDoorPose = -2;
+	m_vecCreepFrom = vec3_origin;
+	m_flCreepStart = m_flCreepWant = m_flCreepWarned = 0.0f;
 	m_flDoorOpen = 0.0f;
 	s_All.AddToTail( this );
 }
@@ -2109,6 +2119,62 @@ void CDoDSPVehicle::SetStuck( VehicleStuck_t eWhy, CBaseEntity *pWho )
 		m_OnStuck.FireOutput( pWho ? pWho : this, this );
 }
 
+//-----------------------------------------------------------------------------
+// H3b: INVARIANT - a vehicle goes where its own move says, unless the GAME push can't move what's in the way
+// (Blocked: a man against a wall - it waits) or CorridorClear / VehicleInTheWay stop it first. Its physics shadow
+// must never take a move back. The engine's VPhysicsUpdatePusher does exactly that for a SOLID_VPHYSICS pusher
+// (baseentity.cpp: "physics updated the shadow, so check to see if I got blocked" -> moves the pusher back by the
+// shadow's lag, and with a push list undoes the whole push): the player standing on the halftrack or in its bay
+// (his physics object is a player controller, not a shadow, so it collides with ours) and the riders seated in it
+// (their shadows are children of ours, checked one by one) made it take most moves back - the owner's test: wheels
+// at full speed, the hull at ~10 moves a second and 1-2 mph, worse with every rider. func_tracktrain is SOLID_BSP,
+// which the engine never lets VPhysics block - this is the same rule for us. The shadow itself still follows every
+// move (FinishPushers updates it), so physics props are still shoved aside by it; people are pushed (or block) by
+// the game push, as they always were. Guard: CreepWatchdog.
+//-----------------------------------------------------------------------------
+void CDoDSPVehicle::VPhysicsUpdate( IPhysicsObject *pPhysics )
+{
+	if ( GetMoveType() != MOVETYPE_PUSH )
+	{
+		BaseClass::VPhysicsUpdate( pPhysics );		// (a wreck's static physics, or anything we don't drive)
+		return;
+	}
+	if ( HasDataObjectType( PHYSICSPUSHLIST ) )
+		DestroyDataObject( PHYSICSPUSHLIST );		// what VPhysicsUpdatePusher would free after its check
+	// (its other bookkeeping, m_flVPhysicsUpdateLocalTime, PhysicsPusher resets every tick; MoveDone never comes:
+	// DriveThink renews the move-done time every think)
+}
+
+// THE check that what it was told to drive is what it drove: over each VEHICLE_CREEP_WINDOW, the distance its speed
+// asked for vs the distance it really went. Below VEHICLE_CREEP_SHARE = something takes its moves back (the wheels
+// turn at its speed, so on screen: tracks racing, hull crawling) - one INVARIANT line naming the last blocker.
+void CDoDSPVehicle::CreepWatchdog( const Vector &vecPos, float dt )
+{
+	float now = gpGlobals->curtime;
+	if ( m_flCreepStart <= 0.0f || now - m_flCreepStart > VEHICLE_CREEP_WINDOW + 0.5f )
+	{
+		m_vecCreepFrom = vecPos;
+		m_flCreepStart = now;
+		m_flCreepWant = 0.0f;
+		return;
+	}
+	m_flCreepWant += fabs( m_flSpeed ) * dt;
+	if ( now - m_flCreepStart < VEHICLE_CREEP_WINDOW )
+		return;
+	float flGot = ( vecPos - m_vecCreepFrom ).Length();
+	if ( m_flCreepWant >= VEHICLE_CREEP_MIN && flGot < m_flCreepWant * VEHICLE_CREEP_SHARE && now - m_flCreepWarned > 10.0f )
+	{
+		m_flCreepWarned = now;
+		CBaseEntity *pB = m_hBlocker.Get();
+		Warning( "INVARIANT DOD-SP vehicle %s: moved %.0f of the %.0f units its speed asked for in %.1f s - its moves are being "
+				 "taken back (last blocker: %s%s)\n", Label(), flGot, m_flCreepWant, now - m_flCreepStart,
+				 pB ? pB->GetClassname() : "none", pB && now - m_flBlockedTime < VEHICLE_CREEP_WINDOW + 0.5f ? ", just now" : "" );
+	}
+	m_vecCreepFrom = vecPos;
+	m_flCreepStart = now;
+	m_flCreepWant = 0.0f;
+}
+
 void CDoDSPVehicle::Blocked( CBaseEntity *pOther )
 {
 	// The engine couldn't push pOther out of the way: wait for it (a man steps aside); the stuck
@@ -2328,6 +2394,7 @@ void CDoDSPVehicle::DriveThink( void )
 	}
 	float now = gpGlobals->curtime;
 	Vector vecPos = GetAbsOrigin();
+	CreepWatchdog( vecPos, dt );
 	Vector vecFwd( cosf( DEG2RAD( m_flHeading ) ), sinf( DEG2RAD( m_flHeading ) ), 0.0f );
 	if ( m_flNavCheckTime > 0.0f && now >= m_flNavCheckTime )
 	{
