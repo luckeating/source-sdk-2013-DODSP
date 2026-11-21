@@ -1269,6 +1269,11 @@ If you learn something like this, add it here in the same commit as the fix.
   in the dump). = heap corruption / use-after-free by someone else, not this code path. Owner: it happened when he fired
   the SMG grenade at the halftrack as the troops got out. Culprit not found yet; the minidump holds only memory near
   stack pointers (MiniDumpWithIndirectlyReferencedMemory), not the corrupted block or its neighbours.
+  DEEPER DUMPS (c_dodsp_crashlog.cpp, with H3b): the dump also carries two levels of memory pointed to from the
+  crashing thread's stack and registers (level 1: -512..+1024 around every pointer on the top 64 KB of stack; level 2:
+  -256..+512 around every pointer inside those; heap/stack only, modules excluded; static arrays, nothing allocated in
+  the filter; budget 48 MB, 24576 ranges) - next time the corrupted block, its neighbours and what they point to are in
+  the file. Read a dump in CI with the symbols artifact (cdb -z <dump>), never commit the owner's dump: the repo is PUBLIC.
   Also seen in every session's log: client.dll+0x16xxxx reading 0x68056c08, then executing a no-module address - once per
   game run (shutdown?), not reported by the owner; named by the same reader.
   **H1 BUILD 2026-11-20: 44846448265** (owner asleep, said "go ahead and build this whole thing" + anything that improves

@@ -5,7 +5,8 @@
 //
 //   dodsp_crash.txt   what happened, in which DLL and at what offset, the registers, and the
 //                     return addresses found on the stack (each as DLL + offset)
-//   dodsp_crash.mdmp  a small Windows minidump of the same moment (for a debugger + symbols)
+//   dodsp_crash.mdmp  a Windows minidump of the same moment (for a debugger + symbols): the stack, and two levels of
+//                     memory pointed to from it (up to 48 MB - enough to see a corrupted heap block and its neighbours)
 //
 // It catches the exception as it is raised (a "first-chance" handler), so it works even when
 // something else would kill the process silently. It never handles the exception - the game goes
@@ -97,6 +98,86 @@ namespace
 		}
 	}
 
+	// Memory the dump carries beyond the engine's "indirectly referenced" (256 bytes around each pointer ON THE STACK):
+	// two more levels of pointers out from the crashing thread's stack and registers. A heap corruption is seen through
+	// a pointer INSIDE an object the crashing code was using (2026-11-21: a soldier's activity-hash bucket array, not on
+	// the stack, so not in the dump) - level 1 holds that block and its neighbours, level 2 what THEY point to (the
+	// culprit's objects). Static arrays: nothing is allocated inside the exception filter. Budget DUMP_BUDGET bytes.
+	enum { MAX_DUMP_RANGES = 24576, DUMP_BUDGET = 48 * 1024 * 1024 };
+	struct DumpRange_t { ULONG64 uBase; ULONG uSize; };
+	DumpRange_t s_Ranges[MAX_DUMP_RANGES];
+	int		s_nRanges = 0, s_iNextRange = 0;
+	ULONG	s_uDumpBytes = 0;
+
+	bool AddRange( ULONG_PTR uAt, ULONG uBefore, ULONG uAfter )
+	{
+		if ( uAt < 0x10000 || s_nRanges >= MAX_DUMP_RANGES || s_uDumpBytes >= (ULONG)DUMP_BUDGET )
+			return false;
+		ULONG_PTR uStart = ( uAt - MIN( (ULONG_PTR)uBefore, uAt ) ) & ~(ULONG_PTR)15;
+		ULONG uSize = ( uBefore + uAfter + 15 ) & ~15u;
+		if ( !Readable( (const void *)uStart, uSize ) )
+		{
+			uStart = uAt & ~(ULONG_PTR)15;		// the start of its page region may be all that's readable
+			uSize = 64;
+			if ( !Readable( (const void *)uStart, uSize ) )
+				return false;
+		}
+		MEMORY_BASIC_INFORMATION mbi;
+		if ( !VirtualQuery( (const void *)uStart, &mbi, sizeof( mbi ) ) || mbi.Type == MEM_IMAGE )
+			return false;		// code and module data are in the dump's module list already; heap and stacks only
+		s_Ranges[s_nRanges].uBase = uStart;
+		s_Ranges[s_nRanges].uSize = uSize;
+		s_nRanges++;
+		s_uDumpBytes += uSize;
+		return true;
+	}
+
+	// every dword in [p, p+n) that points at readable non-module memory adds a range around it
+	void AddPointersIn( const unsigned char *p, ULONG n, ULONG uBefore, ULONG uAfter )
+	{
+		for ( ULONG i = 0; i + 4 <= n && s_nRanges < MAX_DUMP_RANGES; i += 4 )
+		{
+			ULONG_PTR v = *(const ULONG_PTR *)( p + i );
+			if ( v >= 0x10000 && v < 0x7fff0000 )
+				AddRange( v, uBefore, uAfter );
+		}
+	}
+
+	void CollectDumpRanges( const CONTEXT *pCtx )
+	{
+		s_nRanges = s_iNextRange = 0;
+		s_uDumpBytes = 0;
+		ULONG_PTR uRegs[] = { pCtx->Eax, pCtx->Ebx, pCtx->Ecx, pCtx->Edx, pCtx->Esi, pCtx->Edi, pCtx->Ebp };
+		for ( int i = 0; i < (int)ARRAYSIZE( uRegs ); i++ )
+			AddRange( uRegs[i], 1024, 1024 );
+		// level 1: around everything the stack points at (the top 64 KB of the crashing thread's stack)
+		ULONG uStack = 64 * 1024;
+		while ( uStack > 4096 && !Readable( (const void *)pCtx->Esp, uStack ) )
+			uStack /= 2;
+		if ( Readable( (const void *)pCtx->Esp, uStack ) )
+			AddPointersIn( (const unsigned char *)pCtx->Esp, uStack, 512, 1024 );
+		// level 2: around what those blocks point at
+		int nLevel1 = s_nRanges;
+		for ( int i = 0; i < nLevel1 && s_nRanges < MAX_DUMP_RANGES && s_uDumpBytes < (ULONG)DUMP_BUDGET; i++ )
+			AddPointersIn( (const unsigned char *)(ULONG_PTR)s_Ranges[i].uBase, s_Ranges[i].uSize, 256, 512 );
+	}
+
+	BOOL CALLBACK DumpCallback( PVOID, const PMINIDUMP_CALLBACK_INPUT pInput, PMINIDUMP_CALLBACK_OUTPUT pOutput )
+	{
+		if ( !pInput || !pOutput )
+			return FALSE;
+		if ( pInput->CallbackType == MemoryCallback )
+		{
+			if ( s_iNextRange >= s_nRanges )
+				return FALSE;		// no more
+			pOutput->MemoryBase = s_Ranges[s_iNextRange].uBase;
+			pOutput->MemorySize = s_Ranges[s_iNextRange].uSize;
+			s_iNextRange++;
+			return TRUE;
+		}
+		return TRUE;		// every other callback: the defaults
+	}
+
 	void WriteDump( EXCEPTION_POINTERS *pInfo )
 	{
 		typedef BOOL ( WINAPI *MiniDumpWriteDump_t )( HANDLE, DWORD, HANDLE, MINIDUMP_TYPE,
@@ -112,7 +193,11 @@ namespace
 		mei.ThreadId = GetCurrentThreadId();
 		mei.ExceptionPointers = pInfo;
 		mei.ClientPointers = FALSE;
-		pfn( GetCurrentProcess(), GetCurrentProcessId(), h, (MINIDUMP_TYPE)( MiniDumpNormal | MiniDumpWithIndirectlyReferencedMemory ), &mei, NULL, NULL );
+		CollectDumpRanges( pInfo->ContextRecord );
+		MINIDUMP_CALLBACK_INFORMATION cb;
+		cb.CallbackRoutine = DumpCallback;
+		cb.CallbackParam = NULL;
+		pfn( GetCurrentProcess(), GetCurrentProcessId(), h, (MINIDUMP_TYPE)( MiniDumpNormal | MiniDumpWithIndirectlyReferencedMemory ), &mei, NULL, &cb );
 		CloseHandle( h );
 	}
 
