@@ -1205,7 +1205,7 @@ If you learn something like this, add it here in the same commit as the fix.
   units) before a build. Picks: bay_death1 at all six bay seats (bay_death2 sinks 15-27 units into the side walls from
   four of them), driver_death, commander_death. Pack: + halftrack_bay_death1/2 + halftrack_commander_death; the
   re-anchored driver_death replaces H2b's (H2b's pack was never compiled).
-  **H3 BUILT 2026-11-21 (the troop complement; owner: "good to build").** Six riders on CoD2's bay seats tag_guy01..06
+  **H3 BUILT 2026-11-21: build 44890308250 (the troop complement; owner: "good to build").** Six riders on CoD2's bay seats tag_guy01..06
   (dodsp_vehicles.txt halftrack "seats", script_version H3). Seat keys: "walk" "x y z yaw" (the get-out starts there -
   the four aisle men: CoD2's guy02/guy02b walk from tag_out -34.7 0.2 31 facing 179.1), "rally" "x y z" (once down he runs
   there = CoD2's tag_walker0..5, then his AI), "death" (killed seated he slumps there: ww2_vi_halftrack_bay_death1; the
