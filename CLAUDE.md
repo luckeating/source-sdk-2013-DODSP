@@ -1280,7 +1280,7 @@ If you learn something like this, add it here in the same commit as the fix.
   calls HaveSequenceForActivity(-1) before giving it back. Whether it crashes depends on the value stored before the
   table (a .data variable) - hence rare. FIX: HashInt on an unsigned copy (same hash for every key >= 0; client + server
   link our tier1). Guard: lint check_hashint runs HashInt's index expressions as written over keys across the int range
-  (tested: Valve's signed shift and a dropped mask both fail). LESSON: read the faulting instruction's registers against
+  (tested: Valve's signed shift and a dropped mask both fail). BUILT 2026-11-21: build 44909170762. LESSON: read the faulting instruction's registers against
   the source line before calling it corruption - a garbage value can come from a deterministic out-of-bounds read.
   DEEPER DUMPS (c_dodsp_crashlog.cpp, with H3b): the dump also carries two levels of memory pointed to from the
   crashing thread's stack and registers (level 1: -512..+1024 around every pointer on the top 64 KB of stack; level 2:
