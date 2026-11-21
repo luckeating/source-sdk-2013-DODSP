@@ -8,7 +8,8 @@ leaves on hatch_open_left / hatch_open_right (the hinges), and every wheel on ta
 front tyre, 02 the drive sprocket, 03..08 the road wheels, 09 the idler). The port is that mesh x PORT_SCALE in the
 mesh frame (mesh x = CoD y, mesh y = -CoD x), so each port triangle takes the bone of the CoD triangle at the same spot
 (measured 2026-11-20: all 5928 port triangles match one). Everything else is the port's own: its materials, UVs,
-normals, collision (<variant>_physics.smd from the owner's Crowbar decompile) and QC settings. CoD's track-run strips
+normals, collision (<variant>_physics.smd from the owner's Crowbar decompile, FITTED onto the compiled .phy by
+phy_fit.py - Crowbar wrote it in another frame and copied as-is it stood on its side across the vehicle) and QC settings. CoD's track-run strips
 (tag_wheel_back/middle/upper_*) are track, not wheels: they stay on the root.
 
 The wheel facts ride IN THE MODEL ($keyvalues "dodsp_wheels"), measured here from the mesh - one owner, read by the
@@ -31,12 +32,13 @@ import os, re, sys, shutil, numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from editor_models import mesh
 from cod2_xmodel import parts, surfs
+from phy_fit import write_fitted, check_written, FIT_TOLERANCE
 
 PORT_SCALE = 1.0284           # measured: the port's vertices sit on CoD's x this (median miss 0.004 units)
-VARIANTS = {                  # variant -> physics SMD in the decompile (halftrack_snow wasn't decompiled: same hull)
-    'halftrack': 'halftrack_physics.smd', 'halftrack_desert': 'halftrack_desert_physics.smd',
-    'halftrack_snow': 'halftrack_physics.smd', 'halftrack_rockets': 'halftrack_rockets_physics.smd',
-    'halftrack_rockets_snow': 'halftrack_rockets_snow_physics.smd'}
+VARIANTS = {                  # variant -> the decompile's physics SMD + the compiled model it came from (halftrack_snow
+                              # wasn't decompiled: same hull as halftrack)
+    'halftrack': 'halftrack', 'halftrack_desert': 'halftrack_desert', 'halftrack_snow': 'halftrack',
+    'halftrack_rockets': 'halftrack_rockets', 'halftrack_rockets_snow': 'halftrack_rockets_snow'}
 DOOR_BONES = (('door_left', 'hatch_open_left', -1.0), ('door_right', 'hatch_open_right', 1.0))   # name, CoD bone, swing sign
 # name, CoD bone, steers. "wheel" in the name is what the client's wheel list keys on.
 WHEEL_BONES = tuple(('wheel_%s_%02d' % (side, n), 'tag_%s_wheel_%02d' % (side, n), n == 1)
@@ -139,7 +141,12 @@ def write_variant(var, phys, decomp, models, out, pivot, P, which, open_deg):
         f.write('end\n')
     for tag, ang in (('closed', 0.0), ('open', open_deg)):
         open(os.path.join(out, '%s_%s.smd' % (var, tag)), 'w', newline='\n').write('version 1\n' + nodes + skel(ang))
-    shutil.copy(os.path.join(decomp, phys), os.path.join(out, var + '_physics.smd'))
+    # collision: never copied blind (see phy_fit.py) - fitted onto the compiled .phy, then the written file is checked again
+    phy = os.path.join(decomp, phys + '.phy'); pout = os.path.join(out, var + '_physics.smd')
+    write_fitted(os.path.join(decomp, phys + '_physics.smd'), phy, pout)
+    miss = check_written(pout, phy)
+    if miss > FIT_TOLERANCE:
+        raise SystemExit('%s: the written collision misses the compiled one by %.2f units' % (var, miss))
     # the port's own QC settings (Crowbar's decompile), mesh and sequence swapped, the wheel facts added
     src = os.path.join(decomp, var + '.qc')
     if not os.path.exists(src): src = os.path.join(decomp, 'halftrack.qc')
@@ -162,6 +169,7 @@ def write_variant(var, phys, decomp, models, out, pivot, P, which, open_deg):
                     '(dodsp_tools/vehicle_preview/halftrack_rig.py). Pose parameter "doors": 0 closed, 1 open (%.0f degrees). '
                     'Wheel sizes and steering in $keyvalues "dodsp_wheels".' % open_deg)
     open(os.path.join(out, var + '.qc'), 'w', newline='\n').write(qc)
+    print('%s: collision fitted onto %s.phy (worst corner %.3f units)' % (var, phys, miss))
     print('%s: %d triangles, chassis %d, body %d, doors %d / %d, wheels %d (%s), wheelbase %.1f over %d ground wheels, body pivot x %.1f' % (
         var, len(rows), counts['root'], counts['body'], counts['door_left'], counts['door_right'], sum(counts[n] for n, _, _ in WHEEL_BONES),
         ', '.join('%s r%.1f' % (n[6:], facts[n][0]) for n, _, _ in WHEEL_BONES[:9]), wheelbase, nrear, body_pivot))

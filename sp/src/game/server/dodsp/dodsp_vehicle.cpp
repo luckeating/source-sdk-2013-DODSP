@@ -47,6 +47,7 @@
 #include "itempents.h"
 #include "props_shared.h"
 #include "dodsp/dodsp_vehicle_wheels.h"
+#include "physics_shared.h"
 #include "tier1/fmtstr.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
@@ -1577,8 +1578,51 @@ void CDoDSPVehicle::Spawn( void )
 
 // The body's size from the model, in the vehicle's own frame (forward / sideways / up) - one owner, called on
 // Spawn AND after a save is loaded (the sizes aren't saved; before this they were 0 after a load).
+// INVARIANT: a vehicle's collision model covers the same box as its mesh. Every original vehicle model's .phy matches its
+// hull box within 1% on every axis; the H1 halftrack rig shipped Crowbar's decompiled collision in another frame and it
+// stood on its side across the vehicle (people and props hit air beside it). phy_fit.py now fits a decompile's collision
+// onto the compiled .phy before a rig writes it; this catches any model that still gets it wrong. Once per model.
+#define VEHICLE_COLLIDE_SLACK	0.10f		// share of an axis the collision may differ from the mesh box
+#define VEHICLE_COLLIDE_MIN		12.0f		// units: never flag less than this
+static void CheckVehicleCollision( CBaseEntity *pVehicle, const char *pszLabel )
+{
+	static CUtlDict<bool, int> s_Checked;
+	const char *pszModel = STRING( pVehicle->GetModelName() );
+	if ( s_Checked.Find( pszModel ) != s_Checked.InvalidIndex() )
+		return;
+	s_Checked.Insert( pszModel, true );
+	vcollide_t *pCollide = modelinfo->GetVCollide( pVehicle->GetModelIndex() );
+	if ( !pCollide || pCollide->solidCount <= 0 )
+	{
+		Warning( "INVARIANT DOD-SP vehicle %s: %s has no collision model - people and shells pass through it (recompile it with its $collisionmodel)\n",
+				 pszLabel, pszModel );
+		return;
+	}
+	Vector vecMins( FLT_MAX, FLT_MAX, FLT_MAX ), vecMaxs( -FLT_MAX, -FLT_MAX, -FLT_MAX );
+	for ( int i = 0; i < pCollide->solidCount; i++ )
+	{
+		Vector a, b;
+		physcollision->CollideGetAABB( &a, &b, pCollide->solids[i], vec3_origin, vec3_angle );
+		VectorMin( vecMins, a, vecMins );
+		VectorMax( vecMaxs, b, vecMaxs );
+	}
+	Vector vecMesh = pVehicle->CollisionProp()->OBBMaxs() - pVehicle->CollisionProp()->OBBMins();
+	Vector vecPhys = vecMaxs - vecMins;
+	for ( int k = 0; k < 3; k++ )
+	{
+		if ( fabs( vecPhys[k] - vecMesh[k] ) > MAX( VEHICLE_COLLIDE_MIN, VEHICLE_COLLIDE_SLACK * vecMesh[k] ) )
+		{
+			Warning( "INVARIANT DOD-SP vehicle %s: %s's collision is %.0f x %.0f x %.0f but its mesh %.0f x %.0f x %.0f (length x width x height) "
+					 "- the collision is turned or the wrong one; recompile the model from its rig\n", pszLabel, pszModel,
+					 vecPhys.x, vecPhys.y, vecPhys.z, vecMesh.x, vecMesh.y, vecMesh.z );
+			return;
+		}
+	}
+}
+
 void CDoDSPVehicle::MeasureBody( void )
 {
+	CheckVehicleCollision( this, Label() );
 	Vector vecMins = CollisionProp()->OBBMins(), vecMaxs = CollisionProp()->OBBMaxs();
 	float flYawRad = DEG2RAD( m_pType->flForwardYaw );
 	Vector vecFwd( cosf( flYawRad ), sinf( flYawRad ), 0.0f );

@@ -1036,6 +1036,16 @@ If you learn something like this, add it here in the same commit as the fix.
   stone/tile 0.25, wood 0.2, metal 0.1, water 0). Client only (KickDust, ClientThink), one trace per puff;
   `dodsp_vehicle_dust` scales it (0 = none, resets to 1 on launch).
   Undo: the previous client.dll + server.dll, the door-rig halftrack model.
+  COLLISION (owner's Hammer++ screenshot 2026-11-20, after testing H1: wheels and steering "AAA worthy"): the halftrack's
+  collision stood on its side ACROSS the vehicle - not Hammer, my rig. halftrack_rig.py copied Crowbar 0.74's decompiled
+  *_physics.smd as-is, and Crowbar wrote it in another frame (length, height, -width) than body.smd (width, -length,
+  height); the port's own compiled .phy was right. Shipped that way since the door rig, so in game people and props met
+  air beside it. Fix: dodsp_tools/vehicle_preview/phy_fit.py reads the COMPILED .phy (VPHY compact surfaces) and fits the
+  decompile's SMD onto it (every signed axis order; the right one lands every corner exactly, the next best misses by 14),
+  writes it in the reference mesh's frame, and the rig checks the written file again (stops over 0.5 units). Guard in game:
+  INVARIANT at a vehicle's first spawn / wreck swap if its collision box differs from its mesh box by > 10% (12 units) on
+  any axis or it has none (every original vehicle model matches within 1%). LESSON: a decompiler's output is not ground
+  truth - check it against the compiled file it came from. Owner: recompile dodsp_halftrack_h1b_rig.zip (collision only).
   **H1 BUILD 2026-11-20: 44846448265** (owner asleep, said "go ahead and build this whole thing" + anything that improves
   the experience): wheels, steering, sprung body, measured track scroll, dust. Not yet tested in game.
   **H2 PREPARED 2026-11-20 (not built - the driver's animations wait for the owner's look at the preview).**
