@@ -356,14 +356,16 @@ def write_variant(rig, var, ports, out, cod, steers, doors):
     return order, wf, sf
 
 def connected_pieces(smd):
-    """how many pieces studiomdl's $concave will see: triangles joined by shared corner positions"""
+    """how many pieces studiomdl's $concave will see: triangles joined by shared corners - a corner is its position AND
+    normal AND uv (studiomdl welds on all three; 2026-11-21 a file with per-face normals came out as 267 one-triangle
+    "pieces" although every position was shared - this check counted positions only and passed it)"""
     _, tris = read_physics_smd(smd)
     par = {}
     def find(a):
         while par[a] != a: par[a] = par[par[a]]; a = par[a]
         return a
     for _, vs in tris:
-        ks = [tuple(np.round(p, 4)) for p, n, r in vs]
+        ks = [tuple(np.round(np.r_[p, n], 4)) + tuple(r) for p, n, r in vs]
         for k in ks: par.setdefault(k, k)
         for k in ks[1:]: par[find(k)] = find(ks[0])
     return len({find(k) for k in par})

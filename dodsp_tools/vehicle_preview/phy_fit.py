@@ -67,12 +67,17 @@ def write_pieces(pieces, out):
         f.write('version 1\nnodes\n0 "root" -1\nend\nskeleton\ntime 0\n0 0 0 0 0 0 0\nend\ntriangles\n')
         for P in pieces:
             h = ConvexHull(P); c = P.mean(0)
+            # ONE normal per corner (out from the piece's middle), like a compiled-and-decompiled collision: studiomdl
+            # welds corners by position AND normal AND uv, then splits $concave pieces by shared corners - per-face
+            # normals left every triangle its own flat "piece" (2026-11-21: 267 parts, over its 40, "building single
+            # convex" = the lid back)
             for simplex, eq in zip(h.simplices, h.equations):
                 tri = P[simplex]
                 if np.dot(np.cross(tri[1] - tri[0], tri[2] - tri[0]), eq[:3]) < 0: tri = tri[[0, 2, 1]]   # outward
                 f.write('phy\n')
                 for q in tri:
-                    m, n = Gt @ q, Gt @ eq[:3]
+                    nq = (q - c) / max(np.linalg.norm(q - c), 1e-6)
+                    m, n = Gt @ q, Gt @ nq
                     f.write('0 %.6f %.6f %.6f %.6f %.6f %.6f 0 0\n' % (m[0], m[1], m[2], n[0], n[1], n[2]))
         f.write('end\n')
     return len(pieces)

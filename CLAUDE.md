@@ -1104,6 +1104,15 @@ If you learn something like this, add it here in the same commit as the fix.
   again - so each piece is drawn in 0.05 units toward its middle). Outer skin covered: all but interior fittings at
   |y| 26-30 (stowage on the inside of the walls). Game guard: the collision-vs-mesh INVARIANT accepts a collision up to
   half the mesh's height lower (an open top), never higher, and x/y as before.
+  FIRST CROWBAR COMPILE 2026-11-21 (owner's log): "COSTLY COLLISION MODEL!!!! (267 parts - 40 allowed) ... Error with
+  convex elements ... building single convex" + a flood of "2-dimensional geometry" = every TRIANGLE its own piece, and
+  the fallback is one hull = the lid back. Cause: write_pieces gave each triangle its face normal, and studiomdl welds
+  corners by position AND normal AND uv before splitting $concave pieces - so nothing was connected. A compiled-then-
+  decompiled collision has ONE normal per position (checked: the port's, 124 positions, 0 with two). Fix: one normal
+  per corner (out from the piece's middle); connected_pieces now joins corners the way studiomdl does (position +
+  normal + uv) - it had counted positions only and passed the bad file (tested: the old writer now fails it with 420
+  pieces). LESSON: a check that models a consumer must use the consumer's real rule. Owner recompiles the halftracks
+  from dodsp_vehicle_rigs_t1b.zip (the tanks' collision is one piece without $concave - unaffected).
   **H2 BUILT 2026-11-21 (the driver; owner approved the preview: "package it ... along with the driver").** Pack: the ride
   pack + 9 converted CoD2 driver animations (cod2_xanim / xanim_to_smd) + steer_compose.py: the steering poses are ONE
   frame each (a blend's animations must match; the frame turned furthest from the idle: hardleft frame 37, hardright 31)
