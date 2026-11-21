@@ -1157,6 +1157,20 @@ If you learn something like this, add it here in the same commit as the fix.
   in_DoD/dod_player_shared_anim_a_reference.smd as the German reference: it reproduces the delivered pack within 1e-5
   units (the original German rifleman reference SMD isn't in the scratchpad any more) and ride paths unchanged.
   Owner compiles dodsp_npc_ww2_anims_ride_h2b.zip. Undo: the H2 server.dll + script (the old pack still works with it).
+  **H3 PREVIEW 2026-11-21 (the troop complement - not built).** Owner: riders in the bay, "when they get out they quickly run
+  to any of the sides of the vehicle so the other guys can get out quickly, normal movement can take over from there,
+  similar to combine soldiers getting out of dropships"; and CoD2's run-death. dodsp_tools/vehicle_preview/troop_preview.py
+  (h3_troops_getout/_bay/_rundeath.gif). Found in the CoD2 data: seats tag_guy01..06 face IN (left -90, right +90, from
+  their tag rotations); only the two DOOR seats have seated get-outs (guy03 left, guy05 right); guy02/guy02b's get-outs
+  start CROUCHED in the aisle at tag_out (-34.7 0.2 31, facing the doors) - CoD2 bridged seat -> aisle itself. So the
+  four aisle seats (guy01/02/04/06) STAND IN: 0.5 s in which origin, yaw and pose go from the seat to the frame of the
+  guy02/02b walk that passes the seat, then the walk plays on. CoD2's door animation (halftrack_halftrack_jumpout) is
+  the vehicle's: shut to frame 46, kicked open in 5 frames, bounce to 117 deg, settle 101 - in sync with the door men
+  starting at 0 (their get-outs sit ~1.9 s first). The rig's door range must become 120 (DOOR_OPEN) for the bounce.
+  Run-off: to CoD2's tag_walker0..5 (escort spots beside the vehicle), first out runs furthest (front spots), round
+  the rear corner; then the AI. Start times searched for >= 18 units between pelvises (seated legs reach into the
+  aisle): door men 0, guy04 1.6, guy06 2.25, guy02 2.5, guy01 3.0 s; all at their spots after 6.1 s. Pack: + CoD2
+  halftrack_guy_rundeath (converted; the rebuild reproduces every existing pack SMD within 1e-4).
   **H1 BUILD 2026-11-20: 44846448265** (owner asleep, said "go ahead and build this whole thing" + anything that improves
   the experience): wheels, steering, sprung body, measured track scroll, dust. Not yet tested in game.
   **H2 PREPARED 2026-11-20 (not built - the driver's animations wait for the owner's look at the preview).**
