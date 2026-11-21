@@ -35,3 +35,16 @@ V3 (riders, troop transports): render every seat's get-in / get-out like this an
   dodsp_vehicles.txt. Change it and npc_german_soldier.cpp (RideGetOut's join frame, RidePosition's stand-in) together.
 - `seat_death_preview.py` - every seated death at every seat (jump at the switch <= 3 units, depth into the mesh,
   overlap) and the "sitting" check for seats we place ourselves.
+
+## V2b halftrack MG42 + gunner (2026-11-21)
+- `mg42_model.py <CoD2 pack> <out>` - CoD2's mg42_with_bipod_test1 as `dodsp_mg42_pintle` (origin = the elevation pivot
+  tag_aim, bones mg_base / mg_gun, pose parameter mg_pitch +-15, + = up, attachment "muzzle" = tag_flash). The owner
+  compiles it; the material is CoD2's own name, models\cod2\mtl_weapon_mg42.
+- `mg_gunner_compose.py <ride pack> <CoD2 pack> <cod2_vehicle_tags.txt> <out> [pack .qc]` - the gunner's aim poses
+  (13 columns of mg_yaw x 4 rows of mg_pitch = 52, under studiomdl's 64 animations per sequence), each the halftrack
+  gunner idle with the gun turned about tag_turret, spine twist/lean, two-bone arm IK onto the grips; a step round the
+  pivot where an arm can't reach, kept inside the bay walls. And his death per column (CoD2's death_stand_dropinplace,
+  starting on the idle, stepped like the column, turning back as he drops). Adds ww2_halftrack_mg / _mg_death to the .qc.
+- `mg_preview.py <dodsp_tools> <rig out> <ride pack> <gunner poses> <MG42 model dir> <CoD2 pack> <out> [norender]` - the
+  gun sweeping +-30 (bay empty) / +-20 (riders), the gunner blended the ENGINE's way (nlerp of local rotations: hands
+  off the grips between poses measured), his death; clearances to the seated riders printed.
