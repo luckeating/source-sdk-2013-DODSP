@@ -226,7 +226,7 @@ If you learn something like this, add it here in the same commit as the fix.
   without a separate sun also never get the per-pixel sun on top (it used to add a second sun there).
   The fallback lives in server.dll: client.dll and server.dll must come from one build.
 - Stage 5: `dodsp_lamps_baked 0` (live lamps drawn live), `dodsp_lamps_scale 1`, `dodsp_lamps_shadows 1` reset too.
-- Vehicles: `dodsp_vehicle_road_slack 160`, `dodsp_vehicle_debug 0`, `dodsp_vehicle_he_scale 0.5` reset too.
+- Vehicles: `dodsp_vehicle_road_slack 160`, `dodsp_vehicle_debug 0`, `dodsp_vehicle_he_scale 0.5`, `dodsp_vehicle_dust 1` reset too.
 - `dodsp_sunshader` is read once per game start. Changing it mid-game does nothing until a restart.
 
 ## Owner-side pitfalls seen
@@ -1030,6 +1030,11 @@ If you learn something like this, add it here in the same commit as the fix.
   m_flSuspVel/Pitch written only by the spring, BodyKick, HaltMotion; the client's body pitch/roll only by BodySprings
   (tested with a stray recoil write). Known: riders parented to a sprung vehicle don't tip with its body (about 1 unit
   at the driver's seat - the pivot is near the bay).
+  DUST (added unasked while the owner slept - "anything interesting that would improve the experience"): every vehicle's
+  rear corners (front ones reversing) throw HL2's "WheelDust" puff (c_vehicle_jeep.cpp's client effect, tinted by the
+  light there): rate and size by speed, amount by the ground's game material (dirt/sand 1, grass 0.7, foliage 0.5,
+  stone/tile 0.25, wood 0.2, metal 0.1, water 0). Client only (KickDust, ClientThink), one trace per puff;
+  `dodsp_vehicle_dust` scales it (0 = none, resets to 1 on launch).
   Undo: the previous client.dll + server.dll, the door-rig halftrack model.
 - CoD1 set (owner's vehicles_part2.zip, 2026-11-19): REFERENCE ONLY except the **SU-152, which we keep**. One model per
   vehicle, turret/gun as BONES (tag_turret, tag_barrel, tag_flash = muzzle, tag_coaxel), faces +X (forward_yaw 0),

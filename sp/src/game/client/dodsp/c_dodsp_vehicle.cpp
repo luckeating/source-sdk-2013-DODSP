@@ -30,6 +30,9 @@
 #include "KeyValues.h"
 #include "bone_setup.h"
 #include "dodsp/dodsp_vehicle_wheels.h"
+#include "c_te_effect_dispatch.h"
+#include "physics_shared.h"
+#include "decals.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -37,6 +40,10 @@
 void ToolFramework_RecordMaterialParams( IMaterial *pMaterial );
 
 #define DODSP_TREADS_FILE	"scripts/dodsp_treads.txt"
+
+// H1 dust: what the running gear throws up, by speed and by what it drives on (HL2's "WheelDust" puff, tinted by the
+// light where it rises). 0 = none.
+static ConVar dodsp_vehicle_dust( "dodsp_vehicle_dust", "1", 0, "DOD-SP: dust thrown up by vehicles' wheels and tracks (scale, 0 = none)" );
 
 //-----------------------------------------------------------------------------
 // The measured tracks (one owner: tread_scroll.py -> scripts/dodsp_treads.txt), keyed by material file name
@@ -118,6 +125,8 @@ private:
 	void			BuildWheelList( CStudioHdr *pStudioHdr );
 	void			CheckTreadProxies( CStudioHdr *pStudioHdr );
 	void			BodySprings( float dt );
+	void			KickDust( float dt );
+	float			m_flDustDue[2];			// puffs owed per rear corner (fractional)
 	bool			BodyMatrix( matrix3x4_t &matBody );
 
 	float			m_flTrackSpeed;
@@ -181,6 +190,7 @@ C_DoDSPVehicle::C_DoDSPVehicle()
 	m_vecPrevOrigin.Init();
 	m_angPrev.Init();
 	m_bHavePrev = false;
+	m_flDustDue[0] = m_flDustDue[1] = 0.0f;
 }
 
 void C_DoDSPVehicle::OnDataChanged( DataUpdateType_t type )
@@ -193,6 +203,78 @@ void C_DoDSPVehicle::OnDataChanged( DataUpdateType_t type )
 void C_DoDSPVehicle::ClientThink( void )
 {
 	BodySprings( gpGlobals->frametime );
+	KickDust( gpGlobals->frametime );
+}
+
+// how much dust a surface gives (1 = dry dirt): by the game material of the ground under the running gear
+static float DustFromGround( const trace_t &tr )
+{
+	const surfacedata_t *pSurf = physprops ? physprops->GetSurfaceData( tr.surface.surfaceProps ) : NULL;
+	if ( !pSurf )
+		return 0.3f;
+	switch ( pSurf->game.material )
+	{
+	case CHAR_TEX_DIRT:		return 1.0f;
+	case CHAR_TEX_SAND:		return 1.0f;
+	case 'J':				return 0.7f;		// grass in the DoD / CS surface sets
+	case CHAR_TEX_FOLIAGE:	return 0.5f;
+	case CHAR_TEX_CONCRETE:
+	case CHAR_TEX_TILE:		return 0.25f;		// stone and paving: a little
+	case CHAR_TEX_WOOD:		return 0.2f;
+	case CHAR_TEX_METAL:
+	case CHAR_TEX_GRATE:	return 0.1f;
+	case CHAR_TEX_SLOSH:	return 0.0f;		// water and mud splash, not dust
+	default:				return 0.3f;
+	}
+}
+
+// H1: the rear corners of the running gear (the front ones when reversing) throw a puff each, more and bigger the
+// faster it goes. Client only, nothing networked; one trace per puff.
+void C_DoDSPVehicle::KickDust( float dt )
+{
+	float flScale = dodsp_vehicle_dust.GetFloat();
+	float flSpeed = m_flTrackSpeed;
+	if ( flScale <= 0.0f || dt <= 0.0f || dt > 0.25f || fabs( flSpeed ) < 20.0f || IsDormant() )
+		return;
+	matrix3x4_t matEnt;
+	AngleMatrix( GetAbsAngles(), GetAbsOrigin(), matEnt );
+	float flFY = DEG2RAD( m_flModelForwardYaw );
+	Vector vecFwd( cosf( flFY ), sinf( flFY ), 0.0f ), vecLeft( -vecFwd.y, vecFwd.x, 0.0f );
+	Vector vecMins = CollisionProp()->OBBMins(), vecMaxs = CollisionProp()->OBBMaxs();
+	// the box's extent along the model's forward and left (works for any forward_yaw)
+	float flBack = FLT_MAX, flFront = -FLT_MAX, flSide = 0.0f;
+	for ( int c = 0; c < 8; c++ )
+	{
+		Vector v( ( c & 1 ) ? vecMaxs.x : vecMins.x, ( c & 2 ) ? vecMaxs.y : vecMins.y, 0.0f );
+		float f = DotProduct( v, vecFwd );
+		flBack = MIN( flBack, f );
+		flFront = MAX( flFront, f );
+		flSide = MAX( flSide, fabs( DotProduct( v, vecLeft ) ) );
+	}
+	float flAlong = ( flSpeed > 0.0f ) ? flBack * 0.85f : flFront * 0.85f;
+	float flRate = clamp( fabs( flSpeed ) / 25.0f, 0.0f, 12.0f );		// puffs a second per corner
+	float flSize = clamp( fabs( flSpeed ) / 150.0f, 0.4f, 1.4f );
+	for ( int k = 0; k < 2; k++ )
+	{
+		m_flDustDue[k] += flRate * dt;
+		if ( m_flDustDue[k] < 1.0f )
+			continue;
+		m_flDustDue[k] -= floorf( m_flDustDue[k] );
+		Vector vecLocal = vecFwd * flAlong + vecLeft * ( ( k ? -1.0f : 1.0f ) * flSide * 0.75f ), vecAt;
+		VectorTransform( vecLocal, matEnt, vecAt );
+		trace_t tr;
+		UTIL_TraceLine( vecAt + Vector( 0, 0, 24 ), vecAt - Vector( 0, 0, 48 ), MASK_SOLID_BRUSHONLY, this, COLLISION_GROUP_NONE, &tr );
+		if ( tr.fraction >= 1.0f || tr.startsolid )
+			continue;
+		float flAmount = DustFromGround( tr ) * flSize * flScale;
+		if ( flAmount < 0.05f )
+			continue;
+		CEffectData data;
+		data.m_vOrigin = tr.endpos;
+		data.m_vNormal = tr.plane.normal;
+		data.m_flScale = flAmount;
+		DispatchEffect( "WheelDust", data );
+	}
 }
 
 // H1: THE body's springs (sprung bodies only; tanks keep the server's lurch). Driven by what the vehicle is visibly
