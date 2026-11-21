@@ -1169,8 +1169,11 @@ If you learn something like this, add it here in the same commit as the fix.
   starting at 0 (their get-outs sit ~1.9 s first). The rig's door range must become 120 (DOOR_OPEN) for the bounce.
   Run-off: to CoD2's tag_walker0..5 (escort spots beside the vehicle), first out runs furthest (front spots), round
   the rear corner; then the AI. Start times searched for >= 18 units between pelvises (seated legs reach into the
-  aisle): door men 0, guy04 1.6, guy06 2.25, guy02 2.5, guy01 3.0 s; all at their spots after 6.1 s. Pack: + CoD2
-  halftrack_guy_rundeath (converted; the rebuild reproduces every existing pack SMD within 1e-4).
+  aisle): door men 0, guy04 1.6, guy06 2.25, guy02 2.5, guy01 3.0 s; all at their spots after 6.1 s.
+  OWNER 2026-11-21: canned deaths don't suit a sandbox. RULE: a man on the GROUND dies as a ragdoll (it meets slopes,
+  walls, ledges and the hit's direction; a canned fall doesn't) - CoD2's halftrack_guy_rundeath is DROPPED (converted,
+  not shipped). A man in a SEAT keeps a seated death animation: a ragdoll can't be parented, so in a vehicle it tangles
+  with the hull and is left behind or shoved when it moves. Seated bay riders get halftrack_guy_death1/2 like the crew.
   **H1 BUILD 2026-11-20: 44846448265** (owner asleep, said "go ahead and build this whole thing" + anything that improves
   the experience): wheels, steering, sprung body, measured track scroll, dust. Not yet tested in game.
   **H2 PREPARED 2026-11-20 (not built - the driver's animations wait for the owner's look at the preview).**
