@@ -1262,6 +1262,13 @@ If you learn something like this, add it here in the same commit as the fix.
   dispatches it via the REST API: POST .../actions/workflows/dodsp_crash.yml/dispatches, inputs run_id + addresses)
   names the addresses with cdb (devtools/dodsp_symbolize.py) - from that run's symbols, or for an older build by
   rebuilding its commit and first checking each .text section is byte-identical to the owner's dlls.
+  FIRST READ (run 44893416261, rebuild of 8278820 byte-identical to the owner's dlls): server crash 03:17 = a LIVING soldier
+  running and shooting (CAI_MoveAndShootOverlay::RunShootWhileMove -> TranslateActivity(ACT_GESTURE_RELOAD) ->
+  HaveSequenceForActivity(-1) -> CStudioHdr activity hash lookup) read a garbage pointer in his model's activity-hash
+  BUCKET array (a 160-byte heap block, filled once at spawn and never written again; its CStudioHdr around it is intact
+  in the dump). = heap corruption / use-after-free by someone else, not this code path. Owner: it happened when he fired
+  the SMG grenade at the halftrack as the troops got out. Culprit not found yet; the minidump holds only memory near
+  stack pointers (MiniDumpWithIndirectlyReferencedMemory), not the corrupted block or its neighbours.
   Also seen in every session's log: client.dll+0x16xxxx reading 0x68056c08, then executing a no-module address - once per
   game run (shutdown?), not reported by the owner; named by the same reader.
   **H1 BUILD 2026-11-20: 44846448265** (owner asleep, said "go ahead and build this whole thing" + anything that improves
