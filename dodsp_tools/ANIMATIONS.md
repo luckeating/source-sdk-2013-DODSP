@@ -226,3 +226,10 @@ H2 (2026-11-21): after the ride pack command, the halftrack driver's steering:
 writes the two one-frame steering poses and adds (once) $poseparameter "steer" + $sequence "ww2_halftrack_driver"
 (steer_right / halftrack_driver_idle / steer_left on steer -1..1). The pack's 9 driver animations come from the
 owner's CoD2 xanims (vehicle_preview/xanim_to_smd.py convert) as recorded above.
+
+H2b (2026-11-21): the halftrack commander's seat + seated deaths. CoD2 xanims converted (xanim_to_smd.py convert):
+halftrack_passenger_idle, halftrack_guy_death1/2, wagon_passenger_death, eldaba_jeep_passenger_death; appended to the
+officer QC as cod2_vi_<name>; the pack rebuilt into a SCRATCH folder with the --want list + the 9 H2 names + these 5,
+German reference = in_DoD/dod_player_shared_anim_a_reference.smd (reproduces the delivered pack within 1e-5 units); only
+the chosen new SMDs (ww2_a_halftrack_passenger_idle, ww2_a_halftrack_guy_death2) and their QC blocks were added to the
+delivered pack, so every existing SMD stays byte-identical. Previewed with driver_preview.py at tag_passenger 3.4 -14.5 36.4.

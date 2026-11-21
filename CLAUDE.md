@@ -1136,6 +1136,27 @@ If you learn something like this, add it here in the same commit as the fix.
   collision and H2's seated, steering driver. Still open: the carrier's open top (offered), the driver's death animation.
   Tread .vmt rule for the owner: track materials carry "Proxies" { "DoDSPTrackScroll" { } } and $surfaceprop
   metalvehicle (the conversion had "flesh" - bullets would bleed); wheel-marking materials carry no proxy.
+  **H2b PREPARED 2026-11-21 (not built - previews h2b_driver_death.gif / h2b_commander_death.gif with the owner).** Owner's
+  test of H2: killing the driver "dropped a ragdoll, then another one spawned and played the tank crew bailout" - not a
+  second driver: the halftrack's COMMANDER (crew "driver commander", invisible inside) bailing out of his hatch, because
+  with no driver and no radio it was immobile and can't fight. And "the vehicle sets on fire and explodes after the driver
+  is killed - we don't want that": V4b's rule set every abandoned vehicle alight 4-8 s later. Changes:
+  (1) Seated deaths: crew seat key "death" -> the soldier (SetSeatDeath) plays it IN the seat and stays slumped there
+  (m_bDeadInSeat: no EndRide, no ragdoll - BecomeRagdoll/CanBecomeRagdoll/OnTakeDamage_Dying skip it; TASK_DIE runs the
+  sequence to its end, then LIFE_DEAD, cycle 1, think off; no ground tilt / body-blocked check - he's in a hull by
+  design), parented to the vehicle like CoD2. The vehicle keeps the body (m_hCrewCorpse) and removes it with the wreck
+  (under the fireball) or with itself. A role killed inside (spall) plays the same death. INVARIANT once if the pack
+  lacks the sequence (he ragdolls). (2) The commander is VISIBLE: crew seat at CoD2's tag_passenger 3.4 -14.5 36.4,
+  halftrack_passenger_idle (1 frame), death halftrack_guy_death2 (slumps in the seat) - chosen from 4 candidates by
+  preview (wagon_passenger_death falls back into the bay, eldaba_jeep_passenger_death drapes over the side). So the man
+  climbing out is the one you saw sitting there. Driver death = CoD2's halftrack_driver_death. (3) Abandoned vehicles stay
+  intact and unlit ("sooner or later NPCs taking over stranded vehicles will be a thing"): no timer sets them alight
+  (lint: m_flIgniteAt only ever set to 0, tested), smoke by damage only (thick when burning or under 1/3 structure). Only
+  a real fire (a hit's ammo/fuel crit) burns a vehicle. PACK: the ride pack is rebuilt to a scratch folder and only the
+  NEW SMDs + their QC blocks are added to the delivered one (the existing ones stay byte-identical). The rebuild used
+  in_DoD/dod_player_shared_anim_a_reference.smd as the German reference: it reproduces the delivered pack within 1e-5
+  units (the original German rifleman reference SMD isn't in the scratchpad any more) and ride paths unchanged.
+  Owner compiles dodsp_npc_ww2_anims_ride_h2b.zip. Undo: the H2 server.dll + script (the old pack still works with it).
   **H1 BUILD 2026-11-20: 44846448265** (owner asleep, said "go ahead and build this whole thing" + anything that improves
   the experience): wheels, steering, sprung body, measured track scroll, dust. Not yet tested in game.
   **H2 PREPARED 2026-11-20 (not built - the driver's animations wait for the owner's look at the preview).**
@@ -1166,6 +1187,18 @@ If you learn something like this, add it here in the same commit as the fix.
   $collisionmodel before it can drive - Claude can generate box collision SMDs + QC lines). Its tag_wheel_* markers sit
   at z 0 and contain "wheel": the client wheel spinner must skip bones at ground height before a CoD1 model drives.
   The Elefant/SU-152 are casemate guns: V2 needs a "hull aims" mode (the owner asked about a StuG).
+
+## REQUIRED FIXES (owner said "mark it as a required fix" - do before calling the vehicles done)
+- **Carrier open top** (owner 2026-11-21): carrier.mdl / carrier_desert.mdl collision is one closed convex shell over the
+  open crew compartment, so the crew and its 2 side-wall riders can't be shot. Same fix as the halftrack: an OPEN_TOP
+  entry in vehicle_rig.py (measure floor, walls, front/rear from the mesh; keep every seat open; check the pieces stay
+  separate), owner recompiles the two carrier QCs. Model only - no code build.
+
+## The owner's goal for the mod (2026-11-21)
+- Beyond the campaign: classic Battlefield / Battlefront II style - NPC armies fighting over CAPTURE OBJECTIVES, vehicles
+  in the mix ("sooner or later NPCs taking over stranded vehicles will be a thing"). Design for it: a vehicle out of the
+  fight but intact stays usable (abandoned = stranded, not destroyed), sides are factions not scripts, NPCs should be able
+  to take over seats (crew_seats are the place a new crewman sits).
 
 ## Later (agreed, not scheduled)
 - **Graphics options in the menu** (owner asked 2026-11-18, "later"). Valve's Video > Advanced page is GameUI.dll (engine

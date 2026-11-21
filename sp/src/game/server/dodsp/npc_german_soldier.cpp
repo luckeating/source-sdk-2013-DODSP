@@ -309,6 +309,7 @@ public:
 	int			RideGetOut( bool bForce );		// 1 off he goes, 0 can't, -1 someone stands where he'd land
 	void		EndRide( bool bLanded );
 	int			RideState( void ) const { return m_eRide; }
+	void		SetSeatDeath( const char *pszDeath ) { m_iszRideDeath = ( pszDeath && pszDeath[0] ) ? AllocPooledString( pszDeath ) : NULL_STRING; }
 	bool		RidePosition( float flNow, Vector *pvecPos, float *pflFrame ) const;
 	virtual void PhysicsSimulate( void );
 	void		ScriptedMoveTick( const Vector &vecPos );	// THE one way a get-out / bail-out moves him (V3e: m_Motion)
@@ -851,6 +852,8 @@ private:
 	Vector				m_vecRideSeat;			// the seat on the vehicle (its model space)
 	float				m_flRideYaw;			// the seat's yaw on the vehicle
 	string_t			m_iszRideIdle, m_iszRideGetout;
+	string_t			m_iszRideDeath;			// H2b: a crew seat's death sequence - killed in that seat he plays it there
+	bool				m_bDeadInSeat;			// ... and stays slumped in it (no ragdoll), parented to the vehicle
 	string_t			m_iszRideFidget;		// V3e: the seat's lean-and-look, played once now and then (NULL = none)
 	float				m_flRideFidgetAt, m_flRideFidgetEnd;
 	Vector				m_vecRideTag;			// getting out: the seat in the world when he started
@@ -895,6 +898,8 @@ BEGIN_DATADESC( CNPC_GermanSoldier )
 	DEFINE_FIELD( m_flRideFidgetAt, FIELD_TIME ),
 	DEFINE_FIELD( m_flRideFidgetEnd, FIELD_TIME ),
 	DEFINE_FIELD( m_iszRideGetout, FIELD_STRING ),
+	DEFINE_FIELD( m_iszRideDeath, FIELD_STRING ),
+	DEFINE_FIELD( m_bDeadInSeat, FIELD_BOOLEAN ),
 	DEFINE_FIELD( m_vecRideTag, FIELD_POSITION_VECTOR ),
 	DEFINE_FIELD( m_flRideTagYaw, FIELD_FLOAT ),
 	DEFINE_FIELD( m_flRideStart, FIELD_TIME ),
@@ -913,7 +918,8 @@ CNPC_GermanSoldier::CNPC_GermanSoldier() : m_AnimMap( DefLessFunc( int ) )
 	m_vecRideSeat = m_vecRideTag = vec3_origin;
 	m_flRideYaw = m_flRideTagYaw = m_flRideStart = m_flRideFps = 0.0f;
 	m_vecRideFix = m_vecRideLand = vec3_origin;
-	m_iszRideIdle = m_iszRideGetout = m_iszRideFidget = NULL_STRING;
+	m_iszRideIdle = m_iszRideGetout = m_iszRideFidget = m_iszRideDeath = NULL_STRING;
+	m_bDeadInSeat = false;
 	m_flRideFidgetAt = m_flRideFidgetEnd = 0.0f;
 	m_iBailPhase = 0;
 	m_flBailPhaseEnd = m_flBailPhaseDur = 0.0f;
@@ -5900,6 +5906,23 @@ void CNPC_GermanSoldier::RunTask( const Task_t *pTask )
 		break;
 
 	case TASK_DIE:
+		// H2b: dead in his seat - the seat's death plays to its end, then he stays in its last pose, in the seat. No
+		// ragdoll, no tilt to the ground, no "body blocked" check (he's inside a hull by design).
+		if ( m_bDeadInSeat )
+		{
+			if ( m_bDeathAnim && ( GetCycle() >= 1.0f || gpGlobals->curtime > m_flDeathAnimGiveUp ) )
+			{
+				m_bDeathAnim = false;
+				m_lifeState = LIFE_DEAD;
+				SetCycle( 1.0f );
+				StopAnimation();
+				SetThink( NULL );
+				break;
+			}
+			if ( m_bDeathAnim )
+				SetPlaybackRate( m_flDeathAnimSpeed );
+			break;
+		}
 		// Hand over to physics a little before the animation ends: the last frames
 		// are the body already lying in its final pose, which (a) looks stiff and
 		// (b) can sit outside the ragdoll's joint limits or dip into the floor, and
@@ -6334,7 +6357,27 @@ void CNPC_GermanSoldier::Event_Killed( const CTakeDamageInfo &info )
 {
 	if ( m_bBailOut )
 		EndBailOut( false );	// shot on the tank: he falls from where he is
-	if ( m_eRide != GERMAN_RIDE_NONE )
+	// H2b: killed in a crew seat with a death of its own (the halftrack's driver / commander): he plays it there and
+	// stays slumped in the seat, parented to the vehicle (CoD2 does the same) - no ragdoll falling through the cab
+	bool bSeatDeath = false;
+	if ( m_eRide == GERMAN_RIDE_SEATED && m_iszRideDeath != NULL_STRING )
+	{
+		int iSeq = LookupSequence( STRING( m_iszRideDeath ) );
+		if ( iSeq >= 0 )
+		{
+			bSeatDeath = true;
+			m_bDeadInSeat = true;
+			m_iForceDeathSeq = iSeq;
+		}
+		else
+		{
+			static bool s_bWarned = false;
+			if ( !s_bWarned )
+				Warning( "INVARIANT npc_german_soldier: the seat's death %s isn't in the model (the ride pack) - he ragdolls instead\n", STRING( m_iszRideDeath ) );
+			s_bWarned = true;
+		}
+	}
+	if ( m_eRide != GERMAN_RIDE_NONE && !bSeatDeath )
 		EndRide( false );		// V3: shot riding or getting off: he falls from where he is
 	m_Chatter.OnDeath();
 	CNPC_GermanSoldier *pWitness = NearestSquadmate( 800.0f, true );
@@ -6368,14 +6411,14 @@ void CNPC_GermanSoldier::Event_Killed( const CTakeDamageInfo &info )
 
 bool CNPC_GermanSoldier::BecomeRagdoll( const CTakeDamageInfo &info, const Vector &forceVector )
 {
-	if ( m_bDeathAnim )
+	if ( m_bDeathAnim || m_bDeadInSeat )		// H2b: dead in his seat stays in it
 		return true;	// ragdoll later, from the death animation's last pose
 	return BaseClass::BecomeRagdoll( info, forceVector );
 }
 
 bool CNPC_GermanSoldier::CanBecomeRagdoll( void )
 {
-	if ( m_bDeathAnim )
+	if ( m_bDeathAnim || m_bDeadInSeat )
 		return false;
 	return BaseClass::CanBecomeRagdoll();
 }
@@ -6404,6 +6447,8 @@ void CNPC_GermanSoldier::FinishDeathAnim( void )
 
 int CNPC_GermanSoldier::OnTakeDamage_Dying( const CTakeDamageInfo &info )
 {
+	if ( m_bDeadInSeat )
+		return BaseClass::OnTakeDamage_Dying( info );	// H2b: slumping in his seat - a hit doesn't throw him out of the cab
 	// Shot again mid-fall: a big hit or an explosion turns the fall into a ragdoll now.
 	if ( m_bDeathAnim && ( ( info.GetDamageType() & DMG_BLAST ) || info.GetDamage() >= 50.0f ) )
 	{
@@ -7741,6 +7786,12 @@ void GermanSoldier_RideAbort( CBaseEntity *pEnt )
 	CNPC_GermanSoldier *pG = dynamic_cast<CNPC_GermanSoldier *>( pEnt );
 	if ( pG )
 		pG->EndRide( false );
+}
+void GermanSoldier_SetSeatDeath( CBaseEntity *pEnt, const char *pszDeath )
+{
+	CNPC_GermanSoldier *pG = dynamic_cast<CNPC_GermanSoldier *>( pEnt );
+	if ( pG )
+		pG->SetSeatDeath( pszDeath );
 }
 int GermanSoldier_RideState( CBaseEntity *pEnt )
 {

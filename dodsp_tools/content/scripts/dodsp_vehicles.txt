@@ -429,7 +429,9 @@
 		// (ww2_halftrack_driver blends on "steer" with the steering angle - steer_compose.py, previewed by the owner)
 		"crew_seats"
 		{
-			"driver"	{ "origin" "11.3 15.2 29.1"	"yaw" "0"	"idle" "ww2_halftrack_driver"	"steer" "1" }
+			"driver"	{ "origin" "11.3 15.2 29.1"	"yaw" "0"	"idle" "ww2_halftrack_driver"	"steer" "1"	"death" "ww2_vi_halftrack_driver_death" }
+			// H2b: the commander in CoD2's passenger seat (tag_passenger); killed there he slumps (CoD2's halftrack_guy_death2)
+			"commander"	{ "origin" "3.4 -14.5 36.4"	"yaw" "0"	"idle" "ww2_vi_halftrack_passenger_idle"	"death" "ww2_vi_halftrack_guy_death2" }
 		}
 		"sounds"	{ "engine_idle" "DoDSP_Vehicle.TruckIdle"	"engine_move" "DoDSP_Vehicle.TruckMove" }
 	}

@@ -233,7 +233,8 @@ COMPILE_TIME_ASSERT( ARRAYSIZE( s_pszBail ) == NUM_VBAILS );
 extern bool GermanSoldier_BailOut( CBaseEntity *pEnt, const Vector &vecHatch, const Vector &vecGround, const Vector &vecRun, float flYaw );
 // V3 riders (npc_german_soldier.cpp owns how a man rides and gets off; the vehicle owns when)
 extern bool GermanSoldier_BeginRide( CBaseEntity *pEnt, CBaseEntity *pVehicle, const Vector &vecSeat, float flYaw, const char *pszIdle, const char *pszGetout, const char *pszFidget );
-extern int GermanSoldier_RideGetOut( CBaseEntity *pEnt, bool bForce );	// 1 going, 0 can't, -1 his landing spot is taken
+extern int GermanSoldier_RideGetOut( CBaseEntity *pEnt, bool bForce );
+extern void GermanSoldier_SetSeatDeath( CBaseEntity *pEnt, const char *pszDeath );	// H2b: he dies in that seat with it	// 1 going, 0 can't, -1 his landing spot is taken
 extern void GermanSoldier_RideAbort( CBaseEntity *pEnt );
 extern int GermanSoldier_RideState( CBaseEntity *pEnt );		// 0 off, 1 seated, 2 getting off
 #define VEHICLE_MAX_SEATS		8
@@ -316,7 +317,7 @@ struct VehicleType_t
 	// shot in his seat = the role is dead; the role killed inside = so is he; abandoned = a crewman climbs out of the
 	// role's hatch and he leaves the seat. steer 1 = the idle is a blend on the pose parameter "steer" (-1 full right ..
 	// 1 full left) and follows the steering angle.
-	struct CrewSeat_t { int eRole; Vector vecOrigin; float flYaw; char szIdle[64]; bool bSteer; };
+	struct CrewSeat_t { int eRole; Vector vecOrigin; float flYaw; char szIdle[64], szDeath[64]; bool bSteer; };	// H2b: death = played in the seat, he stays there
 	CUtlVector<CrewSeat_t> crewSeats;
 	// V4e: where each crew role gets out ("hatches": role -> "turret x y z" in the turret model's space, or "hull x y z"
 	// in the hull's) = the roof his feet end up on, measured from the meshes. Roles at the same spot share a hatch
@@ -576,6 +577,7 @@ static void LoadVehicleTypes( bool bForce )
 			ParseVector( pSeat->GetString( "origin" ), cs.vecOrigin );
 			cs.flYaw = pSeat->GetFloat( "yaw" );
 			Q_strncpy( cs.szIdle, pSeat->GetString( "idle" ), sizeof( cs.szIdle ) );
+			Q_strncpy( cs.szDeath, pSeat->GetString( "death", "" ), sizeof( cs.szDeath ) );
 			cs.bSteer = pSeat->GetBool( "steer" );
 			if ( !bInCrew || !cs.szIdle[0] || t->crewSeats.Count() >= VEHICLE_MAX_CREW_SEATS )
 			{
@@ -1128,6 +1130,7 @@ private:
 	// H2: crew you can see in their seats (the type's "crew_seats") - CrewSeatsThink is the one owner of keeping each
 	// in step with his crew role, and of the driver's steering pose
 	EHANDLE			m_hCrewSeat[VEHICLE_MAX_CREW_SEATS];
+	EHANDLE			m_hCrewCorpse[VEHICLE_MAX_CREW_SEATS];	// H2b: killed in his seat, he stays slumped in it
 	bool			m_bCrewSeatsSpawned;
 	float			m_flCrewSeatsAt;
 	int				m_iSteerPose;				// the driver's "steer" pose parameter (looked up once; -2 = not yet)
@@ -1286,6 +1289,7 @@ BEGIN_DATADESC( CDoDSPVehicle )
 	DEFINE_FIELD( m_flRidersSpawnAt, FIELD_TIME ),
 	DEFINE_AUTO_ARRAY( m_hRider, FIELD_EHANDLE ),
 	DEFINE_AUTO_ARRAY( m_hCrewSeat, FIELD_EHANDLE ),
+	DEFINE_AUTO_ARRAY( m_hCrewCorpse, FIELD_EHANDLE ),
 	DEFINE_FIELD( m_bCrewSeatsSpawned, FIELD_BOOLEAN ),
 	DEFINE_FIELD( m_flCrewSeatsAt, FIELD_TIME ),
 	DEFINE_AUTO_ARRAY( m_flRiderGo, FIELD_TIME ),
@@ -1473,8 +1477,12 @@ void CDoDSPVehicle::UpdateOnRemove( void )
 		if ( m_hRider[i].Get() )
 			GermanSoldier_RideAbort( m_hRider[i].Get() );		// still aboard: off where they are, not left on nothing
 	for ( int i = 0; i < VEHICLE_MAX_CREW_SEATS; i++ )
+	{
 		if ( m_hCrewSeat[i].Get() )
 			UTIL_Remove( m_hCrewSeat[i].Get() );				// the vehicle's own crew goes with it
+		if ( m_hCrewCorpse[i].Get() )
+			UTIL_Remove( m_hCrewCorpse[i].Get() );
+	}
 	StopSounds();
 	if ( m_hTurret.Get() )
 		UTIL_Remove( m_hTurret.Get() );
@@ -3695,7 +3703,8 @@ void CDoDSPVehicle::UpdateDamageSmoke( void )
 	if ( !m_pType || !m_pType->armour.bValid || m_pType->armour.flStructure <= 0.0f )
 		return;
 	float f = m_flStructure / m_pType->armour.flStructure;
-	int iLevel = ( m_eState != VSTATE_FIGHTING || f < 0.34f ) ? 2 : ( f < 0.67f ) ? 1 : 0;
+	bool bBurning = ( m_eState == VSTATE_BURNING || m_eState == VSTATE_WRECKED );
+	int iLevel = ( bBurning || f < 0.34f ) ? 2 : ( f < 0.67f ) ? 1 : 0;		// H2b: abandoned intact = no smoke
 	if ( iLevel <= m_iDamageSmoke && m_hDamageSmoke.Get() )
 		return;
 	if ( iLevel == 0 )
@@ -3997,9 +4006,9 @@ void CDoDSPVehicle::SetState( int eNew, CBaseEntity *pAttacker )
 	m_bImmobile = true;
 	HaltMotion();
 	FireKnockedOut( pAttacker );
-	if ( eNew == VSTATE_ABANDONED && m_flIgniteAt <= 0.0f )
-		m_flIgniteAt = gpGlobals->curtime + random->RandomFloat( 4.0f, 8.0f );
-	UpdateDamageSmoke();		// V4h: out of the fight = thick smoke
+	// H2b (owner 2026-11-21): an ABANDONED vehicle stays as it is - intact, stranded, for a crew to take over later
+	// (Battlefield-style). V4b set every abandoned vehicle alight 4-8 s on; now only a fire it really has burns it.
+	UpdateDamageSmoke();		// smoke as damaged as it is (thick only when burning or badly hit)
 }
 
 // H1: THE way a blow or the main gun rocks the body (lint: nothing else adds to m_flSuspVel). A sprung body is rocked
@@ -4224,6 +4233,7 @@ void CDoDSPVehicle::SpawnCrewSeats( void )
 			UTIL_Remove( pNPC );		// the soldier said why (once per map): the ride pack's driver sequence is missing
 			continue;
 		}
+		GermanSoldier_SetSeatDeath( pNPC, cs.szDeath );
 		m_hCrewSeat[i] = pNPC;
 		Msg( "DOD-SP vehicle %s: its %s is in his seat%s\n", Label(), g_pszCrewRole[cs.eRole], cs.bSteer ? " (steering)" : "" );
 	}
@@ -4269,12 +4279,14 @@ void CDoDSPVehicle::CrewSeatsThink( void )
 		if ( GermanSoldier_RideState( pMan ) == 0 )
 		{
 			m_hCrewSeat[i] = NULL;			// dead (or off his seat some other way): the role goes with him
+			m_hCrewCorpse[i] = pMan;		// H2b: slumped in the seat (gone with the vehicle)
 			CrewmanShot( iCrew, "shot in his seat" );
 			continue;
 		}
 		if ( iCrew < 0 || ( !( m_iCrewAlive & ( 1 << iCrew ) ) && !( m_iBailMask & ( 1 << iCrew ) ) ) )
 		{
 			m_hCrewSeat[i] = NULL;			// his role was killed inside the vehicle - so is he, where he sits
+			m_hCrewCorpse[i] = pMan;
 			CTakeDamageInfo info( this, this, 10000.0f, DMG_BLAST );
 			pMan->TakeDamage( info );
 			continue;
@@ -4521,7 +4533,16 @@ void CDoDSPVehicle::Wreck( bool bBlowUp, CBaseEntity *pAttacker )
 	m_iCrewAlive = 0;
 	m_nBailPending = 0;
 	m_iBailMask = 0;
-	CrewSeatsThink();			// H2: whoever you could see in a seat dies with it
+	// H2: whoever you could see in a seat (alive or slumped there) goes with it, under the fireball - the wreck model
+	// that replaces it 0.15 s later has no seats
+	for ( int i = 0; i < VEHICLE_MAX_CREW_SEATS; i++ )
+	{
+		if ( m_hCrewSeat[i].Get() )
+			UTIL_Remove( m_hCrewSeat[i].Get() );
+		if ( m_hCrewCorpse[i].Get() )
+			UTIL_Remove( m_hCrewCorpse[i].Get() );
+		m_hCrewSeat[i] = m_hCrewCorpse[i] = NULL;
+	}
 	if ( pAttacker )
 		m_hKiller = pAttacker;
 	SetState( VSTATE_BURNING, pAttacker );		// out of the fight now (halted, nobody shoots it) - wrecked at the swap
@@ -4677,11 +4698,6 @@ void CDoDSPVehicle::DamageStateThink( void )
 				Msg( "DOD-SP vehicle %s: no room beside it for a crewman to get out\n", Label() );
 			m_flNextBailAt = now + random->RandomFloat( 0.6f, 1.0f );
 		}
-	}
-	if ( m_eState == VSTATE_ABANDONED && m_flIgniteAt > 0.0f && now >= m_flIgniteAt )
-	{
-		m_flIgniteAt = 0.0f;
-		SetBurning( false, m_hKiller.Get() );
 	}
 	if ( m_eState == VSTATE_BURNING )
 	{

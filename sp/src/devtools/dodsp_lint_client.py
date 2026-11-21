@@ -646,6 +646,12 @@ def check_vehicle_body():
             if re.search(var_re, code) and func not in allowed:
                 bad.append("%s:%d (%s) writes the body's rock / a suspension unit's lift - kicks go through BodyKick, the "
                            "springs and UpdateSuspension are their only writers" % (os.path.basename(path), n, func))
+    # H2b (owner 2026-11-21): an abandoned vehicle stays intact for a crew to take over - nothing sets it alight on a
+    # timer (V4b did: m_flIgniteAt). Only a real fire (SetBurning from a hit) burns a vehicle.
+    for n, line in enumerate(open(VEHICLE_CPP_PATH, encoding="utf-8").read().split("\n"), 1):
+        m = re.search(r"\bm_flIgniteAt\s*=(?!=)([^;]*);", line.split("//")[0])
+        if m and m.group(1).split("=")[-1].strip() not in ("0.0f", "0"):
+            bad.append("dodsp_vehicle.cpp:%d sets an abandoned vehicle alight on a timer - abandoned vehicles stay intact (H2b)" % n)
     # T1: how far a wheel travels is the MODEL's (vehicle_rig.py measures it) - never a vehicle-type key
     if re.search(r'"susp_travel"', open(VEHICLE_SCRIPT, encoding="utf-8").read()):
         bad.append("dodsp_vehicles.txt has a susp_travel key - suspension travel is measured into the model (vehicle_rig.py)")
