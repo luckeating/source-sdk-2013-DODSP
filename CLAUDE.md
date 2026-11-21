@@ -1205,6 +1205,35 @@ If you learn something like this, add it here in the same commit as the fix.
   units) before a build. Picks: bay_death1 at all six bay seats (bay_death2 sinks 15-27 units into the side walls from
   four of them), driver_death, commander_death. Pack: + halftrack_bay_death1/2 + halftrack_commander_death; the
   re-anchored driver_death replaces H2b's (H2b's pack was never compiled).
+  **H3 BUILT 2026-11-21 (the troop complement; owner: "good to build").** Six riders on CoD2's bay seats tag_guy01..06
+  (dodsp_vehicles.txt halftrack "seats", script_version H3). Seat keys: "walk" "x y z yaw" (the get-out starts there -
+  the four aisle men: CoD2's guy02/guy02b walk from tag_out -34.7 0.2 31 facing 179.1), "rally" "x y z" (once down he runs
+  there = CoD2's tag_walker0..5, then his AI), "death" (killed seated he slumps there: ww2_vi_halftrack_bay_death1; the
+  vehicle keeps him in m_hRiderCorpse and removes him with the wreck / itself). Soldier (one owner of where he is:
+  RidePosition): RideGetOut joins the walk at the first frame level with his seat (along the vehicle), the STAND-IN lasts
+  the walk's fadein (0.2 s, read from the model) - origin + yaw smoothstep from the seat onto the join frame while the pose
+  is HELD there (rate 0; UpdatePlaybackRate) and the engine blends it in from the idle; the tick the walk starts,
+  m_Motion.SwitchSequence stamps the clock and the rate goes to 1. The turn goes through ScriptedMoveTick (lint now also
+  bans SetAbsAngles in PhysicsSimulate). Vehicle: DoorsThink = THE owner of the door pose - the type's "doors" "curve"
+  (CoD2's halftrack_halftrack_jumpout keys, frame/degrees) from the dismount order, same clock as the seats' delays; the
+  door pose parameter and its range are the MODEL's facts ($keyvalues "dodsp_doors" { pose doors, open 120 }, written by
+  vehicle_rig.py from DOOR_OPEN, now 120 for CoD2's 117-degree bounce) - INVARIANT if the model hasn't got them (an older
+  rig: the doors stay shut). ENGINE FACT: a 2-way sequence blend mixes bone rotations by a NORMALISED LERP of quaternions
+  (bone_setup.cpp BlendBones -> QuaternionBlend), not by angle, so pose w turns a 120-degree door by 2 atan2(w sin 60,
+  1 - w + w cos 60) - DoorPoseFor inverts it (plain w/120 would be up to 4 degrees off). Delays (troop_preview.py search,
+  stand-in 0.2): door men 0 / 0, guy04 1.90, guy06 2.50, guy02 2.80, guy01 3.15; all at their spots 5.9 s after the order.
+  LANDINGS: all six land within ~25 units behind the doors, so V3's static rule (landings 30 apart) can't hold; the rule
+  is now in TIME: get-outs that END (he's solid again) within RIDER_LAND_GAP of each other must end RIDER_LAND_SPACING
+  (0.4 s = his run starts at his next think + 0.28 s to clear 26 units) apart - lint (join frame worked out like the code)
+  and the preview's delay search use the same rule; runtime INVARIANT in EndRide if a rider gets off inside another man.
+  The landing wait (VEHICLE_RIDER_WAIT_MAX) now counts from each rider's own delay (guy01's 3.15 s was past the 3 s).
+  Owner side: compile dodsp_halftrack_h3_doors.zip with Crowbar (all 5 halftrack variants: open frames at 120 + the
+  dodsp_doors facts; everything else identical to T1b). No ride pack compile (h2b2 has the bay deaths). Known: the run to
+  the rally spot is the AI's own FORCED_GO_RUN route (it goes round the vehicle itself; the preview draws a corner point).
+  Files: dodsp_vehicle.cpp, npc_german_soldier.cpp, dodsp_vehicles.txt, vehicle_rig.py, troop_preview.py, README.md,
+  dodsp_lint_client.py. Undo: the H2b server.dll + script (H2b ignores the new keys - but then the halftrack spawns no
+  riders only if "riders" is 0 on the entity: H2b's code would seat them with the V3 path, aisle men getting out through
+  the wall - keep "riders" 0 with an H2b build), or delete the halftrack's "seats".
   **H1 BUILD 2026-11-20: 44846448265** (owner asleep, said "go ahead and build this whole thing" + anything that improves
   the experience): wheels, steering, sprung body, measured track scroll, dust. Not yet tested in game.
   **H2 PREPARED 2026-11-20 (not built - the driver's animations wait for the owner's look at the preview).**

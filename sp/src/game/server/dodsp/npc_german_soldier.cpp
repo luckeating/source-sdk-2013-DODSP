@@ -310,9 +310,11 @@ public:
 	void		EndRide( bool bLanded );
 	int			RideState( void ) const { return m_eRide; }
 	void		SetSeatDeath( const char *pszDeath ) { m_iszRideDeath = ( pszDeath && pszDeath[0] ) ? AllocPooledString( pszDeath ) : NULL_STRING; }
-	bool		RidePosition( float flNow, Vector *pvecPos, float *pflFrame ) const;
+	bool		RidePosition( float flNow, Vector *pvecPos, float *pflFrame, float *pflYaw = NULL ) const;
+	void		SetRideWalk( const Vector *pvecWalk, float flYaw ) { m_bRideWalk = pvecWalk != NULL; m_vecRideWalk = pvecWalk ? *pvecWalk : vec3_origin; m_flRideWalkYaw = flYaw; }
+	void		SetRideRally( const Vector *pvecRally ) { m_bRideRally = pvecRally != NULL; m_vecRideRally = pvecRally ? *pvecRally : vec3_origin; }
 	virtual void PhysicsSimulate( void );
-	void		ScriptedMoveTick( const Vector &vecPos );	// THE one way a get-out / bail-out moves him (V3e: m_Motion)
+	void		ScriptedMoveTick( const Vector &vecPos, const float *pflYaw = NULL );	// THE one way a get-out / bail-out moves him (V3e: m_Motion)
 	float		SequenceFps( int iSequence );				// one owner: a sequence's real frame rate, from the model
 	// V3e: what is networked while code moves him (dodsp_npc_motion.cpp: position and pose equally late)
 	virtual const Vector *DoDSP_NetworkOrigin( void ) { return m_Motion.NetworkOrigin(); }
@@ -861,6 +863,20 @@ private:
 	float				m_flRideFps;			// V3e: the get-out's real frame rate (SequenceFps) = RidePosition's frame clock
 	Vector				m_vecRideFix;			// V3d: where he really lands minus where the animation lands (added over the fall)
 	Vector				m_vecRideLand;			// V3d: where he really lands (RideLandingSpot) - EndRide checks he's there
+	// H3: an aisle seat's get-out starts on a walk (CoD2's guy02 walk from tag_out), not on his seat: he joins it at
+	// the frame where it passes his seat (m_iRideJoin), standing into it from the seat over m_flRideStandIn (= the
+	// walk's fadein, while the engine blends his pose from the idle); then the walk plays on. Once down he runs to
+	// his rally spot beside the vehicle.
+	bool				m_bRideWalk, m_bRideRally;
+	Vector				m_vecRideWalk;			// the walk's start (vehicle space) ...
+	float				m_flRideWalkYaw;		// ... and facing
+	Vector				m_vecRideRally;			// where he runs once down (vehicle space)
+	int					m_iRideJoin;			// getting out: the walk's first frame he plays
+	float				m_flRideStandIn;		// getting out: seconds from his seat onto that frame (0 = a seat's own get-out)
+	Vector				m_vecRideFrom;			// getting out: his seat in the world when he started ...
+	float				m_flRideFromYaw;		// ... and his facing there
+	Vector				m_vecRideRallyAt;		// getting out: the rally spot in the world (the vehicle halted for the dismount)
+	bool				m_bRideStoodIn;			// the walk has started playing (its rate switched on; not saved - a load ends the get-out)
 	bool		RideLandingSpot( CBaseEntity *pVehicle, const Vector &vecTag, const Vector &vecWant, Vector *pvecSpot, const char **ppszWhy );
 
 	// Networked to the client for the procedural hit kick
@@ -906,6 +922,16 @@ BEGIN_DATADESC( CNPC_GermanSoldier )
 	DEFINE_FIELD( m_flRideFps, FIELD_FLOAT ),
 	DEFINE_FIELD( m_vecRideFix, FIELD_VECTOR ),
 	DEFINE_FIELD( m_vecRideLand, FIELD_POSITION_VECTOR ),
+	DEFINE_FIELD( m_bRideWalk, FIELD_BOOLEAN ),
+	DEFINE_FIELD( m_bRideRally, FIELD_BOOLEAN ),
+	DEFINE_FIELD( m_vecRideWalk, FIELD_VECTOR ),
+	DEFINE_FIELD( m_flRideWalkYaw, FIELD_FLOAT ),
+	DEFINE_FIELD( m_vecRideRally, FIELD_VECTOR ),
+	DEFINE_FIELD( m_iRideJoin, FIELD_INTEGER ),
+	DEFINE_FIELD( m_flRideStandIn, FIELD_FLOAT ),
+	DEFINE_FIELD( m_vecRideFrom, FIELD_POSITION_VECTOR ),
+	DEFINE_FIELD( m_flRideFromYaw, FIELD_FLOAT ),
+	DEFINE_FIELD( m_vecRideRallyAt, FIELD_POSITION_VECTOR ),
 END_DATADESC()
 
 CNPC_GermanSoldier::CNPC_GermanSoldier() : m_AnimMap( DefLessFunc( int ) )
@@ -918,6 +944,10 @@ CNPC_GermanSoldier::CNPC_GermanSoldier() : m_AnimMap( DefLessFunc( int ) )
 	m_vecRideSeat = m_vecRideTag = vec3_origin;
 	m_flRideYaw = m_flRideTagYaw = m_flRideStart = m_flRideFps = 0.0f;
 	m_vecRideFix = m_vecRideLand = vec3_origin;
+	m_bRideWalk = m_bRideRally = m_bRideStoodIn = false;
+	m_vecRideWalk = m_vecRideRally = m_vecRideFrom = m_vecRideRallyAt = vec3_origin;
+	m_flRideWalkYaw = m_flRideStandIn = m_flRideFromYaw = 0.0f;
+	m_iRideJoin = 0;
 	m_iszRideIdle = m_iszRideGetout = m_iszRideFidget = m_iszRideDeath = NULL_STRING;
 	m_bDeadInSeat = false;
 	m_flRideFidgetAt = m_flRideFidgetEnd = 0.0f;
@@ -5050,7 +5080,9 @@ void CNPC_GermanSoldier::UpdatePlaybackRate( void )
 	// moves only the origin per tick (RidePosition / BailPosition), on the same clock as the rate.
 	if ( m_eRide != GERMAN_RIDE_NONE )
 	{
-		SetPlaybackRate( 1.0f );		// the model's own fps = RidePosition's frame clock (m_flRideFps, from SequenceFps)
+		// the model's own fps = RidePosition's frame clock (m_flRideFps, from SequenceFps); H3: held on the join frame
+		// while he stands into a walk (PhysicsSimulate stamps the clock the tick it starts)
+		SetPlaybackRate( ( m_eRide == GERMAN_RIDE_GETOUT && !m_bRideStoodIn ) ? 0.0f : 1.0f );
 		return;
 	}
 	if ( m_bBailOut )
@@ -7444,9 +7476,14 @@ void CNPC_GermanSoldier::PhysicsSimulate( void )
 	if ( m_eRide == GERMAN_RIDE_GETOUT && IsAlive() )
 	{
 		Vector p;
-		float flFrame;
-		bool bDone = RidePosition( gpGlobals->curtime, &p, &flFrame );
-		ScriptedMoveTick( p );
+		float flFrame, flYaw;
+		bool bDone = RidePosition( gpGlobals->curtime, &p, &flFrame, &flYaw );
+		if ( !m_bRideStoodIn && gpGlobals->curtime >= m_flRideStart )
+		{
+			m_Motion.SwitchSequence( this );	// H3: stamp the held join frame on this tick, then the walk plays at its rate
+			m_bRideStoodIn = true;
+		}
+		ScriptedMoveTick( p, &flYaw );
 		if ( bDone )
 			EndRide( true );
 	}
@@ -7465,9 +7502,11 @@ void CNPC_GermanSoldier::PhysicsSimulate( void )
 // "animated every tick" instead: as exact while it lasts, but walking soldiers are drawn ~0.1 s late, so he jumped
 // ahead at the start of every move and stalled at its end, and pose parameters set at thinks - aim - stepped.)
 // The animation itself runs at its rate (UpdatePlaybackRate) on the model's own frame rate (SequenceFps).
-void CNPC_GermanSoldier::ScriptedMoveTick( const Vector &vecPos )
+void CNPC_GermanSoldier::ScriptedMoveTick( const Vector &vecPos, const float *pflYaw )
 {
 	UpdatePlaybackRate();
+	if ( pflYaw )
+		SetAbsAngles( QAngle( 0.0f, *pflYaw, 0.0f ) );		// H3: the stand-in turns him (m_Motion samples the angles with the origin)
 	m_Motion.Move( this, vecPos );
 }
 
@@ -7638,10 +7677,29 @@ int CNPC_GermanSoldier::RideGetOut( bool bForce )
 		EndRide( false );
 		return 0;
 	}
+	// H3: an aisle seat's get-out is a walk that starts elsewhere in the vehicle (m_vecRideWalk); a seat's own starts on it
+	const Vector &vecBase = m_bRideWalk ? m_vecRideWalk : m_vecRideSeat;
+	float flBaseYaw = m_bRideWalk ? m_flRideWalkYaw : m_flRideYaw;
 	Vector vecTag;
-	VectorTransform( m_vecRideSeat, pVehicle->EntityToWorldTransform(), vecTag );
-	Vector vecFwdLocal( cosf( DEG2RAD( m_flRideYaw ) ), sinf( DEG2RAD( m_flRideYaw ) ), 0.0f ), vecFwd;
+	VectorTransform( vecBase, pVehicle->EntityToWorldTransform(), vecTag );
+	Vector vecFwdLocal( cosf( DEG2RAD( flBaseYaw ) ), sinf( DEG2RAD( flBaseYaw ) ), 0.0f ), vecFwd;
 	VectorRotate( vecFwdLocal, pVehicle->EntityToWorldTransform(), vecFwd );
+	// H3: he joins the walk at the first frame it has come level with his seat (along the vehicle); none = its start.
+	// troop_preview.py picks the same frame - the seats' delays were searched with it
+	int iJoin = 0;
+	if ( m_bRideWalk )
+	{
+		float wc = cosf( DEG2RAD( m_flRideWalkYaw ) ), ws = sinf( DEG2RAD( m_flRideWalkYaw ) );
+		for ( int f = 0; f < pPath->nFrames; f++ )
+		{
+			const Vector4D &q = pPath->pts[f];
+			if ( m_vecRideWalk.x + wc * q.x - ws * q.y <= m_vecRideSeat.x )
+			{
+				iJoin = f;
+				break;
+			}
+		}
+	}
 	// where the animation lands, and where he really can (V3d: RideLandingSpot, reached from the seat through open air)
 	float flTagYaw = atan2f( vecFwd.y, vecFwd.x ), c = cosf( flTagYaw ), sn = sinf( flTagYaw );
 	const Vector4D &e = pPath->pts[pPath->nFrames - 1];
@@ -7664,19 +7722,29 @@ int CNPC_GermanSoldier::RideGetOut( bool bForce )
 		RideWarnOnce( "a rider's landing has no ground under it - he lands where the animation ends and falls from there", pszWhy );
 	m_vecRideTag = vecTag;
 	m_flRideTagYaw = RAD2DEG( flTagYaw );
-	m_flRideStart = gpGlobals->curtime;
+	m_vecRideFrom = GetAbsOrigin();			// still on his seat (parented): the seat in the world
+	m_flRideFromYaw = GetAbsAngles().y;
+	m_iRideJoin = iJoin;
+	// H3: the stand-in lasts the walk's fadein - the engine blends his pose from the idle onto the join frame over it
+	m_flRideStandIn = m_bRideWalk ? MAX( GetModelPtr()->pSeqdesc( iSeq ).fadeintime, 0.1f ) : 0.0f;
+	m_flRideStart = gpGlobals->curtime + m_flRideStandIn;		// the path's frame iJoin plays at this time
+	m_bRideStoodIn = !m_bRideWalk;
+	m_vecRideRallyAt = vec3_origin;
+	if ( m_bRideRally )
+		VectorTransform( m_vecRideRally, pVehicle->EntityToWorldTransform(), m_vecRideRallyAt );	// the vehicle has halted
 	m_vecRideLand = vecLand;
 	m_vecRideFix = vecLand - vecWant;
 	m_eRide = GERMAN_RIDE_GETOUT;
 	m_flRideFps = SequenceFps( iSeq );
 	SetParent( NULL );
-	SetAbsOrigin( vecTag );
-	SetAbsAngles( QAngle( 0.0f, m_flRideTagYaw, 0.0f ) );
+	SetAbsOrigin( m_bRideWalk ? m_vecRideFrom : vecTag );
+	SetAbsAngles( QAngle( 0.0f, m_bRideWalk ? m_flRideFromYaw : m_flRideTagYaw, 0.0f ) );
 	m_Motion.Begin( this, "ride get-out" );		// V3e: stamps the animation clock before the get-out starts
 	SetIdealActivity( ACT_DO_NOT_DISTURB );
 	SetSequenceById( iSeq );
-	SetCycle( 0.0f );
-	UpdatePlaybackRate();
+	int nLast = Studio_MaxFrame( GetModelPtr(), iSeq, GetPoseParameterArray() );
+	SetCycle( nLast > 0 ? (float)iJoin / (float)nLast : 0.0f );
+	UpdatePlaybackRate();			// H3: 0 while he stands into the walk (held on the join frame), then the model's own rate
 	return 1;
 }
 
@@ -7720,9 +7788,11 @@ bool CNPC_GermanSoldier::RideLandingSpot( CBaseEntity *pVehicle, const Vector &v
 }
 
 // THE owner of where a rider getting off is (a time past the end = where he ends up). Returns true when it's over.
-bool CNPC_GermanSoldier::RidePosition( float flNow, Vector *pvecPos, float *pflFrame ) const
+bool CNPC_GermanSoldier::RidePosition( float flNow, Vector *pvecPos, float *pflFrame, float *pflYaw ) const
 {
 	const GermanRidePath_t *pPath = GermanRidePath( STRING( m_iszRideGetout ) );
+	if ( pflYaw )
+		*pflYaw = m_flRideTagYaw;
 	if ( !pPath )
 	{
 		*pvecPos = m_vecRideTag;
@@ -7730,7 +7800,8 @@ bool CNPC_GermanSoldier::RidePosition( float flNow, Vector *pvecPos, float *pflF
 		return true;
 	}
 	float flLast = (float)( pPath->nFrames - 1 );
-	float f = clamp( ( flNow - m_flRideStart ) * ( m_flRideFps > 0.0f ? m_flRideFps : 30.0f ), 0.0f, flLast );
+	int iJoin = clamp( m_iRideJoin, 0, pPath->nFrames - 1 );
+	float f = clamp( (float)iJoin + ( flNow - m_flRideStart ) * ( m_flRideFps > 0.0f ? m_flRideFps : 30.0f ), (float)iJoin, flLast );
 	int i0 = (int)f, i1 = MIN( i0 + 1, pPath->nFrames - 1 );
 	float t = f - i0;
 	Vector4D v;
@@ -7738,6 +7809,17 @@ bool CNPC_GermanSoldier::RidePosition( float flNow, Vector *pvecPos, float *pflF
 	float c = cosf( DEG2RAD( m_flRideTagYaw ) ), sn = sinf( DEG2RAD( m_flRideTagYaw ) );
 	*pvecPos = m_vecRideTag + Vector( c * v.x - sn * v.y, sn * v.x + c * v.y, v.z ) + m_vecRideFix * v.w;
 	*pflFrame = f;
+	// H3: standing into the walk - origin and facing go from his seat onto the join frame (smoothstep), the pose is
+	// held on that frame (rate 0) while the engine blends it in from the idle
+	if ( m_flRideStandIn > 0.0f && flNow < m_flRideStart )
+	{
+		float w = clamp( 1.0f - ( m_flRideStart - flNow ) / m_flRideStandIn, 0.0f, 1.0f );
+		w = w * w * ( 3.0f - 2.0f * w );
+		*pvecPos = m_vecRideFrom + ( *pvecPos - m_vecRideFrom ) * w;
+		if ( pflYaw )
+			*pflYaw = m_flRideFromYaw + AngleDiff( m_flRideTagYaw, m_flRideFromYaw ) * w;
+		return false;
+	}
 	return f >= flLast;
 }
 
@@ -7763,9 +7845,25 @@ void CNPC_GermanSoldier::EndRide( bool bLanded )
 		if ( ( p - m_vecRideLand ).Length() > 1.0f || tr.startsolid )
 			Warning( "INVARIANT npc_german_soldier %d: a rider got off at %.0f %.0f %.0f, %s (landing spot %.0f %.0f %.0f)\n", entindex(),
 					 p.x, p.y, p.z, tr.startsolid ? "inside something solid" : "not where RideLandingSpot put him", m_vecRideLand.x, m_vecRideLand.y, m_vecRideLand.z );
-		// the get-outs end running: he keeps going the way he jumped, then his own AI decides
+		// H3: solid again - nobody else may stand inside him (men leaving one way are spaced by their delays: the lint's
+		// RIDER_LAND_SPACING, searched by troop_preview.py; RideGetOut waits while someone stands on his landing)
+		CBaseEntity *pList[16];
+		int nNear = UTIL_EntitiesInBox( pList, ARRAYSIZE( pList ), p + GetHullMins(), p + GetHullMaxs(), FL_NPC | FL_CLIENT );
+		for ( int i = 0; i < nNear; i++ )
+			if ( pList[i] != this && pList[i]->IsAlive() && !pList[i]->GetMoveParent() && pList[i]->GetMoveType() != MOVETYPE_NONE )
+			{
+				RideWarnOnce( "a rider got off INSIDE another man - they may stick together (space their seats' delays further)",
+							  CFmtStr( "%s %d, %.0f units apart", pList[i]->GetClassname(), pList[i]->entindex(), ( pList[i]->GetAbsOrigin() - p ).Length2D() ).Access() );
+				break;
+			}
+		// the get-outs end running: H3 to his rally spot beside the vehicle (out of the way of the men behind him),
+		// else on the way he jumped; then his own AI decides
 		Vector vecFwd( cosf( DEG2RAD( m_flRideTagYaw ) ), sinf( DEG2RAD( m_flRideTagYaw ) ), 0.0f );
-		m_vecBailRun = GetAbsOrigin() + vecFwd * GERMAN_RIDE_RUN;
+		m_vecBailRun = m_bRideRally ? m_vecRideRallyAt : GetAbsOrigin() + vecFwd * GERMAN_RIDE_RUN;
+		static ConVarRef s_VehicleDebug( "dodsp_vehicle_debug" );
+		if ( m_bRideRally && s_VehicleDebug.IsValid() && s_VehicleDebug.GetBool() )
+			Msg( "DOD-SP rider %d: down, runs %.0f units to his rally spot %.0f %.0f %.0f\n", entindex(),
+				 ( m_vecBailRun - GetAbsOrigin() ).Length2D(), m_vecBailRun.x, m_vecBailRun.y, m_vecBailRun.z );
 		m_bBailRun = true;
 		SetIdealActivity( ACT_IDLE );
 	}
@@ -7792,6 +7890,18 @@ void GermanSoldier_SetSeatDeath( CBaseEntity *pEnt, const char *pszDeath )
 	CNPC_GermanSoldier *pG = dynamic_cast<CNPC_GermanSoldier *>( pEnt );
 	if ( pG )
 		pG->SetSeatDeath( pszDeath );
+}
+void GermanSoldier_SetRideWalk( CBaseEntity *pEnt, const Vector *pvecWalk, float flYaw )
+{
+	CNPC_GermanSoldier *pG = dynamic_cast<CNPC_GermanSoldier *>( pEnt );
+	if ( pG )
+		pG->SetRideWalk( pvecWalk, flYaw );
+}
+void GermanSoldier_SetRideRally( CBaseEntity *pEnt, const Vector *pvecRally )
+{
+	CNPC_GermanSoldier *pG = dynamic_cast<CNPC_GermanSoldier *>( pEnt );
+	if ( pG )
+		pG->SetRideRally( pvecRally );
 }
 int GermanSoldier_RideState( CBaseEntity *pEnt )
 {

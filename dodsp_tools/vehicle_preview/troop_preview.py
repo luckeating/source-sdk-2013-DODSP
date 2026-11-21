@@ -12,14 +12,16 @@ What it draws is what the game will do (change both together):
     origin = seat + the path table (content/scripts/dodsp_ride_paths.txt) + the landing correction, like V3;
   * the four aisle seats (guy01, 02, 04, 06) have no get-out of their own. CoD2's guy02 / guy02b get-outs start
     crouched in the aisle at tag_out (centre of the bay, facing the doors) and walk out. A man joins that walk at the
-    frame where it passes his seat: STAND_IN seconds in which his origin goes from his seat to that point of the walk,
-    his yaw turns to the walk's, and his pose blends from his idle to that frame of the walk (the engine blends two
-    sequences in bone space at the current origin - so does this); then the walk plays on;
+    frame where it passes his seat: STAND_IN seconds (= the walk's fadein, 0.2 s: the engine blends the pose over it)
+    in which his origin goes from his seat to that point of the walk (smoothstep), his yaw turns to the walk's, and his
+    pose blends from his idle to that frame, held there; then the walk plays on (npc_german_soldier.cpp RidePosition);
   * on the ground each man runs to his rally spot (CoD2's tag_walker0..5 = its escort spots beside the vehicle),
     round the rear corner if the straight line would cut through the vehicle; there he stops (the AI takes over);
-  * a second clip: a man shot while running off plays CoD2's halftrack_guy_rundeath.
+  * a second clip: a man shot while running off plays CoD2's halftrack_guy_rundeath (NOT shipped - the owner's rule:
+    on the ground a man dies as a ragdoll; only seated men play deaths).
 Start times: the door men at 0 (CoD2's sync with the doors); each aisle man as early as he can go without coming
-closer than CLEAR units (pelvis, from above) to anyone - searched, printed, and these are the seats' "delay" values.
+closer than CLEAR units (pelvis, from above) to anyone, and with get-outs that end within LAND_GAP of another's end
+LAND_SPACING apart (the lint's rule) - searched, printed, and these are the seats' "delay" values in dodsp_vehicles.txt.
 Checks printed: the clearance found per man, how close anyone's limbs came to the open doors, everyone out at."""
 import os, sys, numpy as np
 from PIL import Image, ImageDraw
@@ -33,12 +35,14 @@ from editor_models import kv_parse
 os.makedirs(OUT, exist_ok=True)
 
 FPS = 30.0
-STAND_IN = 0.5           # s: seat -> the aisle walk
+STAND_IN = 0.2           # s: seat -> the aisle walk = the walk sequence's fadein (the engine blends the pose over it)
 BLEND = 0.2              # s: the sequences' fadein
 RUN_SPEED = 227.0        # units/s: combatrun_forward_1's own travel (121 units in 16 frames)
 RUN_ACCEL = 0.35         # s to full speed from standing
 TURN_RATE = 540.0        # deg/s while running
 CLEAR = 18.0             # units: closest two men may come (pelvis, from above); seated legs reach into the aisle
+LAND_GAP, LAND_SPACING = 30.0, 0.4   # = dodsp_lint_client.py RIDER_LAND_GAP / RIDER_LAND_SPACING: two men whose get-outs
+                         # end (he is solid again) closer than LAND_GAP must end LAND_SPACING apart (the first has run off)
 DOOR_MAX = 120.0         # degrees at "doors" = 1 (the rig's DOOR_OPEN must match, so CoD2's 117-degree bounce fits)
 
 # ---- data the game reads -------------------------------------------------------------------------------------
@@ -230,7 +234,10 @@ for seat in SEATS:
         cand = men + [Man(seat, t0)]
         t_end = max(m.t_rally for m in cand) + 0.5
         d, who, when = closest(cand, len(cand) - 1, t_end)
-        if d >= CLEAR or t0 > 12: break
+        me = cand[-1]; e = me.walk_origin(me.p['frames'] - 1)
+        landing_ok = all(abs(m.t_out - me.t_out) >= LAND_SPACING - 1e-6 or np.linalg.norm((m.walk_origin(m.p['frames'] - 1) - e)[:2]) >= LAND_GAP
+                         for m in men)
+        if (d >= CLEAR and landing_ok) or t0 > 12: break
         t0 += 0.05
     men = cand
     print('%s  %-6s start %.2f s  (out of the vehicle %.2f, at his spot %.2f)  closest %s'

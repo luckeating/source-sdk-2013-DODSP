@@ -30,6 +30,8 @@ THE FACTS IN THE MODEL ($keyvalues "dodsp_wheels", read by game/shared/dodsp/dod
                          top run), measured on the mesh, less SUSP_MARGIN; d = u (no mesh says how far a wheel hangs).
     "wheel_<side>_NN"    "radius <r> [steer 1]"   r = the wheel's own radius about its axle; steer = turns with steering
     "wheelbase"          steered vehicles: front axle to the middle of the ground-touching wheels behind it
+  and ($keyvalues "dodsp_doors", read by the server's DoorsThink, H3): "pose" "doors" + "open" = DOOR_OPEN, the degrees
+  at pose 1 (the script holds only the doors' curve)
     "body_pivot"/"body_bone"   sprung bodies (the halftrack only; tanks keep the server's whole-hull lurch)
 Every bone has no rotation at rest, so a wheel's axle is the model's left axis and every vertex is written in model space.
 
@@ -47,7 +49,8 @@ MATCH = 0.1                   # units: a port triangle's middle this close to a 
 SUSP_MARGIN = 0.5             # units kept between a risen wheel and what's over it
 SUSP_MAX = 12.0               # units: no suspension unit travels further than this
 GROUND_SLACK = 4.0            # a wheel whose lowest point is this close to the lowest wheel point touches the ground
-DOOR_OPEN = 100.0             # degrees, the halftrack's doors at "doors" = 1
+DOOR_OPEN = 120.0             # degrees, the halftrack's doors at "doors" = 1 (H3: CoD2's door kick bounces to 117); written into the
+                              # model as $keyvalues "dodsp_doors" - the server reads it there (one owner: the model)
 # a variant whose running gear is another's under extra loose dressing takes that one's suspension travel: the brush
 # Tiger's foliage hangs over its tracks (measured 1.9 / 6.9 / 2.9 against the leaves vs the Tiger's 6.2 / 10.3 / 6.3)
 SUSP_FROM = {'tiger_brush_hull': 'tiger_hull'}
@@ -341,7 +344,10 @@ def write_variant(rig, var, ports, out, cod, steers, doors):
     for name in sorted(wf):
         r, st = wf[name]
         kv += '\t\t"%s"\t"radius %.1f%s"\n' % (name, r, ' steer 1' if st else '')
-    qc += kv + '\t}\n}\n'
+    kv += '\t}\n'
+    if doors:   # H3: the doors' facts live in the model too (the server reads them: pose name + degrees at pose 1)
+        kv += '\t"dodsp_doors"\n\t{\n\t\t"pose"\t"doors"\n\t\t"open"\t"%.1f"\n\t}\n' % DOOR_OPEN
+    qc += kv + '}\n'
     open(os.path.join(out, var + '.qc'), 'w', newline='\n').write(qc)
     counts = {}
     for mat, vs in rows:

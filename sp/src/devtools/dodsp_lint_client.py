@@ -440,6 +440,10 @@ DAMAGE_WRITERS = {
 RIDE_PATHS = os.path.join(ROOT, "..", "..", "dodsp_tools", "content", "scripts", "dodsp_ride_paths.txt")
 RIDE_SEQUENCES = os.path.join(ROOT, "..", "..", "dodsp_tools", "generated", "ride_pack_sequences.txt")
 SOLDIER_CPP = os.path.join(ROOT, "game", "server", "dodsp", "npc_german_soldier.cpp")
+RIDER_LAND_SPACING = 0.4   # H3: seconds between two get-outs ending closer than RIDER_LAND_GAP: the first man's run starts
+                           # at his next think (<= 0.1 s) and clears a man's width (26 units, 227 u/s reached in 0.35 s) in 0.28 s
+RIDE_FPS = 30.0            # the ride pack's get-outs play at 30 fps (CoD2's, converted as they are; the game reads SequenceFps)
+RIDE_STANDIN = 0.2         # H3: = the walks' fadein in the ride pack (RideGetOut's stand-in reads it from the model)
 RIDER_LAND_GAP = 30
 
 
@@ -471,31 +475,70 @@ def check_vehicle_seats():
                 if n and abs(float(d[str(0)].split()[0])) + abs(float(d[str(0)].split()[1])) + abs(float(d[str(0)].split()[2])) > 0.05:
                     bad.append("ride path %s doesn't start on the seat (frame 0 is %s)" % (seq, d["0"]))
             paths[seq] = n
-    pathend = {}
+    pathend, pathxy, pathland = {}, {}, {}
     with open(RIDE_PATHS, encoding="utf-8") as f:
         for seq, blk in (kv_get(parse_kv(f.read()), "RidePaths") or []):
             if isinstance(blk, list):
                 d = dict(blk)
-                last = d.get(str(int(d.get("frames", "0")) - 1), "0 0").split()
+                n = int(d.get("frames", "0"))
+                last = d.get(str(n - 1), "0 0").split()
                 pathend[seq] = (float(last[0]), float(last[1]))
+                pathxy[seq] = [tuple(float(v) for v in d.get(str(i), "0 0 0 0").split()[:2]) for i in range(n)]
+                pathland[seq] = int(d.get("land", str(n - 1)))
     for name, t in types.items():
         seats = kv_get(t, "seats")
         if not isinstance(seats, list):
             continue
-        # where each man lands (seat + his get-out's end, turned by the seat's yaw): two closer than a man is wide
-        # (26) + a margin would land inside each other (V3: the Panzer II's right side had them 16 apart)
+        # where each man lands (his get-out's start - the seat, or H3 its "walk" - + the get-out's end, turned by that
+        # yaw): two closer than a man is wide (26) + a margin would land inside each other (V3: the Panzer II's right
+        # side had them 16 apart). H3: men who walk out the same way (the halftrack's aisle) share a landing - allowed
+        # only one after the other (delays RIDER_LAND_SPACING apart; RideGetOut also waits while anyone stands there)
         lands = []
         for k, (key, blk) in enumerate(seats):
             d = dict(blk) if isinstance(blk, list) else {}
+            if "walk" in d and len(d["walk"].split()) != 4:
+                bad.append("%s seat %d: walk '%s' is not x y z yaw" % (name, k + 1, d["walk"]))
+                continue
+            if "rally" in d and len(d["rally"].split()) != 3:
+                bad.append("%s seat %d: rally '%s' is not x y z" % (name, k + 1, d["rally"]))
             if d.get("getout") in pathend and len(d.get("origin", "").split()) == 3:
-                ox, oy, _ = (float(v) for v in d["origin"].split())
-                a = math.radians(float(d.get("yaw", "0"))); ex, ey = pathend[d["getout"]]
-                lands.append((k + 1, ox + math.cos(a) * ex - math.sin(a) * ey, oy + math.sin(a) * ex + math.cos(a) * ey))
+                if "walk" in d:
+                    ox, oy, _, yw = (float(v) for v in d["walk"].split())
+                else:
+                    ox, oy, _ = (float(v) for v in d["origin"].split()); yw = float(d.get("yaw", "0"))
+                a = math.radians(yw); ex, ey = pathend[d["getout"]]
+                # when he is down and solid again (EndRide, the path's last frame): delay, + the stand-in and the walk
+                # from the frame that passes his seat (RideGetOut's join frame, worked out the same way)
+                join, standin = 0, 0.0
+                if "walk" in d:
+                    sx = float(d["origin"].split()[0]); standin = RIDE_STANDIN
+                    join = next((f for f, (px, py) in enumerate(pathxy[d["getout"]]) if ox + math.cos(a) * px - math.sin(a) * py <= sx), 0)
+                down = float(d.get("delay", "0")) + standin + max(len(pathxy[d["getout"]]) - 1 - join, 0) / RIDE_FPS
+                lands.append((k + 1, ox + math.cos(a) * ex - math.sin(a) * ey, oy + math.sin(a) * ex + math.cos(a) * ey, down))
         for i in range(len(lands)):
             for j in range(i + 1, len(lands)):
                 gap = math.hypot(lands[i][1] - lands[j][1], lands[i][2] - lands[j][2])
-                if gap < RIDER_LAND_GAP:
-                    bad.append("%s: seats %d and %d land %.0f units apart - riders are 26 wide, keep them %d apart" % (name, lands[i][0], lands[j][0], gap, RIDER_LAND_GAP))
+                if gap < RIDER_LAND_GAP and abs(lands[i][3] - lands[j][3]) < RIDER_LAND_SPACING - 1e-3:
+                    bad.append("%s: seats %d and %d land %.0f units apart, %.2f s apart - riders are 26 wide: keep their landings %d "
+                               "apart, or their ends %.1f s apart (one runs off before the next is down)"
+                               % (name, lands[i][0], lands[j][0], gap, abs(lands[i][3] - lands[j][3]), RIDER_LAND_GAP, RIDER_LAND_SPACING))
+        # H3: the doors riders get out through - their pose and range are the MODEL's facts (vehicle_rig.py writes
+        # $keyvalues "dodsp_doors" with DOOR_OPEN); the script holds only the curve: frame/degree pairs in order, within it
+        doors = kv_get(t, "doors")
+        if isinstance(doors, list):
+            dd = dict(doors)
+            rig = open(os.path.join(ROOT, "..", "..", "dodsp_tools", "vehicle_preview", "vehicle_rig.py"), encoding="utf-8").read()
+            mo = re.search(r"^DOOR_OPEN\s*=\s*([\d.]+)", rig, re.M)
+            top = float(mo.group(1)) if mo else 0.0
+            for k in ("pose", "open"):
+                if k in dd:
+                    bad.append("%s doors: \"%s\" is the model's fact (vehicle_rig.py dodsp_doors) - not the script's" % (name, k))
+            c = dd.get("curve", "").split()
+            pairs = [(float(c[i]), float(c[i + 1])) for i in range(0, len(c) - 1, 2)]
+            if len(c) % 2 or len(pairs) < 2 or len(pairs) > 32 or any(pairs[i + 1][0] <= pairs[i][0] for i in range(len(pairs) - 1)) \
+               or any(not (0.0 <= deg <= top) for _, deg in pairs):
+                bad.append("%s doors: curve '%s' is not 2..32 frame-degree pairs, in order, within 0..%.0f (vehicle_rig.py DOOR_OPEN)"
+                           % (name, dd.get("curve"), top))
         if len(seats) > 8:
             bad.append("%s: %d seats - VEHICLE_MAX_SEATS is 8" % (name, len(seats)))
         for k, (key, blk) in enumerate(seats):
@@ -580,7 +623,7 @@ def check_npc_motion():
         if m:
             func = m.group(1)
         code = line.split("//")[0]
-        if func == "PhysicsSimulate" and re.search(r"\b(SetAbsOrigin|SetLocalOrigin|SetCycle|SetSimulationTime)\s*\(", code):
+        if func == "PhysicsSimulate" and re.search(r"\b(SetAbsOrigin|SetLocalOrigin|SetAbsAngles|SetLocalAngles|SetCycle|SetSimulationTime)\s*\(", code):
             bad.append("npc_german_soldier.cpp:%d: PhysicsSimulate moves or animates him itself - go through ScriptedMoveTick" % n)
     body = "\n".join(lines)
     m = re.search(r"void CNPC_GermanSoldier::ScriptedMoveTick\([^)]*\)\s*\{(.*?)\n\}", body, re.S)

@@ -87,7 +87,7 @@
 "DoDSP_Vehicles"
 {
 	// Must match DODSP_VEHICLE_SCRIPT_VERSION in server.dll (dodsp_vehicle.cpp): use this file with the server.dll of the same build.
-	"script_version"	"H2b"
+	"script_version"	"H3"
 
 	"panzer2"
 	{
@@ -435,6 +435,29 @@
 			// seat_death_preview.py "sitting" check); not tag_passenger - there he sat 12 units off the seat (owner's screenshot).
 			// Killed there he slumps (CoD2's bay death, re-based to start at his idle: halftrack_commander_death)
 			"commander"	{ "origin" "2.0 -1.4 32.3"	"yaw" "0"	"idle" "ww2_vi_halftrack_passenger_idle"	"death" "ww2_vi_halftrack_commander_death" }
+		}
+		// H3: the troop complement - six in the bay on CoD2's own seats (tag_guy01..06, facing in), out through the rear
+		// doors, then each runs to his spot beside the vehicle (CoD2's tag_walker0..5) and his own AI takes over. The two
+		// door men (guy03 left, guy05 right) have CoD2 get-outs of their own; the four aisle men stand into CoD2's guy02 /
+		// guy02b walk from tag_out ("walk" -34.7 0.2 31.0, facing the doors 179.1) at the frame that passes their seat.
+		// Delays searched by troop_preview.py (the stand-in = the walk's 0.2 s fadein): nobody comes closer than 18 units
+		// (pelvis) to anyone, first out runs furthest; everyone at his spot 5.9 s after the order. Killed seated: slumps.
+		"seats"
+		{
+			"seat"	{ "origin" "-88.7 17.9 41.8"	"yaw" "-90"	"idle" "ww2_vi_halftrack_guy03_idle"	"getout" "ww2_jump_halftrack_guy03_jumpout"	"delay" "0.00"	"rally" "80.4 90.7 4.3"	"death" "ww2_vi_halftrack_bay_death1" }	// guy03, left door
+			"seat"	{ "origin" "-86.8 -17.4 41.8"	"yaw" "90"	"idle" "ww2_vi_halftrack_guy05_idle"	"getout" "ww2_jump_halftrack_guy05_jumpout"	"delay" "0.00"	"rally" "80.4 -80.6 4.3"	"death" "ww2_vi_halftrack_bay_death1" }	// guy05, right door
+			"seat"	{ "origin" "-59.2 -17.8 41.8"	"yaw" "90"	"idle" "ww2_vi_halftrack_guy04_idle"	"getout" "ww2_jump_halftrack_guy02_jumpout"	"walk" "-34.7 0.2 31.0 179.1"	"delay" "1.90"	"rally" "-2.7 -102.1 4.3"	"death" "ww2_vi_halftrack_bay_death1" }	// guy04
+			"seat"	{ "origin" "-53.1 17.9 41.8"	"yaw" "-90"	"idle" "ww2_vi_halftrack_guy06_idle"	"getout" "ww2_jump_halftrack_guy02b_jumpout"	"walk" "-34.7 0.2 31.0 179.1"	"delay" "2.50"	"rally" "-2.7 102.0 4.3"	"death" "ww2_vi_halftrack_bay_death1" }	// guy06
+			"seat"	{ "origin" "-32.2 -17.9 41.8"	"yaw" "90"	"idle" "ww2_vi_halftrack_guy02_idle"	"getout" "ww2_jump_halftrack_guy02_jumpout"	"walk" "-34.7 0.2 31.0 179.1"	"delay" "2.80"	"rally" "-91.6 -82.8 4.3"	"death" "ww2_vi_halftrack_bay_death1" }	// guy02
+			"seat"	{ "origin" "-26.0 17.9 41.8"	"yaw" "-90"	"idle" "ww2_vi_halftrack_guy01_idle"	"getout" "ww2_jump_halftrack_guy02b_jumpout"	"walk" "-34.7 0.2 31.0 179.1"	"delay" "3.15"	"rally" "-91.6 95.1 4.3"	"death" "ww2_vi_halftrack_bay_death1" }	// guy01
+		}
+		// H3: the rear doors, kicked open on CoD2's own curve (halftrack_halftrack_jumpout, hatch_open_left: frame (30 fps)
+		// then degrees) from the dismount order - shut while the door men sit up (their get-outs start seated), kicked
+		// open at frame 49, bounce to 117 degrees, settle at 101. Which pose parameter and how far it opens are the
+		// MODEL's facts ($keyvalues "dodsp_doors", written by vehicle_rig.py)
+		"doors"
+		{
+			"curve"	"46 0  49 0.4  50 7.4  51 25.3  52 49.3  53 74.9  54 97.4  55 112  56 116.9  57 115.1  58 109.9  59 104.2  60 101.3  61 101.1  64 103.1  67 105.1  72 103.4  76 101.4  90 101.4"
 		}
 		"sounds"	{ "engine_idle" "DoDSP_Vehicle.TruckIdle"	"engine_move" "DoDSP_Vehicle.TruckMove" }
 	}

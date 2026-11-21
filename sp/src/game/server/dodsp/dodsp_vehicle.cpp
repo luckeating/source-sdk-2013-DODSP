@@ -59,7 +59,7 @@
 // this; the lint checks the repo copy against it, the loader checks the owner's copy (V4e's first run: the old script
 // had no hatches, every crewman got out beside the tank and nothing at bail time said why). Bump both together
 // whenever the code starts needing a new key in the script.
-#define DODSP_VEHICLE_SCRIPT_VERSION	"H2b"
+#define DODSP_VEHICLE_SCRIPT_VERSION	"H3"
 static char s_szVehicleScriptVersion[32] = "not loaded";
 
 // V4h: how a shell's strike on the armour went - what HitFeedback shows and plays (name table guarded below)
@@ -235,9 +235,12 @@ extern bool GermanSoldier_BailOut( CBaseEntity *pEnt, const Vector &vecHatch, co
 extern bool GermanSoldier_BeginRide( CBaseEntity *pEnt, CBaseEntity *pVehicle, const Vector &vecSeat, float flYaw, const char *pszIdle, const char *pszGetout, const char *pszFidget );
 extern int GermanSoldier_RideGetOut( CBaseEntity *pEnt, bool bForce );	// 1 going, 0 can't, -1 his landing spot is taken
 extern void GermanSoldier_SetSeatDeath( CBaseEntity *pEnt, const char *pszDeath );	// H2b: he dies in that seat with it
+extern void GermanSoldier_SetRideWalk( CBaseEntity *pEnt, const Vector *pvecWalk, float flYaw );	// H3: his get-out starts there (vehicle space), NULL = his seat
+extern void GermanSoldier_SetRideRally( CBaseEntity *pEnt, const Vector *pvecRally );		// H3: once down he runs to this spot (vehicle space)
 extern void GermanSoldier_RideAbort( CBaseEntity *pEnt );
 extern int GermanSoldier_RideState( CBaseEntity *pEnt );		// 0 off, 1 seated, 2 getting off
 #define VEHICLE_MAX_SEATS		8
+#define VEHICLE_DOOR_KEYS		32			// H3: keys in a "doors" curve
 #define VEHICLE_MAX_CREW_SEATS	2			// H2: crew members you can see in their seats (the halftrack's driver)
 #define VEHICLE_RIDERS_CONTACT	1200.0f		// riders get off when an enemy it knows of is this close (dismount "contact")
 #define VEHICLE_RIDERS_SPAWN	0.2f		// riders are put aboard this long after the vehicle activates
@@ -311,7 +314,12 @@ struct VehicleType_t
 	char	szEngineIdle[64], szEngineMove[64], szTurretTurn[64], szTurretStop[64], szReload[64], szExplode[64];
 	// V3: a rider's seat - where (model space), facing (yaw on the vehicle), his looping idle and his get-out (both
 	// sequences of npc_ww2_anims_ride), and how long after the dismount order he goes
-	struct Seat_t { Vector vecOrigin; float flYaw; char szIdle[64], szGetout[64], szFidget[64]; float flDelay; };	// V3e: fidget = played now and then while seated
+	// H3: "walk" "x y z yaw" = his get-out starts there, not on his seat (the halftrack's aisle men: CoD2's guy02 walk
+	// from tag_out) - he stands into it from his seat over the get-out's fadein (npc_german_soldier.cpp RidePosition);
+	// "rally" "x y z" = once down he runs to this spot beside the vehicle (CoD2's tag_walker*), then his AI takes over;
+	// "death" = killed in his seat he plays it there and stays (like the crew, H2b)
+	struct Seat_t { Vector vecOrigin; float flYaw; char szIdle[64], szGetout[64], szFidget[64], szDeath[64]; float flDelay;	// V3e: fidget = played now and then while seated
+					Vector vecWalk; float flWalkYaw; bool bWalk; Vector vecRally; bool bRally; };
 	CUtlVector<Seat_t> seats;
 	// H2: a crew member you can SEE in his seat ("crew_seats": role -> origin, yaw, idle, steer) - he IS that crew role:
 	// shot in his seat = the role is dead; the role killed inside = so is he; abandoned = a crewman climbs out of the
@@ -324,6 +332,10 @@ struct VehicleType_t
 	// (iShare = the first role there): the next man waits until the one before has left it.
 	struct Hatch_t { bool bHas, bTurret; Vector vecPos; int iShare; };
 	Hatch_t	hatches[NUM_CREW_ROLES];
+	// H3: doors the riders get out through ("doors" "curve": frame (30 fps) / degrees from the dismount order - CoD2's
+	// halftrack_halftrack_jumpout). Which pose parameter and how far it opens are the model's ($keyvalues "dodsp_doors")
+	struct Doors_t { int nKeys; float flTime[VEHICLE_DOOR_KEYS], flDeg[VEHICLE_DOOR_KEYS]; };
+	Doors_t	doors;
 };
 COMPILE_TIME_ASSERT( ARRAYSIZE( s_pszMGMount ) == VehicleType_t::NUM_MG_MOUNTS );
 static CUtlVector<VehicleType_t *> s_Types;
@@ -550,7 +562,16 @@ static void LoadVehicleTypes( bool bForce )
 			Q_strncpy( seat.szIdle, pSeat->GetString( "idle" ), sizeof( seat.szIdle ) );
 			Q_strncpy( seat.szGetout, pSeat->GetString( "getout" ), sizeof( seat.szGetout ) );
 			Q_strncpy( seat.szFidget, pSeat->GetString( "fidget", "" ), sizeof( seat.szFidget ) );
+			Q_strncpy( seat.szDeath, pSeat->GetString( "death", "" ), sizeof( seat.szDeath ) );
 			seat.flDelay = pSeat->GetFloat( "delay" );
+			seat.vecWalk = seat.vecRally = vec3_origin;
+			seat.flWalkYaw = 0.0f;
+			seat.bWalk = sscanf( pSeat->GetString( "walk", "" ), "%f %f %f %f", &seat.vecWalk.x, &seat.vecWalk.y, &seat.vecWalk.z, &seat.flWalkYaw ) == 4;
+			seat.bRally = sscanf( pSeat->GetString( "rally", "" ), "%f %f %f", &seat.vecRally.x, &seat.vecRally.y, &seat.vecRally.z ) == 3;
+			if ( pSeat->GetString( "walk", NULL ) && !seat.bWalk )
+				Warning( "INVARIANT DOD-SP vehicles: type '%s': a seat's \"walk\" isn't \"x y z yaw\" - he gets out from his seat\n", t->szName );
+			if ( pSeat->GetString( "rally", NULL ) && !seat.bRally )
+				Warning( "INVARIANT DOD-SP vehicles: type '%s': a seat's \"rally\" isn't \"x y z\" - he runs on the way he jumped\n", t->szName );
 			if ( !seat.szIdle[0] || !seat.szGetout[0] )
 			{
 				Warning( "INVARIANT DOD-SP vehicles: type '%s' has a seat without \"idle\" / \"getout\" - skipped (nobody can ride it)\n", t->szName );
@@ -562,6 +583,28 @@ static void LoadVehicleTypes( bool bForce )
 				break;
 			}
 			t->seats.AddToTail( seat );
+		}
+		// H3: the doors riders get out through
+		t->doors.nKeys = 0;
+		if ( KeyValues *pDoors = pType->FindKey( "doors" ) )
+		{
+			CUtlStringList keys;
+			V_SplitString( pDoors->GetString( "curve", "" ), " ", keys );
+			for ( int k = 0; k + 1 < keys.Count() && t->doors.nKeys < VEHICLE_DOOR_KEYS; k += 2 )
+			{
+				t->doors.flTime[t->doors.nKeys] = atof( keys[k] ) / 30.0f;
+				t->doors.flDeg[t->doors.nKeys] = atof( keys[k + 1] );
+				t->doors.nKeys++;
+			}
+			bool bOrdered = true;
+			for ( int k = 1; k < t->doors.nKeys; k++ )
+				bOrdered &= t->doors.flTime[k] > t->doors.flTime[k - 1];
+			if ( t->doors.nKeys < 2 || !bOrdered )
+			{
+				Warning( "INVARIANT DOD-SP vehicles: type '%s' has a \"doors\" curve that isn't at least two frame-degree pairs "
+						 "in order - its doors stay shut\n", t->szName );
+				t->doors.nKeys = 0;
+			}
 		}
 		KeyValues *pCrewSeats = pType->FindKey( "crew_seats" );
 		for ( KeyValues *pSeat = pCrewSeats ? pCrewSeats->GetFirstTrueSubKey() : NULL; pSeat; pSeat = pSeat->GetNextTrueSubKey() )
@@ -1122,6 +1165,12 @@ private:
 	bool			m_bRidersSpawned;
 	float			m_flRidersSpawnAt;
 	EHANDLE			m_hRider[VEHICLE_MAX_SEATS];
+	EHANDLE			m_hRiderCorpse[VEHICLE_MAX_SEATS];	// H3: killed in his seat, he stays slumped in it (gone with the vehicle)
+	float			m_flDoorsStart;				// H3: when the doors' curve started (the dismount order; 0 = shut, never opened)
+	int				m_iDoorPose;				// the model's door pose parameter (looked up once; -2 = not yet, -1 none)
+	float			m_flDoorOpen;				// ... and the degrees it opens them at 1 (the model's "dodsp_doors")
+	void			DoorsThink( void );
+	static float	DoorPoseFor( float flDeg, float flOpen );
 	float			m_flRiderGo[VEHICLE_MAX_SEATS];	// when each gets off (0 = not ordered / gone)
 	bool			m_bDismountOrder;
 	float			m_flRidersOffAt;			// when they started getting off (a rider waits for his landing spot at most VEHICLE_RIDER_WAIT_MAX)
@@ -1288,6 +1337,8 @@ BEGIN_DATADESC( CDoDSPVehicle )
 	DEFINE_FIELD( m_bRidersSpawned, FIELD_BOOLEAN ),
 	DEFINE_FIELD( m_flRidersSpawnAt, FIELD_TIME ),
 	DEFINE_AUTO_ARRAY( m_hRider, FIELD_EHANDLE ),
+	DEFINE_AUTO_ARRAY( m_hRiderCorpse, FIELD_EHANDLE ),
+	DEFINE_FIELD( m_flDoorsStart, FIELD_TIME ),
 	DEFINE_AUTO_ARRAY( m_hCrewSeat, FIELD_EHANDLE ),
 	DEFINE_AUTO_ARRAY( m_hCrewCorpse, FIELD_EHANDLE ),
 	DEFINE_FIELD( m_bCrewSeatsSpawned, FIELD_BOOLEAN ),
@@ -1467,6 +1518,9 @@ CDoDSPVehicle::CDoDSPVehicle()
 	m_bCrewSeatsSpawned = false;
 	m_flCrewSeatsAt = 0.0f;
 	m_iSteerPose = -2;
+	m_flDoorsStart = 0.0f;
+	m_iDoorPose = -2;
+	m_flDoorOpen = 0.0f;
 	s_All.AddToTail( this );
 }
 
@@ -1474,8 +1528,12 @@ void CDoDSPVehicle::UpdateOnRemove( void )
 {
 	s_All.FindAndRemove( this );
 	for ( int i = 0; i < VEHICLE_MAX_SEATS; i++ )
+	{
 		if ( m_hRider[i].Get() )
 			GermanSoldier_RideAbort( m_hRider[i].Get() );		// still aboard: off where they are, not left on nothing
+		if ( m_hRiderCorpse[i].Get() )
+			UTIL_Remove( m_hRiderCorpse[i].Get() );			// H3: slumped in his seat - goes with it
+	}
 	for ( int i = 0; i < VEHICLE_MAX_CREW_SEATS; i++ )
 	{
 		if ( m_hCrewSeat[i].Get() )
@@ -2255,6 +2313,7 @@ void CDoDSPVehicle::DriveThink( void )
 	if ( !m_pType )
 		return;
 	RidersThink();
+	DoorsThink();
 	CrewSeatsThink();
 	if ( m_eState != VSTATE_FIGHTING )
 	{
@@ -4044,8 +4103,14 @@ int CDoDSPVehicle::RidersAboard( void )
 	int n = 0;
 	for ( int i = 0; i < VEHICLE_MAX_SEATS; i++ )
 	{
-		if ( m_hRider[i].Get() && GermanSoldier_RideState( m_hRider[i].Get() ) == 0 )
-			m_hRider[i] = NULL;			// dead, or off and on his own
+		CBaseEntity *pRider = m_hRider[i].Get();
+		if ( pRider && GermanSoldier_RideState( pRider ) == 0 )
+		{
+			// dead, or off and on his own; H3: dead IN his seat (still on us) = slumped there, gone with the vehicle
+			if ( !pRider->IsAlive() && pRider->GetMoveParent() == this )
+				m_hRiderCorpse[i] = pRider;
+			m_hRider[i] = NULL;
+		}
 		if ( m_hRider[i].Get() )
 			n++;
 	}
@@ -4090,6 +4155,10 @@ void CDoDSPVehicle::SpawnRiders( void )
 			UTIL_Remove( pNPC );		// the soldier said why (once per map)
 			break;
 		}
+		// H3: the aisle men's walk, the run to the side, the death in the seat
+		GermanSoldier_SetRideWalk( pNPC, seat.bWalk ? &seat.vecWalk : NULL, seat.flWalkYaw );
+		GermanSoldier_SetRideRally( pNPC, seat.bRally ? &seat.vecRally : NULL );
+		GermanSoldier_SetSeatDeath( pNPC, seat.szDeath );
 		m_hRider[i] = pNPC;
 		m_flRiderGo[i] = 0.0f;
 		n++;
@@ -4113,6 +4182,75 @@ void CDoDSPVehicle::InputDismount( inputdata_t &inputdata )
 		OrderDismount( "ordered (Dismount input)" );
 	else
 		m_bDismountOrder = true;		// riders not aboard yet (spawning): they get off as soon as they are
+}
+
+//-----------------------------------------------------------------------------
+// H3: the doors the riders get out through. THE owner of the door pose: the type's "doors" curve (CoD2's own -
+// shut to frame 46, kicked open in 5 frames, bounce to 117 degrees, settle at 101), started by the dismount order
+// like CoD2 starts it with the door men's get-outs. The model blends "doors" 0..1 between its shut and open frames
+// (vehicle_rig.py: 0 .. DOOR_OPEN degrees) - DoorPoseFor turns degrees into that blend's weight.
+//-----------------------------------------------------------------------------
+float CDoDSPVehicle::DoorPoseFor( float flDeg, float flOpen )
+{
+	// the engine blends the two frames' rotations by a normalised lerp of their quaternions (bone_setup.cpp
+	// BlendBones -> QuaternionBlend), not by angle: a weight w turns the door by 2 atan2(w sin(h), 1 - w + w cos(h)),
+	// h = half the open angle. This is its inverse, so the door is at the curve's angle (at w 0.25 of 120 degrees
+	// the plain ratio would be 4 degrees off)
+	flDeg = clamp( flDeg, 0.0f, flOpen );
+	float h = DEG2RAD( flOpen ) * 0.5f, t = tanf( DEG2RAD( flDeg ) * 0.5f );
+	float flDen = sinf( h ) + t * ( 1.0f - cosf( h ) );
+	return flDen > 1e-6f ? clamp( t / flDen, 0.0f, 1.0f ) : 0.0f;
+}
+
+void CDoDSPVehicle::DoorsThink( void )
+{
+	const VehicleType_t::Doors_t &d = m_pType->doors;
+	if ( !d.nKeys || m_flDoorsStart <= 0.0f || m_eState == VSTATE_WRECKED )
+		return;
+	float t = gpGlobals->curtime - m_flDoorsStart;
+	if ( t > d.flTime[d.nKeys - 1] + 1.0f )
+		return;			// settled on the curve's last key (the pose parameter is saved with the entity)
+	if ( m_iDoorPose == -2 )
+	{
+		// one owner of the doors' pose and range: the model (vehicle_rig.py writes "dodsp_doors" with DOOR_OPEN)
+		m_iDoorPose = -1;
+		const char *pszText = modelinfo->GetModelKeyValueText( GetModel() );
+		KeyValues *pAll = new KeyValues( "" );
+		KeyValues *pD = ( pszText && pszText[0] && pAll->LoadFromBuffer( STRING( GetModelName() ), pszText ) ) ? pAll->FindKey( "dodsp_doors" ) : NULL;
+		if ( pD )
+		{
+			m_flDoorOpen = pD->GetFloat( "open" );
+			m_iDoorPose = m_flDoorOpen > 0.0f ? LookupPoseParameter( pD->GetString( "pose", "" ) ) : -1;
+		}
+		if ( m_iDoorPose < 0 )
+			Warning( "INVARIANT DOD-SP vehicle %s: %s %s - its doors stay shut and the riders walk through them (recompile the model "
+					 "from vehicle_rig.py's output: dodsp_halftrack_h3_doors.zip)\n", Label(), STRING( GetModelName() ),
+					 pD ? "names a door pose parameter it hasn't got" : "has no \"dodsp_doors\" facts (an older rig)" );
+		pAll->deleteThis();
+	}
+	if ( m_iDoorPose < 0 )
+		return;
+	float flDeg = d.flDeg[d.nKeys - 1];
+	for ( int k = 0; k + 1 < d.nKeys; k++ )
+	{
+		if ( t < d.flTime[0] )
+		{
+			flDeg = d.flDeg[0];
+			break;
+		}
+		if ( t <= d.flTime[k + 1] )
+		{
+			flDeg = Lerp( ( t - d.flTime[k] ) / ( d.flTime[k + 1] - d.flTime[k] ), d.flDeg[k], d.flDeg[k + 1] );
+			break;
+		}
+	}
+	if ( flDeg > m_flDoorOpen + 0.5f )
+	{
+		Warning( "INVARIANT DOD-SP vehicle %s: its doors' curve wants %.0f degrees, the model opens them %.0f at most - they stop short\n",
+				 Label(), flDeg, m_flDoorOpen );
+		m_flDoorOpen = flDeg;		// say it once (the pose clamps)
+	}
+	SetPoseParameter( m_iDoorPose, DoorPoseFor( flDeg, m_flDoorOpen ) );
 }
 
 // THE owner of when riders get off: put them aboard, decide, stop, then send each off at his seat's delay.
@@ -4151,6 +4289,8 @@ void CDoDSPVehicle::RidersThink( void )
 			m_flRiderGo[i] = m_hRider[i].Get() ? now + ( i < m_pType->seats.Count() ? m_pType->seats[i].flDelay : 0.0f ) : 0.0f;
 		m_flRidersOffAt = now;
 		m_eRiders = VRIDERS_GETTING_OFF;
+		if ( m_pType->doors.nKeys && m_flDoorsStart <= 0.0f )
+			m_flDoorsStart = now;		// H3: the doors kicked open on CoD2's curve, in step with the seats' delays
 	}
 	if ( m_eRiders == VRIDERS_GETTING_OFF )
 	{
@@ -4163,7 +4303,9 @@ void CDoDSPVehicle::RidersThink( void )
 			int eState = GermanSoldier_RideState( pRider );
 			if ( eState == 1 && m_flRiderGo[i] > 0.0f && now >= m_flRiderGo[i] )
 			{
-				bool bForce = m_eState != VSTATE_FIGHTING || now - m_flRidersOffAt > VEHICLE_RIDER_WAIT_MAX;
+				// waits at most VEHICLE_RIDER_WAIT_MAX past HIS OWN go time (H3: the halftrack's last man goes 3.15 s in)
+				float flDelay = i < m_pType->seats.Count() ? m_pType->seats[i].flDelay : 0.0f;
+				bool bForce = m_eState != VSTATE_FIGHTING || now - m_flRidersOffAt > flDelay + VEHICLE_RIDER_WAIT_MAX;
 				int r = GermanSoldier_RideGetOut( pRider, bForce );
 				if ( r < 0 )
 				{
@@ -4542,6 +4684,12 @@ void CDoDSPVehicle::Wreck( bool bBlowUp, CBaseEntity *pAttacker )
 		if ( m_hCrewCorpse[i].Get() )
 			UTIL_Remove( m_hCrewCorpse[i].Get() );
 		m_hCrewSeat[i] = m_hCrewCorpse[i] = NULL;
+	}
+	for ( int i = 0; i < VEHICLE_MAX_SEATS; i++ )
+	{
+		if ( m_hRiderCorpse[i].Get() )
+			UTIL_Remove( m_hRiderCorpse[i].Get() );		// H3: riders slumped in their seats
+		m_hRiderCorpse[i] = NULL;
 	}
 	if ( pAttacker )
 		m_hKiller = pAttacker;

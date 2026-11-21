@@ -26,3 +26,12 @@ V3 (riders, troop transports): render every seat's get-in / get-out like this an
   --want still builds the ranger pack byte-identically).
 - Rule from the search: the depth check only sees surfaces from ABOVE (a heightmap), so it flags thin walls a hand
   brushes and can't see a man floating - every seat is also checked for something under him (`top under seat`).
+
+## H3 halftrack troops (2026-11-21)
+- `troop_preview.py <dodsp_tools> <rig out dir> <ride pack dir> <main pack dir> <CoD2 pack dir> <out dir> [norender]` -
+  the six bay riders, the rear doors on CoD2's curve, the door men's own get-outs, the aisle men standing into the
+  guy02/guy02b walk (STAND_IN = the walk's 0.2 s fadein), the run to the rally spots. It SEARCHES the seats' delays
+  (pelvis clearance CLEAR, and the lint's landing rule LAND_GAP / LAND_SPACING) - those are the "delay" values in
+  dodsp_vehicles.txt. Change it and npc_german_soldier.cpp (RideGetOut's join frame, RidePosition's stand-in) together.
+- `seat_death_preview.py` - every seated death at every seat (jump at the switch <= 3 units, depth into the mesh,
+  overlap) and the "sitting" check for seats we place ourselves.
