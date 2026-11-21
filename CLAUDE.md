@@ -1157,7 +1157,7 @@ If you learn something like this, add it here in the same commit as the fix.
   in_DoD/dod_player_shared_anim_a_reference.smd as the German reference: it reproduces the delivered pack within 1e-5
   units (the original German rifleman reference SMD isn't in the scratchpad any more) and ride paths unchanged.
   Owner compiles dodsp_npc_ww2_anims_ride_h2b.zip. Undo: the H2 server.dll + script (the old pack still works with it).
-  **H2b BUILT 2026-11-21** (owner: "clear for build"), with the seat_death_preview fixes: the commander dies with
+  **H2b BUILT 2026-11-21: build 44886303731** (owner: "clear for build"), with the seat_death_preview fixes: the commander dies with
   ww2_vi_halftrack_commander_death (the bay death re-based to his idle), the driver's death re-anchored. Ride pack =
   dodsp_npc_ww2_anims_ride_h2b2.zip (REPLACES the never-compiled _h2b zip; also carries H3's bay deaths so H3 needs no
   pack compile). script_version H2b (the "death" key). New guard: lint check_vehicle_seats - every idle / getout / death /
