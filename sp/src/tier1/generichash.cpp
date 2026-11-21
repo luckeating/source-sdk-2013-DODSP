@@ -140,14 +140,21 @@ unsigned FASTCALL HashStringCaselessConventional( const char *pszKey )
 //-----------------------------------------------------------------------------
 // int hash
 //-----------------------------------------------------------------------------
-unsigned FASTCALL HashInt( const int n )
+unsigned FASTCALL HashInt( const int key )
 {
+	// DOD-SP: every table index stays in 0..255 (INVARIANT: HashInt never reads outside g_nRandomValues).
+	// Valve's version shifted the SIGNED key: for a negative key (ACT_INVALID = -1, asked of the activity
+	// hash by CAI_BaseNPC::TranslateActivity) n >> 24 is -1, the index went negative, the value read
+	// before the table became the next index and the read landed anywhere - server.dll crashed in HashInt
+	// under NPC move-and-shoot (crash reader 44908905028, build 44900716683). Unsigned shifts give the
+	// same hash for every key >= 0 and a valid one for negative keys. Lint: dodsp_lint_client.py check_hashint.
+	const unsigned n = (unsigned)key;
 	register unsigned		even, odd;
 	even  = g_nRandomValues[n & 0xff];
 	odd   = g_nRandomValues[((n >> 8) & 0xff)];
 
 	even  = g_nRandomValues[odd ^ (n >> 24)];
-	odd   = g_nRandomValues[even ^ (n >> 16) & 0xff];
+	odd   = g_nRandomValues[even ^ ((n >> 16) & 0xff)];
 	even  = g_nRandomValues[odd ^ ((n >> 8) &  0xff)];
 	odd   = g_nRandomValues[even  ^ (n & 0xff)];
 

@@ -156,6 +156,8 @@ If you learn something like this, add it here in the same commit as the fix.
   YAML error: check for duplicate keys left by edits. The workflow file contains a literal tab in
   a sed line that GitHub accepts but PyYAML doesn't.
 - Artifact downloads are blocked from Claude's sandbox. Verify from CI logs instead.
+- **tier1 HashInt was unsafe for negative keys** (Valve bug: signed shifts index outside its table). Fixed in our tier1
+  (2026-11-21); any CUtlHash keyed by an int that can be negative (ACT_INVALID) was a random crash. Lint check_hashint.
 
 ### Content / game
 - `buildcubemaps` ends with `mat_reloadallmaterials`. Crash tests use that command, which is faster.
@@ -1269,6 +1271,17 @@ If you learn something like this, add it here in the same commit as the fix.
   in the dump). = heap corruption / use-after-free by someone else, not this code path. Owner: it happened when he fired
   the SMG grenade at the halftrack as the troops got out. Culprit not found yet; the minidump holds only memory near
   stack pointers (MiniDumpWithIndirectlyReferencedMemory), not the corrupted block or its neighbours.
+  **THAT READING WAS WRONG - REAL CAUSE (2026-11-21, crash reader 44908905028 on build 44900716683, exact symbols):** the
+  same crash again (a Sherman's shell blew up a Panzer II near German infantry), this time IN tier1 HashInt itself.
+  Valve's HashInt shifts its SIGNED key: for key -1 (ACT_INVALID) n >> 24 = -1, so g_nRandomValues[odd ^ -1] reads
+  BEFORE the table, that garbage becomes the next index and the read lands anywhere (registers matched exactly: ecx 0xff,
+  edx ~0xa5, eax = the garbage read, fault at table + 4 x garbage). Who asks for -1: our TranslateToDoD returns ACT_INVALID
+  for ACT_GESTURE_RELOAD while a pain flinch owns the upper body (explosions = flinches), and CAI_BaseNPC::TranslateActivity
+  calls HaveSequenceForActivity(-1) before giving it back. Whether it crashes depends on the value stored before the
+  table (a .data variable) - hence rare. FIX: HashInt on an unsigned copy (same hash for every key >= 0; client + server
+  link our tier1). Guard: lint check_hashint runs HashInt's index expressions as written over keys across the int range
+  (tested: Valve's signed shift and a dropped mask both fail). LESSON: read the faulting instruction's registers against
+  the source line before calling it corruption - a garbage value can come from a deterministic out-of-bounds read.
   DEEPER DUMPS (c_dodsp_crashlog.cpp, with H3b): the dump also carries two levels of memory pointed to from the
   crashing thread's stack and registers (level 1: -512..+1024 around every pointer on the top 64 KB of stack; level 2:
   -256..+512 around every pointer inside those; heap/stack only, modules excluded; static arrays, nothing allocated in

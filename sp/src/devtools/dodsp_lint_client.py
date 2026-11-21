@@ -718,6 +718,40 @@ def check_vehicle_eyes():
     return []
 
 
+def check_hashint():
+    """INVARIANT: tier1's HashInt never reads outside its 256-entry table, for ANY int key. Valve's shifted the signed
+    key, so a negative one (ACT_INVALID, asked of the activity hash by TranslateActivity) indexed before the table and
+    then anywhere - the server crash under NPC move-and-shoot (2026-11-21). Runs every table index expression of the
+    function as it is written, for keys across the whole int range, the way the C code computes them."""
+    path = os.path.join(ROOT, "tier1", "generichash.cpp")
+    src = open(path, encoding="latin-1").read()
+    m = re.search(r"unsigned FASTCALL HashInt\(\s*const int (\w+)\s*\)\s*\{(.*?)\n\}", src, re.S)
+    if not m:
+        return ["generichash.cpp: HashInt not found"]
+    key, body = m.group(1), "\n".join(l.split("//")[0] for l in m.group(2).split("\n"))
+    if not re.search(r"const unsigned n\s*=\s*\(unsigned\)\s*%s\s*;" % key, body):
+        return ["generichash.cpp: HashInt must shift an UNSIGNED copy of its key (const unsigned n = (unsigned)%s;)" % key]
+    if re.search(r"\b%s\b" % key, body.replace("(unsigned)" + key, "")):
+        return ["generichash.cpp: HashInt uses its signed key '%s' after making the unsigned copy" % key]
+    tm = re.search(r"g_nRandomValues\[256\]\s*=\s*\{(.*?)\}", src, re.S)
+    table = [int(x) for x in re.findall(r"\d+", tm.group(1))] if tm else []
+    if len(table) != 256:
+        return ["generichash.cpp: g_nRandomValues table not read (%d entries)" % len(table)]
+    steps = re.findall(r"(even|odd)\s*=\s*g_nRandomValues\[(.*?)\];", body)
+    if len(steps) != 6 or any(not re.fullmatch(r"[\w\s^&|()<>]*", e) for _, e in steps):
+        return ["generichash.cpp: HashInt's table reads changed shape - update check_hashint"]
+    bad = []
+    for k in (0, 1, 255, 0x7fffffff, -1, -2, -256, -0x80000000, 0x12345678, -0x12345678):
+        env = {"n": k & 0xffffffff, "even": 0, "odd": 0}
+        for var, expr in steps:
+            i = eval(expr, {"__builtins__": {}}, env)
+            if not 0 <= i < 256:
+                bad.append("generichash.cpp: HashInt(%d) indexes g_nRandomValues[%d] (%s)" % (k, i, expr.strip()))
+                break
+            env[var] = table[i]
+    return bad
+
+
 def check_vehicle_body():
     """H1: the body's rock has one owner per kind of vehicle - tanks: the server spring (m_flSuspPitch/Vel, written only
     by the spring in DriveThink, BodyKick and HaltMotion; every blow / recoil goes through BodyKick, which networks it
@@ -765,7 +799,8 @@ def main():
                      ("the measured track table or its reader is broken (H1)", check_vehicle_treads),
                      ("the vehicle body's rock or suspension is written outside its owners (H1, T1)", check_vehicle_body),
                      ("a vehicle's physics shadow can take its moves back (H3b)", check_vehicle_push),
-                     ("a vehicle can be blind (H3b)", check_vehicle_eyes)):
+                     ("a vehicle can be blind (H3b)", check_vehicle_eyes),
+                     ("tier1's HashInt can read outside its table (a negative key crashed the server)", check_hashint)):
         vbad = fn()
         if vbad:
             print("dodsp_lint_client: %s:" % what)

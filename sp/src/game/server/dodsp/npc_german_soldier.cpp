@@ -5164,7 +5164,9 @@ Activity CNPC_GermanSoldier::TranslateToDoD( Activity eNewActivity )
 		eNewActivity = ACT_IDLE_ANGRY;
 
 	// A pain overlay owns the upper body: the move-and-shoot code gets no fire or reload
-	// gesture to lay on top of it (it adds nothing when the activity is invalid).
+	// gesture to lay on top of it (it adds nothing when the activity is invalid). NOTE: the engine's
+	// TranslateActivity still asks the activity hash about ACT_INVALID (-1) first - that crashed in
+	// tier1 HashInt until 2026-11-21 (now safe for every key; lint check_hashint).
 	if ( ( eNewActivity == ACT_GESTURE_RANGE_ATTACK1 || eNewActivity == ACT_GESTURE_RELOAD ) && IsUpperBodyBusy() )
 		return ACT_INVALID;
 
