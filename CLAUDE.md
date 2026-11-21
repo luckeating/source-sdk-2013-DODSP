@@ -1174,6 +1174,19 @@ If you learn something like this, add it here in the same commit as the fix.
   walls, ledges and the hit's direction; a canned fall doesn't) - CoD2's halftrack_guy_rundeath is DROPPED (converted,
   not shipped). A man in a SEAT keeps a seated death animation: a ragdoll can't be parented, so in a vehicle it tangles
   with the hull and is left behind or shoved when it moves. Seated bay riders get halftrack_guy_death1/2 like the crew.
+  SEATED DEATHS PREVIEWED 2026-11-21 (owner: "allow those bay riders to play death animations in the seats"):
+  dodsp_tools/vehicle_preview/seat_death_preview.py tries every candidate death at every seat the way the game plays it
+  (idle, 0.2 s blend, death, hold) and prints the JUMP at the switch, depth into the mesh / bay, and added overlap with
+  the seated men. It found two faults nothing had checked: (1) xanim_to_smd's pelvis placement is off PER FAMILY (bay
+  seats 5.4 up, the driver 3.7), so a converted death after the porter's idle ROSE that much in the blend - including
+  H2b's driver death. Fix: `--anchor <porter animations it plays next to>` (the converter converts those too and takes
+  the mean difference off the root): bay deaths anchored on guy01..06_idle (spread 0.6), driver death on driver_idle
+  (jump 3.7 -> 0.9). (2) H2b's commander died with a BAY seat's death at tag_passenger: its first frame stood 16 units
+  from his idle - he'd have slid 16 units in the blend. Fix: `--start-at <idle smd>` -> halftrack_commander_death
+  (jump 0.0, mesh 0). RULE: any seated animation that follows another passes seat_death_preview's jump check (<= 3
+  units) before a build. Picks: bay_death1 at all six bay seats (bay_death2 sinks 15-27 units into the side walls from
+  four of them), driver_death, commander_death. Pack: + halftrack_bay_death1/2 + halftrack_commander_death; the
+  re-anchored driver_death replaces H2b's (H2b's pack was never compiled).
   **H1 BUILD 2026-11-20: 44846448265** (owner asleep, said "go ahead and build this whole thing" + anything that improves
   the experience): wheels, steering, sprung body, measured track scroll, dust. Not yet tested in game.
   **H2 PREPARED 2026-11-20 (not built - the driver's animations wait for the owner's look at the preview).**

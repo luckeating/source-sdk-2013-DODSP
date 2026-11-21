@@ -233,3 +233,14 @@ officer QC as cod2_vi_<name>; the pack rebuilt into a SCRATCH folder with the --
 German reference = in_DoD/dod_player_shared_anim_a_reference.smd (reproduces the delivered pack within 1e-5 units); only
 the chosen new SMDs (ww2_a_halftrack_passenger_idle, ww2_a_halftrack_guy_death2) and their QC blocks were added to the
 delivered pack, so every existing SMD stays byte-identical. Previewed with driver_preview.py at tag_passenger 3.4 -14.5 36.4.
+
+H3 (2026-11-21): seated deaths, ANCHORED (xanim_to_smd.py --anchor / --start-at - see its header):
+
+    xanim_to_smd.py convert <map.npz> <cod2 pack> <officer decompile> halftrack_guy_death1 <decompile>/german_normandy_officer_anim_a_halftrack_bay_death1.smd --anchor halftrack_guy01_idle ... halftrack_guy06_idle
+    (same for halftrack_guy_death2 -> ..._bay_death2)
+    xanim_to_smd.py convert ... halftrack_driver_death <decompile>/..._halftrack_driver_death.smd --anchor halftrack_driver_idle
+    xanim_to_smd.py convert ... halftrack_guy_death2 <decompile>/..._halftrack_commander_death.smd --start-at <decompile>/..._halftrack_passenger_idle.smd
+
+appended to the officer QC as cod2_vi_halftrack_bay_death1/2 and cod2_vi_halftrack_commander_death; the pack rebuilt with
+the --want list + those three (every existing SMD within 1e-4 except driver_death, re-anchored; ride paths unchanged).
+Checked with vehicle_preview/seat_death_preview.py (jump <= 3 units at every seat).

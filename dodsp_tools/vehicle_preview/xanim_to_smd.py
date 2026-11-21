@@ -2,6 +2,15 @@
 
     python3 xanim_to_smd.py learn <cod2 pack dir> <officer decompile dir> <out .npz>
     python3 xanim_to_smd.py convert <out .npz> <cod2 pack dir> <officer decompile dir> <xanim name> <out .smd>
+                                    [--anchor <xanim name the port also has> ...] [--start-at <smd>]
+
+ANCHOR (2026-11-21): the learned pelvis placement is off by a few units PER FAMILY (halftrack bay seats 5.4 up, its
+driver 3.7, the jump-outs 3.9..5.4), so a converted animation that plays next to one of the porter's (a seated death
+after the porter's seated idle) would rise by that much as the engine blends between them. --anchor names the porter's
+animation(s) it plays next to: each is converted too, its pelvis compared with the porter's own at frame 0, and the
+mean difference taken off this animation's root in every frame. Prints the offset and the anchors' spread.
+--start-at <smd>: for an animation borrowed from another seat (the halftrack commander dies with a bay seat's death):
+the root is moved so its frame 0 pelvis is where that SMD's (the idle it follows) frame 0 pelvis is.
 
 The officer port's animations were made by its porter from these same xanims onto ValveBiped. Rather than guess how,
 the mapping is LEARNED from the 434 animations that exist both as an xanim and in the owner's decompile:
@@ -175,11 +184,40 @@ def convert_frames(model, a, skel):
         out.append(frame)
     return out
 
-def convert(model_path, pack, decomp, name, out):
+def porter_smd(decomp, name):
+    import glob
+    hits = glob.glob(os.path.join(decomp, '*_anim_a_%s.smd' % name))
+    if len(hits) != 1: raise SystemExit('anchor %s: %d porter SMDs in %s (need exactly one)' % (name, len(hits), decomp))
+    return hits[0]
+
+def root_offset(model, skel, pack, decomp, anchors):
+    """mean (converted - porter) pelvis at frame 0 over the anchors, in the port's frame; and its spread"""
+    root = model['nodes'].index(VB + 'Pelvis')
+    if model['parents'][root] != -1: raise SystemExit('the pelvis is not the root bone - the offset would not be a translation')
+    d = []
+    for n in anchors:
+        mine = np.array(convert_frames(model, X.read(os.path.join(pack, 'xanim', n)), skel)[0][root][:3])
+        s = SMD(porter_smd(decomp, n)); theirs = np.array(smd_world(s, 0)[s.index(VB + 'Pelvis')][1])
+        d.append(mine - theirs)
+    d = np.array(d)
+    return d.mean(0), (np.linalg.norm(d - d.mean(0), axis=1).max() if len(d) > 1 else 0.0)
+
+def convert(model_path, pack, decomp, name, out, anchors=(), start_at=None):
     model = load(model_path)
     skel = parts(os.path.join(pack, SKELETON))
     a = X.read(os.path.join(pack, 'xanim', name))
     frames = convert_frames(model, a, skel)
+    if anchors:
+        off, spread = root_offset(model, skel, pack, decomp, anchors)
+        root = model['nodes'].index(VB + 'Pelvis')
+        for fr in frames: fr[root] = list(np.array(fr[root][:3]) - off) + list(fr[root][3:])
+        print('%s: root moved by %s (anchored on %s, spread %.2f units)' % (name, np.round(-off, 2), ', '.join(anchors), spread))
+    if start_at:
+        root = model['nodes'].index(VB + 'Pelvis')
+        s = SMD(start_at); want = np.array(smd_world(s, 0)[s.index(VB + 'Pelvis')][1])
+        off = np.array(frames[0][root][:3]) - want
+        for fr in frames: fr[root] = list(np.array(fr[root][:3]) - off) + list(fr[root][3:])
+        print('%s: root moved by %s to start at %s' % (name, np.round(-off, 2), os.path.basename(start_at)))
     lines = ['version 1', 'nodes']
     lines += ['%d "%s" %d' % (i, n, p) for i, (n, p) in enumerate(zip(model['nodes'], model['parents']))]
     lines += ['end', 'skeleton']
@@ -194,4 +232,11 @@ if __name__ == '__main__':
     if sys.argv[1] == 'learn':
         learn(*sys.argv[2:5])
     else:
-        a = convert(*sys.argv[2:7]); print('wrote %s: %d frames at %d fps' % (sys.argv[6], a['frames'], a['fps']))
+        rest = sys.argv[7:]; anchors, start_at = [], None
+        while rest:
+            if rest[0] == '--start-at': start_at = rest[1]; rest = rest[2:]
+            elif rest[0] == '--anchor':
+                rest = rest[1:]
+                while rest and not rest[0].startswith('--'): anchors.append(rest.pop(0))
+            else: raise SystemExit('unknown option ' + rest[0])
+        a = convert(*sys.argv[2:7], anchors=anchors, start_at=start_at); print('wrote %s: %d frames at %d fps' % (sys.argv[6], a['frames'], a['fps']))
