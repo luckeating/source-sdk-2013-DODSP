@@ -301,6 +301,8 @@ struct VehicleType_t
 	float	flSuspAccel;			// degrees the hull pitches per 100 units/s^2 of acceleration (the lurch)
 	float	flSuspFreq, flSuspDamp;	// its spring: rocks at this many Hz, this much damping (0..1)
 	float	flRecoil;				// the main gun kicks the hull back this many degrees
+	float	flSuspRoll;				// H1 sprung bodies: degrees the body rolls outward per 100 units/s^2 sideways
+	float	flSuspTravel;			// H1 sprung bodies: how far a front tyre may rise / drop to follow the ground
 	DoDSPArmour_t armour;			// V4 ("armour" block; invalid = it can't be hurt, and the load says so)
 	bool	bVariant;				// has a "base" (a paint scheme): the pen chart lists the base only
 	char	szDeadModel[MAX_PATH];	// V4: the wreck
@@ -402,6 +404,8 @@ static void LoadVehicleTypes( bool bForce )
 		t->flSuspFreq = pType->GetFloat( "susp_freq", 1.6f );
 		t->flSuspDamp = pType->GetFloat( "susp_damp", 0.35f );
 		t->flRecoil = pType->GetFloat( "recoil", 2.0f );
+		t->flSuspRoll = pType->GetFloat( "susp_roll", 1.0f );
+		t->flSuspTravel = pType->GetFloat( "susp_travel", 6.0f );
 		t->flTurretRate = pType->GetFloat( "turret_rate", 30.0f );
 		t->flPitchRate = pType->GetFloat( "pitch_rate", 15.0f );
 		KeyValues *pGun = pType->FindKey( "gun" );
@@ -1101,11 +1105,23 @@ private:
 	VehicleType_t	*m_pType;
 	float			m_flHalfWidth, m_flHalfLength, m_flBodyHeight;	// from the model (MeasureBody), not saved
 	float			m_flWheelbase;		// H1: from the model's "dodsp_wheels" (MeasureBody); 0 = nothing steers
+	void			BodyKick( float flPitchVel, float flRollVel );	// THE way a blow or the gun rocks the body
 	EHANDLE			m_hTurret;
 
 	CNetworkVar( float, m_flTrackSpeed );		// signed, units/s (client: wheel spin, track scroll)
 	CNetworkVar( float, m_flModelForwardYaw );
 	CNetworkVar( float, m_flSteer );			// H1: degrees the steered wheels are turned, + = left (client: wheels)
+	// H1 suspension: a model with a body pivot rides its body on springs over planted wheels, run on the CLIENT every
+	// frame (smooth; a think-rate network var would step). The server sends the spring's settings and each kick.
+	CNetworkVar( bool, m_bBodySprung );
+	CNetworkVar( float, m_flBodySuspAccel );
+	CNetworkVar( float, m_flBodySuspRoll );
+	CNetworkVar( float, m_flBodySuspFreq );
+	CNetworkVar( float, m_flBodySuspDamp );
+	CNetworkVar( float, m_flBodySuspTravel );
+	CNetworkVar( int, m_nBodyKicks );			// +1 per kick
+	CNetworkVar( float, m_flBodyKickPitch );	// the last kick (degrees/s, nose up +)
+	CNetworkVar( float, m_flBodyKickRoll );		// (degrees/s, right side down +)
 
 	float			m_flSpeed;
 	float			m_flHeading;			// degrees, world yaw of the vehicle's front
@@ -1310,6 +1326,15 @@ IMPLEMENT_SERVERCLASS_ST( CDoDSPVehicle, DT_DoDSPVehicle )
 	SendPropFloat( SENDINFO( m_flTrackSpeed ), 0, SPROP_NOSCALE ),
 	SendPropFloat( SENDINFO( m_flModelForwardYaw ), 0, SPROP_NOSCALE ),
 	SendPropFloat( SENDINFO( m_flSteer ), 0, SPROP_NOSCALE ),
+	SendPropBool( SENDINFO( m_bBodySprung ) ),
+	SendPropFloat( SENDINFO( m_flBodySuspAccel ), 0, SPROP_NOSCALE ),
+	SendPropFloat( SENDINFO( m_flBodySuspRoll ), 0, SPROP_NOSCALE ),
+	SendPropFloat( SENDINFO( m_flBodySuspFreq ), 0, SPROP_NOSCALE ),
+	SendPropFloat( SENDINFO( m_flBodySuspDamp ), 0, SPROP_NOSCALE ),
+	SendPropFloat( SENDINFO( m_flBodySuspTravel ), 0, SPROP_NOSCALE ),
+	SendPropInt( SENDINFO( m_nBodyKicks ), 8, SPROP_UNSIGNED ),
+	SendPropFloat( SENDINFO( m_flBodyKickPitch ), 0, SPROP_NOSCALE ),
+	SendPropFloat( SENDINFO( m_flBodyKickRoll ), 0, SPROP_NOSCALE ),
 END_SEND_TABLE()
 
 CDoDSPVehicle::CDoDSPVehicle()
@@ -1329,6 +1354,9 @@ CDoDSPVehicle::CDoDSPVehicle()
 	m_flHalfWidth = m_flHalfLength = m_flBodyHeight = 0.0f;
 	m_flWheelbase = 0.0f;
 	m_flSteer = 0.0f;
+	m_bBodySprung = false;
+	m_nBodyKicks = 0;
+	m_flBodyKickPitch = m_flBodyKickRoll = 0.0f;
 	m_eFaction = DODSP_FACTION_AXIS;
 	m_eBehavior = 0;
 	m_flLeash = 0.0f;
@@ -1564,13 +1592,21 @@ void CDoDSPVehicle::MeasureBody( void )
 	FOR_EACH_VEC( wheels.wheels, i )
 		nSteer += wheels.wheels[i].bSteer ? 1 : 0;
 	m_flWheelbase = ( nSteer && !m_pType->bTracked ) ? wheels.flWheelbase : 0.0f;
+	// H1 suspension: the body rides on springs over its wheels when the model says where it tips (the client runs it)
+	m_bBodySprung = bWheelData && wheels.bBodyPivot;
+	m_flBodySuspAccel = m_pType->flSuspAccel;
+	m_flBodySuspRoll = m_pType->flSuspRoll;
+	m_flBodySuspFreq = m_pType->flSuspFreq;
+	m_flBodySuspDamp = m_pType->flSuspDamp;
+	m_flBodySuspTravel = m_pType->flSuspTravel;
 	static CUtlDict<bool, int> s_Reported;
 	const char *pszModel = STRING( GetModelName() );
 	if ( s_Reported.Find( pszModel ) == s_Reported.InvalidIndex() )
 	{
 		s_Reported.Insert( pszModel, true );
 		if ( bWheelData )
-			Msg( "DOD-SP vehicle wheels: %s - %d wheels from the model, %d steer, wheelbase %.0f\n", pszModel, wheels.wheels.Count(), nSteer, wheels.flWheelbase );
+			Msg( "DOD-SP vehicle wheels: %s - %d wheels from the model, %d steer, wheelbase %.0f%s\n", pszModel, wheels.wheels.Count(), nSteer,
+				 wheels.flWheelbase, wheels.bBodyPivot ? ", body on springs over the wheels" : "" );
 		else if ( !m_pType->bTracked && !V_stristr( pszModel, "_dead" ) )
 			Msg( "DOD-SP vehicle wheels: %s has no wheel data - its wheels can't turn or steer (recompile it from its rig, e.g. halftrack_rig.py)\n", pszModel );
 	}
@@ -2299,6 +2335,9 @@ void CDoDSPVehicle::DriveThink( void )
 	// the lurch (owner: "from a complete stop to moving, with a lurch" - the models have no animation for it, only
 	// 'idle'): the hull rocks on a damped spring driven by its acceleration - nose up pulling away, nose down
 	// braking, a little overshoot - and by the main gun's recoil (FireMainGun kicks m_flSuspVel)
+	// H1: a sprung body (the model has a body pivot) is rocked on the CLIENT instead, over wheels that stay down - the
+	// whole entity tipping here lifted the halftrack's front tyres off the road (owner 2026-11-20)
+	if ( !m_bBodySprung )
 	{
 		float flAccel = ( m_flSpeed - m_flPrevSpeed ) / dt;
 		m_flPrevSpeed = m_flSpeed;
@@ -2927,8 +2966,12 @@ void CDoDSPVehicle::FireMainGun( const Vector &vecAim )
 	if ( m_pType->gun.szSound[0] )
 		EmitSound( m_pType->gun.szSound );
 	UTIL_ScreenShake( vecMuzzle, 6.0f, 150.0f, 0.6f, 1024.0f, SHAKE_START );
-	// recoil: the hull rocks away from the shot (nose up when firing ahead, down when firing behind)
-	m_flSuspVel += m_pType->flRecoil * 2.0f * M_PI_F * m_pType->flSuspFreq * cosf( DEG2RAD( m_flTurretYaw + m_flTurretFwdOffset ) );
+	// recoil: the hull rocks away from the shot (nose up when firing ahead, down when firing behind, sideways = roll)
+	{
+		float flRecoilVel = m_pType->flRecoil * 2.0f * M_PI_F * m_pType->flSuspFreq;
+		float flGunYaw = DEG2RAD( m_flTurretYaw + m_flTurretFwdOffset );
+		BodyKick( flRecoilVel * cosf( flGunYaw ), flRecoilVel * sinf( flGunYaw ) );	// firing left (+90) rolls it right
+	}
 	char szWhat[64];
 	Q_snprintf( szWhat, sizeof( szWhat ), "%s's %.0f mm %s", Label(), pShell->flCalibre, bHE ? "HE" : "AP" );
 	const char *pszHit = "nothing";
@@ -3533,10 +3576,13 @@ void CDoDSPVehicle::HitFeedback( int eFx, const VehicleHit_t &hit, const Vector 
 		te->DynamicLight( filter, 0.0f, &hit.vecPoint, 255, 200, 120, 3, 220.0f * k, 0.25f, 0.0f );
 		g_pEffects->Sparks( hit.vecPoint, (int)( 4 + 6 * k ), (int)( 3 + 3 * k ), &hit.vecNormal );
 		// the hull rocks back from the blow: nose up when hit from ahead, down from behind, a jolt from the side
-		Vector vecFwd;
-		AngleVectors( GetAbsAngles(), &vecFwd );
-		float flAlong = -DotProduct( vecPath, vecFwd );
-		m_flSuspVel += k * ( 30.0f * flAlong + ( random->RandomInt( 0, 1 ) ? 10.0f : -10.0f ) * ( 1.0f - fabs( flAlong ) ) );
+		// (a sprung body rolls away from a side hit; the hull spring has no roll, so it jolts)
+		Vector vecFwd, vecLeft;
+		AngleVectors( GetAbsAngles(), &vecFwd, &vecLeft, NULL );
+		vecLeft = -vecLeft;		// AngleVectors gives right
+		float flAlong = -DotProduct( vecPath, vecFwd ), flSide = DotProduct( vecPath, vecLeft );
+		BodyKick( k * ( 30.0f * flAlong + ( m_bBodySprung ? 0.0f : ( random->RandomInt( 0, 1 ) ? 10.0f : -10.0f ) * ( 1.0f - fabs( flAlong ) ) ) ),
+				  k * 30.0f * -flSide );
 	}
 	else
 		te->DynamicLight( filter, 0.0f, &hit.vecPoint, 255, 220, 160, 2, 90.0f * k, 0.1f, 0.0f );
@@ -3856,6 +3902,20 @@ void CDoDSPVehicle::SetState( int eNew, CBaseEntity *pAttacker )
 	if ( eNew == VSTATE_ABANDONED && m_flIgniteAt <= 0.0f )
 		m_flIgniteAt = gpGlobals->curtime + random->RandomFloat( 4.0f, 8.0f );
 	UpdateDamageSmoke();		// V4h: out of the fight = thick smoke
+}
+
+// H1: THE way a blow or the main gun rocks the body (lint: nothing else adds to m_flSuspVel). A sprung body is rocked
+// on the client: the kick is networked (m_nBodyKicks counts them). Pitch nose up +, roll right side down +.
+void CDoDSPVehicle::BodyKick( float flPitchVel, float flRollVel )
+{
+	if ( m_bBodySprung )
+	{
+		m_flBodyKickPitch = flPitchVel;
+		m_flBodyKickRoll = flRollVel;
+		m_nBodyKicks = ( m_nBodyKicks + 1 ) & 0xff;
+		return;
+	}
+	m_flSuspVel += flPitchVel;
 }
 
 void CDoDSPVehicle::HaltMotion( void )

@@ -616,6 +616,26 @@ def check_vehicle_treads():
         bad.append("c_dodsp_vehicle.cpp reads a track's scale/axis from the .vmt - they come from dodsp_treads.txt only")
     return bad
 
+def check_vehicle_body():
+    """H1: the body's rock has one owner per kind of vehicle - tanks: the server spring (m_flSuspPitch/Vel, written only
+    by the spring in DriveThink, BodyKick and HaltMotion; every blow / recoil goes through BodyKick, which networks it
+    for a sprung body); sprung bodies (a model with a body_pivot): the client's BodySprings, the only writer of the body
+    pitch/roll."""
+    bad = []
+    for path, var_re, allowed in ((VEHICLE_CPP_PATH, r"\bm_flSuspVel\s*(\+|-)?=(?!=)|\bm_flSuspPitch\s*=(?!=)",
+                                   ("BodyKick", "DriveThink", "HaltMotion", "CDoDSPVehicle")),
+                                  (CLIENT_VEHICLE, r"\bm_flBody(Pitch|Roll)(Vel)?\s*(\+|-)?=(?!=)", ("BodySprings", "C_DoDSPVehicle"))):
+        func = None
+        for n, line in enumerate(open(path, encoding="utf-8").read().split("\n"), 1):
+            m = re.match(r"^(?:[A-Za-z][^(]*?[\s*&])?(?:CDoDSPVehicle|C_DoDSPVehicle)::(~?\w+)\s*\(", line)
+            if m:
+                func = m.group(1)
+            code = line.split("//")[0]
+            if re.search(var_re, code) and func not in allowed:
+                bad.append("%s:%d (%s) writes the body's rock - kicks go through BodyKick, the springs are their only writers"
+                           % (os.path.basename(path), n, func))
+    return bad
+
 def main():
     bad = []
     sight_bad = check_vehicle_sight()
@@ -629,7 +649,8 @@ def main():
                      ("the Hammer FGD doesn't match the vehicle types (V4j)", check_vehicle_fgd),
                      ("a rider seat or ride path is broken (V3)", check_vehicle_seats),
                      ("an NPC is moved by code outside CDoDSPNpcMotion (V3e: position and pose drawn equally late)", check_npc_motion),
-                     ("the measured track table or its reader is broken (H1)", check_vehicle_treads)):
+                     ("the measured track table or its reader is broken (H1)", check_vehicle_treads),
+                     ("the vehicle body's rock is written outside its owners (H1)", check_vehicle_body)):
         vbad = fn()
         if vbad:
             print("dodsp_lint_client: %s:" % what)

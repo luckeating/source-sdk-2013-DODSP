@@ -73,6 +73,10 @@
 //   susp_accel       the lurch: degrees the hull pitches per 100 units/s^2 of acceleration (default tracked 1.6,
 //                    wheeled 1.0); susp_freq (Hz, 1.6) / susp_damp (0..1, 0.35) its spring; recoil: degrees the main gun
 //                    kicks the hull (2). The models have no lurch animation (only 'idle' / turret 'aim') - it's code.
+//                    H1: a model whose "dodsp_wheels" gives a body_pivot (the rigged halftrack) rides its BODY on these
+//                    springs over wheels that stay on the ground (client, every frame) instead of tipping whole;
+//                    susp_roll (degrees outward per 100 units/s^2 sideways, 1.0) and susp_travel (units a steered tyre
+//                    may rise/drop to follow the ground, 6) apply to those only.
 //   Halftracks and the carrier have no weapons yet (their MG mounts are V2b).
 //   turret_offset    (V3e) = CoD2's tag_turret x 1.028 - exact (the turret models' origins sit on it); the lint checks it.
 // Sources (2026-11-20): Wikipedia (Panzer II, 2 cm KwK 30, Tiger I, 8.8 cm KwK 36, M4 Sherman, Crusader tank, Ordnance QF
@@ -401,6 +405,12 @@
 		"accel"				"60"
 		"brake"				"160"
 		"turn_rate"			"28"
+		// H1: ~3 t on leaf springs - a gentle, well-damped pitch (about 0.6 deg pulling away, 1.6 braking), some roll
+		"susp_accel"		"1.0"
+		"susp_freq"			"1.3"
+		"susp_damp"			"0.6"
+		"susp_roll"			"1.2"
+		"susp_travel"		"7"
 		// Sd.Kfz. 251: front 14.5, sides 8 (V-shaped, steeply angled - lean est.), open top; engine at the front.
 		"armour"
 		{

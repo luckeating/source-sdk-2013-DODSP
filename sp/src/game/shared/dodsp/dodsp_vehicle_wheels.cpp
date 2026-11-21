@@ -11,6 +11,9 @@
 bool DoDSP_ReadWheels( const model_t *pModel, DoDSPWheels_t &out )
 {
 	out.flWheelbase = 0.0f;
+	out.flBodyPivot = 0.0f;
+	out.bBodyPivot = false;
+	out.szBodyBone[0] = 0;
 	out.wheels.RemoveAll();
 	if ( !pModel )
 		return false;
@@ -33,11 +36,23 @@ bool DoDSP_ReadWheels( const model_t *pModel, DoDSPWheels_t &out )
 					out.flWheelbase = pKey->GetFloat();
 					continue;
 				}
+				if ( !Q_stricmp( pKey->GetName(), "body_bone" ) )
+				{
+					Q_strncpy( out.szBodyBone, pKey->GetString(), sizeof( out.szBodyBone ) );
+					continue;
+				}
+				if ( !Q_stricmp( pKey->GetName(), "body_pivot" ) )
+				{
+					out.flBodyPivot = pKey->GetFloat();
+					out.bBodyPivot = true;
+					continue;
+				}
 				DoDSPWheel_t w;
 				Q_strncpy( w.szBone, pKey->GetName(), sizeof( w.szBone ) );
 				w.flRadius = 0.0f;
 				w.bSteer = false;
-				// "radius <r> [steer 1]"
+				w.flClear = 0.0f;
+				// "radius <r> [steer 1 clear <c>]"
 				char szWord[32];
 				const char *p = pKey->GetString();
 				while ( p && *p )
@@ -53,6 +68,8 @@ bool DoDSP_ReadWheels( const model_t *pModel, DoDSPWheels_t &out )
 						w.flRadius = Q_atof( pszValue );
 					else if ( !Q_stricmp( szWord, "steer" ) )
 						w.bSteer = Q_atoi( pszValue ) != 0;
+					else if ( !Q_stricmp( szWord, "clear" ) )
+						w.flClear = Q_atof( pszValue );
 				}
 				if ( w.flRadius <= 0.5f )
 				{

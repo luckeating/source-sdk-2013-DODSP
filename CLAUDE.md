@@ -1009,6 +1009,27 @@ If you learn something like this, add it here in the same commit as the fix.
   not on algebra alone. Lint check_vehicle_treads (table generated + well formed; the client reads that file and never a
   .vmt's scale/axis - tested by putting a .vmt read back). Owner side: compile dodsp_halftrack_h1_rig.zip with Crowbar
   (replaces models/cod2/vehicles/halftrack*.mdl in place) and add the Proxies line to the tread .vmts the console names.
+  SUSPENSION (owner before the H1 build: on wheeled vehicles the lurch "looked like they slammed 800 pounds of torque and
+  the halftrack's front wheels come off the ground"): the server lurch tips the WHOLE entity about its origin - fine for
+  a tank (tracks and wheels are one block), wrong for tyres. Now a model whose dodsp_wheels gives "body_pivot" +
+  "body_bone" rides its BODY on springs over planted running gear, the CoD2 way: CoD2's halftrack has its own sprung
+  body_roll_jnt (hull, 4240 tris) vs the unsprung tag_origin (the tread belt) + track-run strips (= the port's 384 tread
+  triangles) - the rig copies that split (root = chassis, "body" = hull with the doors under it, wheels on root).
+  body_pivot = the middle of the ground-touching rear wheels (-26.1: it squats about its tracks). Client BodySprings
+  (once a frame, ClientThink) = THE owner of a sprung body's pitch/roll: driven by the DRAWN origin/yaw (smooth; a
+  think-rate network var would step - the rider lesson), pitch = accel x susp_accel, roll = speed x yaw rate x
+  susp_roll (outward), spring susp_freq/susp_damp; BodyMatrix = THE body transform (pitch about the left axis, roll
+  about forward, through the pivot). Steered tyres follow the ground under them (a trace per tyre per frame) within
+  susp_travel, never into their wing: the rig measures each steered tyre's wing gap ("clear 6.5") and the client allows
+  clear minus how far the body has come down over it. Server: the old spring runs only for non-sprung bodies; every kick
+  (gun recoil, a hit's jolt) goes through BodyKick, which networks it to a sprung body (m_nBodyKicks + pitch/roll
+  velocity; a side hit rolls it away). Halftrack: susp_accel 1.0 / freq 1.3 / damp 0.6 / roll 1.2 / travel 7 -> 0.6 deg
+  nose up pulling away, 1.7 nose down braking, 1.7 roll at full lock (dodsp_tools/vehicle_preview/susp_preview.py runs
+  the client's equations on the AI's drive profile, renders it, and checks the wing comes down 4.4 of its 6.5 gap).
+  Tanks unchanged (owner likes their lurch; riders are parented to the entity and rock with it). Lint check_vehicle_body:
+  m_flSuspVel/Pitch written only by the spring, BodyKick, HaltMotion; the client's body pitch/roll only by BodySprings
+  (tested with a stray recoil write). Known: riders parented to a sprung vehicle don't tip with its body (about 1 unit
+  at the driver's seat - the pivot is near the bay).
   Undo: the previous client.dll + server.dll, the door-rig halftrack model.
 - CoD1 set (owner's vehicles_part2.zip, 2026-11-19): REFERENCE ONLY except the **SU-152, which we keep**. One model per
   vehicle, turret/gun as BONES (tag_turret, tag_barrel, tag_flash = muzzle, tag_coaxel), faces +X (forward_yaw 0),

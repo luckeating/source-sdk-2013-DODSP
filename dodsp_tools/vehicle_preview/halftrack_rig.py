@@ -14,8 +14,15 @@ normals, collision (<variant>_physics.smd from the owner's Crowbar decompile) an
 The wheel facts ride IN THE MODEL ($keyvalues "dodsp_wheels"), measured here from the mesh - one owner, read by the
 client (spin, steer) and the server (wheelbase -> steering angle):
     "wheelbase"  front axle to the middle of the ground-touching wheels behind it (units, along the vehicle)
-    "<bone>"     "radius <r> [steer 1]"  r = the wheel's own radius (largest vertex distance from its centre, about
-                                         the axle); steer = it turns with the steering
+    "body_pivot" where the body tips on its springs: that rear middle, game x (forward) from the model origin - the
+                 body squats about its rear running gear, the wheels stay on the ground (client: H1 suspension)
+    "body_bone"  the sprung body: that bone and its children tip (CoD2's body_roll_jnt hull + the doors); the root
+                 (tag_origin's tread belt + the track-run strips) and the wheels are the unsprung running gear
+    "<bone>"     "radius <r> [steer 1 clear <c>]"  r = the wheel's own radius (largest vertex distance from its
+                                         centre, about the axle); steer = it turns with the steering; clear = the gap
+                                         from its top to the wing over it (a tyre following the ground never rises
+                                         into its wing: the client allows clear minus however far the body has come
+                                         down there)
 Writes per variant: <variant>.qc + <variant>_body.smd, <variant>_closed.smd and <variant>_open.smd (one frame each),
 blended by the pose parameter "doors" (0 closed .. 1 open) - the game sets it. Same $modelname as the port, so the
 compiled model replaces it in place.
@@ -34,6 +41,7 @@ DOOR_BONES = (('door_left', 'hatch_open_left', -1.0), ('door_right', 'hatch_open
 # name, CoD bone, steers. "wheel" in the name is what the client's wheel list keys on.
 WHEEL_BONES = tuple(('wheel_%s_%02d' % (side, n), 'tag_%s_wheel_%02d' % (side, n), n == 1)
                     for side in ('left', 'right') for n in range(1, 10))
+BODY_COD = 'body_roll_jnt'    # CoD2's own sprung body bone: the hull rides on it, the tread belt and wheels don't
 MATCH = 0.05                  # a port triangle whose middle is this close to a CoD triangle's is on that triangle's bone
 GROUND_SLACK = 4.0            # a wheel whose lowest point is this close to the lowest wheel point touches the ground
 
@@ -48,6 +56,7 @@ def cod_triangles(parts_path, surfs_path):
         if not bi: raise SystemExit('no %s in %s' % (cod, parts_path))
         pivot[name] = cod_to_mesh(B[bi[0]]['t'])
     ours = {cod: name for name, cod, _ in DOOR_BONES + WHEEL_BONES}
+    ours[BODY_COD] = 'body'             # CoD's sprung body; tag_origin + the track-run strips = the unsprung chassis
     # per TRIANGLE (the two door leaves share vertex positions where they meet in the middle, so a vertex alone can't
     # say which door it is on): a triangle is on a bone when most of its corners ride that bone in CoD's model
     pts, which = [], []
@@ -66,30 +75,42 @@ def wheel_facts(rows, names, pivot):
     for mat, vs in rows:
         for b, p, n, uv in vs:
             if names[b] in verts: verts[names[b]].append(p)
+    hull = np.array([p for mat, vs in rows for b, p, n, uv in vs if names[b] == 'body'])
     facts, low = {}, {}
     for name, _, steer in WHEEL_BONES:
         V = np.array(verts[name]); c = pivot[name]
         if len(V) < 12: raise SystemExit('%s: only %d vertices - is this the same mesh?' % (name, len(V)))
-        facts[name] = (float(np.sqrt((V[:, 1] - c[1]) ** 2 + (V[:, 2] - c[2]) ** 2).max()), steer)
+        r = float(np.sqrt((V[:, 1] - c[1]) ** 2 + (V[:, 2] - c[2]) ** 2).max())
+        clear = 0.0
+        if steer:
+            # the hull over the tyre's footprint (mesh x = across, y = along), above its top
+            top = V[:, 2].max()
+            over = hull[(np.abs(hull[:, 1] - c[1]) < r * 0.8) & (np.abs(hull[:, 0] - c[0]) < np.ptp(V[:, 0]) / 2) & (hull[:, 2] > top)]
+            clear = float(over[:, 2].min() - top) if len(over) else 0.0
+            if clear < 1.0: raise SystemExit('%s: no room over the tyre (%.1f) - is this the same mesh?' % (name, clear))
+        facts[name] = (r, steer, clear)
         low[name] = V[:, 2].min()
     ground = min(low.values())
     # along the vehicle = game x = -mesh y
     front = np.mean([-pivot[n][1] for n, _, s in WHEEL_BONES if s])
     rear = [-pivot[n][1] for n, _, s in WHEEL_BONES if not s and low[n] <= ground + GROUND_SLACK]
     if not rear: raise SystemExit('no ground-touching wheel behind the steered ones')
-    return facts, float(front - np.mean(rear)), len(rear)
+    return facts, float(front - np.mean(rear)), len(rear), float(np.mean(rear))
 
 def write_variant(var, phys, decomp, models, out, pivot, P, which, open_deg):
     from scipy.spatial import cKDTree
     tris, cds = mesh(os.path.join(models, var + '.mdl'))
     tree = cKDTree(P)
-    bones = [n for n, _, _ in DOOR_BONES] + [n for n, _, _ in WHEEL_BONES]
+    # root = the unsprung chassis (tread belt, track-run strips), body = the sprung hull with the doors on it, wheels
+    bones = ['body'] + [n for n, _, _ in DOOR_BONES] + [n for n, _, _ in WHEEL_BONES]
     names = ['root'] + bones
+    parent = {n: (1 if n.startswith('door') else 0) for n in bones}
     counts = {n: 0 for n in names}
     rows = []
     for mat, vs in tris:
         d, i = tree.query(np.mean([p for p, n, uv in vs], axis=0), k=2)
-        b = which[i[0]] if d[0] < MATCH and which[i[0]] else 'root'
+        # a triangle CoD has on tag_origin / the strips is chassis; one the port has and CoD hasn't (the rocket racks) is hull
+        b = (which[i[0]] or 'root') if d[0] < MATCH else 'body'
         if d[1] < MATCH and which[i[0]] in ('door_left', 'door_right') and which[i[1]] in ('door_left', 'door_right') \
                 and which[i[0]] != which[i[1]]:
             # the leaves' end faces where they meet lie in one plane (mesh x = 0): the side a face looks to says
@@ -99,13 +120,14 @@ def write_variant(var, phys, decomp, models, out, pivot, P, which, open_deg):
         rows.append((mat, [(names.index(b), p, n, uv) for p, n, uv in (vs[0], vs[2], vs[1])]))   # compiled winding -> SMD
     if counts['door_left'] < 100 or counts['door_right'] < 100:     # triangles
         raise SystemExit('%s: only %d / %d door triangles matched - is this the same mesh?' % (var, counts['door_left'], counts['door_right']))
-    facts, wheelbase, nrear = wheel_facts(rows, names, pivot)
-    nodes = 'nodes\n0 "root" -1\n' + ''.join('%d "%s" 0\n' % (k + 1, n) for k, n in enumerate(bones)) + 'end\n'
+    facts, wheelbase, nrear, body_pivot = wheel_facts(rows, names, pivot)
+    nodes = 'nodes\n0 "root" -1\n' + ''.join('%d "%s" %d\n' % (k + 1, n, parent[n]) for k, n in enumerate(bones)) + 'end\n'
     swing = {n: s for n, _, s in DOOR_BONES}
     def skel(angle):
         s = 'skeleton\ntime 0\n0 0 0 0 0 0 0\n'
         for k, n in enumerate(bones):
-            h = pivot[n]; s += '%d %.6f %.6f %.6f 0 0 %.6f\n' % (k + 1, h[0], h[1], h[2], np.radians(swing.get(n, 0.0) * angle))
+            # the body sits at the origin unturned, so its children's local positions are model positions
+            h = pivot.get(n, np.zeros(3)); s += '%d %.6f %.6f %.6f 0 0 %.6f\n' % (k + 1, h[0], h[1], h[2], np.radians(swing.get(n, 0.0) * angle))
         return s + 'end\n'
     # in the body the vertices are in MODEL space (SMD triangles always are); the bones carry them
     with open(os.path.join(out, var + '_body.smd'), 'w', newline='\n') as f:
@@ -130,18 +152,19 @@ def write_variant(var, phys, decomp, models, out, pivot, P, which, open_deg):
                 qc, flags=re.S)
     qc = re.sub(r'\$collisionmodel "[^"]+"', '$collisionmodel "%s_physics.smd"' % var, qc)
     if '$keyvalues' in qc: raise SystemExit('%s: the port QC already has $keyvalues - merge dodsp_wheels into it' % src)
-    kv = '\n$keyvalues\n{\n\t"dodsp_wheels"\n\t{\n\t\t"wheelbase"\t"%.1f"\n' % wheelbase
+    kv = ('\n$keyvalues\n{\n\t"dodsp_wheels"\n\t{\n\t\t"wheelbase"\t"%.1f"\n\t\t"body_pivot"\t"%.1f"\n\t\t"body_bone"\t"body"\n'
+          % (wheelbase, body_pivot))
     for name, _, _ in WHEEL_BONES:
-        r, steer = facts[name]
-        kv += '\t\t"%s"\t"radius %.1f%s"\n' % (name, r, ' steer 1' if steer else '')
+        r, steer, clear = facts[name]
+        kv += '\t\t"%s"\t"radius %.1f%s"\n' % (name, r, ' steer 1 clear %.1f' % clear if steer else '')
     qc += kv + '\t}\n}\n'
     qc = qc.replace('// Created by Crowbar 0.74', '// DOD-SP H1: the port with its rear doors on hinge bones and every wheel on its own bone '
                     '(dodsp_tools/vehicle_preview/halftrack_rig.py). Pose parameter "doors": 0 closed, 1 open (%.0f degrees). '
                     'Wheel sizes and steering in $keyvalues "dodsp_wheels".' % open_deg)
     open(os.path.join(out, var + '.qc'), 'w', newline='\n').write(qc)
-    print('%s: %d triangles, doors %d / %d, wheels %d (%s), wheelbase %.1f over %d ground wheels' % (
-        var, len(rows), counts['door_left'], counts['door_right'], sum(counts[n] for n, _, _ in WHEEL_BONES),
-        ', '.join('%s r%.1f' % (n[6:], facts[n][0]) for n, _, _ in WHEEL_BONES[:9]), wheelbase, nrear))
+    print('%s: %d triangles, chassis %d, body %d, doors %d / %d, wheels %d (%s), wheelbase %.1f over %d ground wheels, body pivot x %.1f' % (
+        var, len(rows), counts['root'], counts['body'], counts['door_left'], counts['door_right'], sum(counts[n] for n, _, _ in WHEEL_BONES),
+        ', '.join('%s r%.1f' % (n[6:], facts[n][0]) for n, _, _ in WHEEL_BONES[:9]), wheelbase, nrear, body_pivot))
     return facts, wheelbase
 
 if __name__ == '__main__':

@@ -35,6 +35,7 @@ def read_wheels(qc):
     out, wb = {}, 0.0
     for k, v in re.findall(r'"([^"]+)"\s*"([^"]+)"', m.group(1)):
         if k == 'wheelbase': wb = float(v); continue
+        if k in ('body_pivot', 'body_bone'): continue
         f = v.split(); d = dict(zip(f[0::2], f[1::2]))
         out[k] = (float(d['radius']), d.get('steer', '0') == '1')
     return out, wb
@@ -85,7 +86,7 @@ def main(rig, var, out):
     print('%d wheels (%d steer), wheelbase %.1f; farthest wheel vertex %.2f radii from its centre (1.0 = on the rim; '
           'the axle hub sticks out sideways)' % (len(wheels), sum(s for r, s in wheels.values()), wb, worst))
     # how far the front wheels can steer before their triangles enter the hull's (root) box around them
-    hull = np.array([p for mat, bone, P in tris if bone == 'root' and 'tread' not in mat for p in P])
+    hull = np.array([p for mat, bone, P in tris if bone == 'body' for p in P])
     for name, (r, st) in wheels.items():
         if not st: continue
         c = pivot[name]; Wv = np.array([p for mat, bone, P in tris if bone == name for p in P])
