@@ -1052,6 +1052,15 @@ If you learn something like this, add it here in the same commit as the fix.
     can't be shot. Build the collision from the mesh as several convex pieces (floor, side walls, front armour/visor,
     engine deck), top left open ($concave), checked against the mesh like phy_fit; the armour still stops what hits it.
     Exposure is realistic: from above / behind / over a folded visor.
+  - TRACKS like the wheels, for EVERY tracked vehicle at once (owner asked; agreed). CoD2 rigged its tracks: the belt is
+    on segment bones tag_wheel_front/middle/back_<side> (bottom run) + tag_wheel_upper_* (top run), blended by vertex
+    weights (Sherman 968 weighted vertices, carrier 691, Tiger 200, halftrack 144), road wheels on tag_<side>_wheel_NN.
+    Plan: halftrack_rig.py generalised into one rig tool for all CoD2 tracked hulls (panzer2, tiger, sherman, crusader,
+    carrier, halftrack): port triangles onto CoD's bones + CoD's own weights (max 3 per vertex for Source), every wheel's
+    radius / travel measured into dodsp_wheels. Client: each road wheel follows the ground under it (a trace, within its
+    measured travel), the belt segments follow their wheels so the bottom run bends over bumps; sprocket/idler spin by
+    their own radius; texture scroll stays (dodsp_treads.txt). Tanks keep their whole-hull lurch. Preview (wheel_preview
+    style, over a bumpy profile) before any build; the owner recompiles the hulls with Crowbar.
   - Rides with it: the collision-vs-mesh INVARIANT (H1b) and, once the owner approves the preview, H2 (driver).
   **H1 BUILD 2026-11-20: 44846448265** (owner asleep, said "go ahead and build this whole thing" + anything that improves
   the experience): wheels, steering, sprung body, measured track scroll, dust. Not yet tested in game.
