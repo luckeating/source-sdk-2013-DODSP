@@ -871,7 +871,9 @@ If you learn something like this, add it here in the same commit as the fix.
   the client only has samples that have ARRIVED): 20-37 units, the video's failure; 'delay' (V3f) 0.5-1.4.
   LESSONS: (1) a simulator only proves what its assumptions say - list them and check each against the engine code
   ("per tick" was never checked); (2) after a second failed fix, get footage first (the video settled it in one look:
-  position, not pose). (2) Landing on raised
+  position, not pose).
+  CONFIRMED 2026-11-20 (build 44839219100, Tiger riders): "perfect and smooth as hell". KNOWN-GOOD for V3 riders and the
+  CDoDSPNpcMotion base (V3e delay line + V3f per-tick simulation) - the base for vaults, jump-downs and parachutes. (2) Landing on raised
   ground they "get stuck in the ground": the ground trace started 72 units above where the ANIMATION lands, i.e.
   inside any bank higher than that. V3b: the trace starts above the seat, and on landing his whole hull is dropped
   from 48 units up onto what's there (INVARIANT once per map if it can't fit).
