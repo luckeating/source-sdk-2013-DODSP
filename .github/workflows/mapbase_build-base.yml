@@ -118,6 +118,20 @@ jobs:
         path: dodsp_game_out/
         if-no-files-found: error
 
+    # DOD-SP: the game's own symbols, so a crash in client.dll/server.dll can be named (dodsp_crash.yml reads them -
+    # the crash log has addresses only). Not needed to play; the owner never downloads this one.
+    - name: Publish DOD-SP game symbols (for reading crashes; not needed to play)
+      if: inputs.project-group == 'game'
+      uses: actions/upload-artifact@v4
+      with:
+        name: 'dodsp_game_symbols_win32_${{ inputs.configuration }}'
+        path: |
+          ${{inputs.branch}}/game/mod_${{inputs.game}}/bin/client.dll
+          ${{inputs.branch}}/game/mod_${{inputs.game}}/bin/server.dll
+          ${{inputs.branch}}/game/mod_${{inputs.game}}/bin/client.pdb
+          ${{inputs.branch}}/game/mod_${{inputs.game}}/bin/server.pdb
+        if-no-files-found: error
+
     - name: Publish shader binaries
       if: inputs.project-group == 'shaders'
       uses: actions/upload-artifact@v4

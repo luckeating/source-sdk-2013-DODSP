@@ -1,0 +1,102 @@
+#
+# DOD-SP crash reader (Claude runs it; nothing to download)
+#
+# Names the code at the addresses in DOD-SP\dodsp_crash.txt. The crash log has no symbols and the game's PDBs used to
+# stay in CI, so a crash in server.dll/client.dll couldn't be read. Now every game build publishes
+# dodsp_game_symbols_win32_Release; for an older build this job rebuilds its commit and checks the code is
+# byte-identical to what the owner ran before naming anything (devtools/dodsp_symbolize.py).
+#
+
+name: DOD-SP Crash Reader
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 'The build run the crashing dlls came from'
+        required: true
+        type: string
+      addresses:
+        description: 'Addresses as the crash log prints them, space-separated (server.dll+0x585431 ...)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  read:
+    name: Read the crash
+    runs-on: windows-latest
+    steps:
+    - name: Which commit built it, and does it have symbols?
+      id: run
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        sha=$(gh api repos/${{ github.repository }}/actions/runs/${{ inputs.run_id }} --jq .head_sha)
+        echo "sha=$sha" >> $GITHUB_OUTPUT
+        if gh api repos/${{ github.repository }}/actions/runs/${{ inputs.run_id }}/artifacts --jq '.artifacts[].name' | grep -qx dodsp_game_symbols_win32_Release; then
+          echo "symbols=1" >> $GITHUB_OUTPUT
+        else
+          echo "symbols=0" >> $GITHUB_OUTPUT
+        fi
+        echo "run ${{ inputs.run_id }} = commit $sha"
+
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ steps.run.outputs.sha }}
+
+    - name: The owner's dlls (the crashing build's own artifact)
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        gh run download ${{ inputs.run_id }} -R ${{ github.repository }} -n game_hl2_win32_Release -D orig
+        if [ "${{ steps.run.outputs.symbols }}" = "1" ]; then
+          gh run download ${{ inputs.run_id }} -R ${{ github.repository }} -n dodsp_game_symbols_win32_Release -D syms
+        fi
+
+    - name: Add MSBuild to PATH
+      if: steps.run.outputs.symbols == '0'
+      uses: compnerd/gha-setup-vsdevenv@v6
+
+    - name: Enable VS2022
+      if: steps.run.outputs.symbols == '0'
+      working-directory: sp/src/vpc_scripts
+      shell: bash
+      run: sed -i 's/^\($Conditional[[:blank:]]\+VS2022[[:blank:]]\+\).*/\1"1"/' newer_vs_toolsets.vpc
+
+    - name: Pick game
+      if: steps.run.outputs.symbols == '0'
+      working-directory: sp/src
+      shell: bash
+      run: sed -i 's/\/hl2 \/episodic/\/hl2/' creategameprojects.bat
+
+    - name: Rebuild that commit (no symbols were kept for it)
+      if: steps.run.outputs.symbols == '0'
+      working-directory: sp/src
+      shell: cmd
+      run: |
+        reg add "HKLM\SOFTWARE\WOW6432Node\Microsoft\VisualStudio\10.0\Projects\{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}" /v DefaultProjectExtension /t REG_SZ /d vcproj /f
+        call creategameprojects.bat
+        devenv games.sln /upgrade
+        msbuild -m -t:Rebuild -p:Configuration=Release;Platform=x86 games.sln || exit /b 1
+        mkdir ..\..\syms
+        copy /y ..\game\mod_hl2\bin\*.dll ..\..\syms\ || exit /b 1
+        copy /y ..\game\mod_hl2\bin\*.pdb ..\..\syms\ || exit /b 1
+
+    - name: The reader script (from this workflow's own commit - the crashing commit may predate it)
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ github.sha }}
+        path: reader
+        sparse-checkout: sp/src/devtools
+
+    - name: Name the addresses
+      shell: bash
+      run: |
+        if [ "${{ steps.run.outputs.symbols }}" = "1" ]; then orig=""; else orig=orig/bin; fi
+        python reader/sp/src/devtools/dodsp_symbolize.py syms "$orig" ${{ inputs.addresses }}
