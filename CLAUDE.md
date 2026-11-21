@@ -1036,6 +1036,30 @@ If you learn something like this, add it here in the same commit as the fix.
   stone/tile 0.25, wood 0.2, metal 0.1, water 0). Client only (KickDust, ClientThink), one trace per puff;
   `dodsp_vehicle_dust` scales it (0 = none, resets to 1 on launch).
   Undo: the previous client.dll + server.dll, the door-rig halftrack model.
+  **H1 BUILD 2026-11-20: 44846448265** (owner asleep, said "go ahead and build this whole thing" + anything that improves
+  the experience): wheels, steering, sprung body, measured track scroll, dust. Not yet tested in game.
+  **H2 PREPARED 2026-11-20 (not built - the driver's animations wait for the owner's look at the preview).**
+  CoD2 XANIM READER (dodsp_tools/vehicle_preview/cod2_xanim.py, layout in its header): v14 = u16 version/frames/bones,
+  u8 flags (1 loop, 2 root motion), u16 fps; root motion (yaw keys int16 z, translation float3); two bit tables
+  ("flip", "simple"); names; per bone rotation keys (int16 x3, or z only when "simple") + translation keys (float3),
+  frame-index tables only when 1 < keys < frames; notetracks. 3668 of the owner's 3669 xanims parse to their last byte.
+  LESSON: the "flip" table is NOT the sign of w - read that way, joints missed the port by 2.6 units (median); ignored,
+  by 0.2. Checked on joint POSITIONS against the officer port (ValveBiped, not CoD's bones, so world joints after a
+  best fit): all 434 animations both have, median joint miss 0.23 units, worst single joint 4 (the porter's limb
+  lengths). Root motion lives in the delta track (a jump-out's 160 units of travel), not in j_mainroot.
+  CONVERTER (xanim_to_smd.py): LEARNED from those 434 - one global frame, a constant turn per ValveBiped bone (spread
+  median 1.1 deg, none over 3), the port's own lengths, the pelvis through j_mainroot + constants. Held-out (every 15th
+  animation): local rotations median 0.18 deg, 95% 0.71 - what build_ww2_pack takes. Pelvis positions a few units off
+  for most families, 30-40 for the MG gunners (the porter placed those roots differently).
+  RIDE PACK COMMAND recovered and recorded in dodsp_tools/ANIMATIONS.md (it reproduces the delivered pack byte for
+  byte); extended with 9 converted driver animations, the 39 existing SMDs and dodsp_ride_paths.txt unchanged.
+  DRIVER: dodsp_tools/vehicle_preview/driver_preview.py seats him at CoD2's tag_driver (11.3 15.2 29.1) on the rigged
+  mesh (cutaway). CoD2's halftrack_driver_idle fits its seat; the Kubelwagen driver's whole poses sit too low and
+  cramped, the jeep chase driver's arms too high. So steering = halftrack_driver_idle + the Kubelwagen driver's turn
+  as a DELTA (his hard left/right minus his idle, local rotations, upper body only) - steer_compose.py writes
+  ww2_a_halftrack_driver_steer_left/right. Death: halftrack_driver_death (slumps across the seat). Next, after the
+  owner's look: a "steer" pose-parameter blend (left / idle / right) driven by m_flSteer, the driver as the crew's
+  driver (dead driver = the crew loses its driver, V4 rules), bail-out through the cab.
 - CoD1 set (owner's vehicles_part2.zip, 2026-11-19): REFERENCE ONLY except the **SU-152, which we keep**. One model per
   vehicle, turret/gun as BONES (tag_turret, tag_barrel, tag_flash = muzzle, tag_coaxel), faces +X (forward_yaw 0),
   CoD's rider tags tag_guy01..06 (Sherman, Elefant, SU-152: 6; Opel truck driver/passenger + 4), NO .phy (needs a

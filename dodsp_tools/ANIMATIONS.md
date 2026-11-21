@@ -200,3 +200,21 @@ Gameplay with the A4a set is right; these are visual and wait for a full animati
    `cod1_map.py` (CoD1).
 2. Add any events the code needs, such as melee hit, grenade release or MG muzzle.
 3. Rebuild the pack, recompile `npc_german_rifleman.qc`, and regenerate the matching `SEQUENCES*.txt`.
+
+
+## The ride pack (npc_ww2_anims_ride.mdl) - THE command (recovered 2026-11-20: it reproduces the delivered pack byte for byte)
+
+Source: the owner's Crowbar decompile of the CoD2 officer port (`german_normandy_officer.qc` + SMDs), the German rifleman
+reference and DoD's StandAim_BOLT / StandAim_MP40. The `--want` list names the officer QC's cod2_* sequences exactly
+(V3's 39):
+
+    python3 build_ww2_pack.py <officer decompile dir> german_normandy_officer.qc <german_rifleman_reference.smd>
+        <dod_player_shared_anim_@StandAim_BOLT.smd> <dod_player_shared_anim_@StandAim_MP40.smd> <out dir>
+        --want '^(cod2_ride1_idle|cod2_ride2_idle|cod2_ride3_idle|cod2_ride4_idle|cod2_ride6_idle|cod2_jump_ride1|cod2_jump_ride2|cod2_jump_ride3|cod2_jump_ride4|cod2_jump_ride6|cod2_vi_germantruck_driver_sitidle_loop|cod2_jump_germantruck_driver_climbout|cod2_jump_germantruck_guy1_jumpout|cod2_jump_germantruck_guy2_jumpout|cod2_jump_germantruck_guy3_jumpout|cod2_jump_germantruck_guy4_jumpout|cod2_jump_germantruck_guy5_jumpout|cod2_jump_germantruck_guy6_jumpout|cod2_jump_germantruck_guy7_jumpout|cod2_jump_germantruck_guy8_jumpout|cod2_vi_halftrack_driver_idle|cod2_jump_halftrack_guy02_jumpout|cod2_vi_halftrack_guy03_idle|cod2_jump_halftrack_guy03_jumpout|cod2_vi_halftrack_guy05_idle|cod2_jump_halftrack_guy05_jumpout|cod2_vi_halftrack_guy06_idle|cod2_vi_halftrack_guy04_idle|cod2_jump_halftrack_guy02b_jumpout|cod2_vi_halftrack_guy01_idle|cod2_vi_halftrack_guy02_idle|cod2_vi_bren_carrier_driver_driveidle|cod2_jump_bren_carrier_driver_dismount|cod2_vi_bren_carrier_passenger_rideidle|cod2_jump_bren_carrier_passenger_dismount|cod2_vi_bren_carrier_back01_rideidle|cod2_jump_bren_carrier_back01_combatdismount|cod2_vi_bren_carrier_back02_rideidle|cod2_jump_bren_carrier_back02_ridedismount)$'
+        --model 'german\npc_ww2_anims_ride.mdl' --gunref german_normandy_officer_anim_a_stand_pain_front_lshoulder.smd
+        --ride-paths <out>/dodsp_ride_paths.txt
+
+New sequences are ADDED to that list (never replace it) and the rebuild is checked: every existing SMD byte-identical,
+dodsp_ride_paths.txt unchanged. Animations the port doesn't have come from CoD2's raw xanims
+(vehicle_preview/cod2_xanim.py + xanim_to_smd.py convert -> SMDs in the port's own format, appended to a copy of the
+officer QC as `$animation "a_<name>"` + `$sequence "cod2_vi_<name>"`).
