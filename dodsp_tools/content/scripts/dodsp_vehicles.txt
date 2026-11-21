@@ -430,8 +430,11 @@
 		"crew_seats"
 		{
 			"driver"	{ "origin" "11.3 15.2 29.1"	"yaw" "0"	"idle" "ww2_halftrack_driver"	"steer" "1"	"death" "ww2_vi_halftrack_driver_death" }
-			// H2b: the commander in CoD2's passenger seat (tag_passenger); killed there he slumps (CoD2's bay death, re-based to start at his idle: halftrack_commander_death)
-			"commander"	{ "origin" "3.4 -14.5 36.4"	"yaw" "0"	"idle" "ww2_vi_halftrack_passenger_idle"	"death" "ww2_vi_halftrack_commander_death" }
+			// H2b: the commander in the cab's right seat (the mirror of the driver's). CoD2's passenger idle has its root 13 units
+			// left of and behind its pelvis, so the origin is where his pelvis lands on the seat at the driver's height (measured:
+			// seat_death_preview.py "sitting" check); not tag_passenger - there he sat 12 units off the seat (owner's screenshot).
+			// Killed there he slumps (CoD2's bay death, re-based to start at his idle: halftrack_commander_death)
+			"commander"	{ "origin" "2.0 -1.4 32.3"	"yaw" "0"	"idle" "ww2_vi_halftrack_passenger_idle"	"death" "ww2_vi_halftrack_commander_death" }
 		}
 		"sounds"	{ "engine_idle" "DoDSP_Vehicle.TruckIdle"	"engine_move" "DoDSP_Vehicle.TruckMove" }
 	}

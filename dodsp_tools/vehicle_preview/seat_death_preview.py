@@ -34,8 +34,16 @@ def tags(vehicle):
 T = tags('halftrack')
 BAY_DEATHS = ['halftrack_bay_death1', 'halftrack_bay_death2']
 # seat: name, tag, yaw (CoD2 tag rotation), idle, candidate deaths
-SEATS = [('driver', 'tag_driver', 0, 'halftrack_driver_idle', ['halftrack_driver_death']),
-         ('commander', 'tag_passenger', 0, 'halftrack_passenger_idle', ['halftrack_commander_death', 'halftrack_guy_death2'])] + \
+# the crew seats' origins are the SCRIPT's (dodsp_vehicles.txt crew_seats - what the game uses; H2b shipped the commander
+# at CoD2's tag_passenger and he sat 12 units beside his seat: the passenger idle's root isn't under his pelvis)
+def crew_seat(role):
+    import re
+    txt = open(os.path.join(TOOLS, 'content/scripts/dodsp_vehicles.txt')).read()
+    m = re.search(r'"%s"\s*\{\s*"origin"\s*"([^"]+)"' % role, txt[txt.index('"crew_seats"'):])
+    return np.array([float(v) for v in m.group(1).split()])
+T['crew_driver'], T['crew_commander'] = crew_seat('driver'), crew_seat('commander')
+SEATS = [('driver', 'crew_driver', 0, 'halftrack_driver_idle', ['halftrack_driver_death']),
+         ('commander', 'crew_commander', 0, 'halftrack_passenger_idle', ['halftrack_commander_death'])] + \
         [('guy0%d' % n, 'tag_guy0%d' % n, -90 if n in (1, 3, 6) else 90, 'halftrack_guy0%d_idle' % n, BAY_DEATHS)
          for n in (1, 2, 3, 4, 5, 6)]
 
@@ -111,6 +119,33 @@ def check(seat, death):
             if d > over: over, who = d, o[0]
     return dict(jump=jump, mesh=max(0, mesh - base[0]), bay=max(0, bay - base[1]), over=over, who=who)
 
+def surface_below(x, y, zmax):
+    best = None
+    for t in P0:
+        a, b, c = t; v0, v1 = b - a, c - a
+        M = np.array([[v0[0], v1[0]], [v0[1], v1[1]]])
+        if abs(np.linalg.det(M)) < 1e-6: continue
+        u, v = np.linalg.solve(M, np.array([x, y]) - a[:2])
+        if u >= 0 and v >= 0 and u + v <= 1:
+            z = a[2] + u * v0[2] + v * v1[2]
+            if z < zmax and (best is None or z > best): best = z
+    return best
+def sit(seat):
+    pose = anim(seat[3])[0]; o = T[seat[1]]; R = rot(seat[2])
+    pel = R @ pose['ValveBiped.Bip01_Pelvis'][1] + o
+    s_ = surface_below(pel[0], pel[1], pel[2])
+    feet = [R @ pose['ValveBiped.Bip01_%s_Foot' % k][1] + o for k in 'LR']
+    fl = [f[2] - 4.5 - (surface_below(f[0], f[1], f[2]) or -99) for f in feet]
+    return pel[2] - (s_ if s_ is not None else -99), max(fl), pel
+d_sit = sit(SEATS[0])[0]
+SIT_TOL, FEET_TOL = 3.0, 4.0
+print('sitting (pelvis above the surface under it; the driver = %.1f, confirmed in game) and soles above the floor:' % d_sit)
+for seat in SEATS:
+    h, f, pel = sit(seat)
+    ours = seat[1].startswith('crew_')       # placed by us (the script); the bay seats are CoD2's own tags = CoD's placement
+    bad = ( ours and abs(h - d_sit) > SIT_TOL ) or abs(f) > FEET_TOL
+    print('  %-10s pelvis at %s, %.1f above the surface under it%s, soles %+.1f off the floor %s' % (seat[0], np.round(pel, 1), h,
+          '' if ours else ' (CoD2 tag: bench, not compared)', f, 'FAIL - not sitting on his seat' if bad else ''))
 print('seat        death                      jump  mesh   bay  others   (units; mesh/bay/others = what the death adds over the seated pose)')
 pick = {}
 for seat in SEATS:

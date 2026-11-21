@@ -1163,6 +1163,14 @@ If you learn something like this, add it here in the same commit as the fix.
   pack compile). script_version H2b (the "death" key). New guard: lint check_vehicle_seats - every idle / getout / death /
   fidget a seat or crew seat names is in dodsp_tools/generated/ride_pack_sequences.txt (= every $sequence of the
   delivered pack's .qc; regenerate it with each delivered pack; tested with a misspelt death).
+  FIRST H2b TEST 2026-11-21 (owner's screenshot): the commander sat ~12 units off his seat (forward/right, floating). Cause:
+  his seat origin was CoD2's tag_passenger, but CoD2's halftrack_passenger_idle has its root 13 units left of / 8 behind
+  its pelvis - it wasn't made for that tag (the H2b preview drew it and I didn't measure the sit). Fix (script only):
+  origin "2.0 -1.4 32.3" = his pelvis on the mirror of the driver's seat at the driver's height (cab seats symmetric:
+  cushions z 35.3, footwell 19.2, measured). Guard: seat_death_preview.py reads the crew seats FROM THE SCRIPT and checks
+  SITTING for every seat we place ourselves: pelvis above the surface under it = the driver's 7.6 (+-3; his fit is
+  confirmed in game) and soles on the floor (+-4) - prints FAIL. LESSON: a borrowed animation's root is not its seat -
+  place a seated man by where his PELVIS lands, and measure it before the owner sees it.
   **H3 PREVIEW 2026-11-21 (the troop complement - not built).** Owner: riders in the bay, "when they get out they quickly run
   to any of the sides of the vehicle so the other guys can get out quickly, normal movement can take over from there,
   similar to combine soldiers getting out of dropships"; and CoD2's run-death. dodsp_tools/vehicle_preview/troop_preview.py
