@@ -1130,6 +1130,12 @@ If you learn something like this, add it here in the same commit as the fix.
   wrong role); m_iCrewAlive writers += CrewmanShot. Known: no death animation yet (a seated driver ragdolls from his seat;
   CoD2's halftrack_driver_death is in the pack for later); he doesn't tip with the sprung body (~1 unit).
   Undo: script_version V3e script + the previous server.dll (the driver isn't spawned), or delete "crew_seats".
+  CONFIRMED 2026-11-21 (build 44880020041 + dodsp_vehicle_rigs_t1b + the H2 ride pack + the owner's tread .vmt fixes,
+  gm_countrysidedrive_d): "everything is working perfectly right out of the box" - screenshot: the driver seated at the
+  wheel in the halftrack's cab. KNOWN-GOOD for T1 (tracks + suspension on every tracked vehicle), the open-top halftrack
+  collision and H2's seated, steering driver. Still open: the carrier's open top (offered), the driver's death animation.
+  Tread .vmt rule for the owner: track materials carry "Proxies" { "DoDSPTrackScroll" { } } and $surfaceprop
+  metalvehicle (the conversion had "flesh" - bullets would bleed); wheel-marking materials carry no proxy.
   **H1 BUILD 2026-11-20: 44846448265** (owner asleep, said "go ahead and build this whole thing" + anything that improves
   the experience): wheels, steering, sprung body, measured track scroll, dust. Not yet tested in game.
   **H2 PREPARED 2026-11-20 (not built - the driver's animations wait for the owner's look at the preview).**
