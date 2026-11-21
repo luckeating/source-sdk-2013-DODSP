@@ -1242,7 +1242,7 @@ If you learn something like this, add it here in the same commit as the fix.
   shadow, so it collides with our shadow; the seated riders' shadows are children, checked one by one. The game push
   had already moved the vehicle and carried what stands on it - VPhysics then took most moves back. func_tracktrain is
   SOLID_BSP, which the engine never lets VPhysics block. V3's tank riders sat on the deck (no player aboard in tests).
-  **H3b (prepared):** CDoDSPVehicle::VPhysicsUpdate - for MOVETYPE_PUSH it frees the push list and returns (never the
+  **H3b BUILT 2026-11-21: build 44900716683** (with the unarmed-eyes fix, game symbols and deeper crash dumps): CDoDSPVehicle::VPhysicsUpdate - for MOVETYPE_PUSH it frees the push list and returns (never the
   engine's pusher check); the shadow still follows every move (FinishPushers), so loose props are still shoved aside;
   people are pushed or block (Blocked -> it waits) by the game push as before. Guards: CreepWatchdog (DriveThink: real
   travel vs what its speed asked for over 1 s; under 60% of >= 64 units = `INVARIANT ... its moves are being taken
