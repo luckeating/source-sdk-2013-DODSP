@@ -1046,6 +1046,13 @@ If you learn something like this, add it here in the same commit as the fix.
   INVARIANT at a vehicle's first spawn / wreck swap if its collision box differs from its mesh box by > 10% (12 units) on
   any axis or it has none (every original vehicle model matches within 1%). LESSON: a decompiler's output is not ground
   truth - check it against the compiled file it came from. Owner: recompile dodsp_halftrack_h1b_rig.zip (collision only).
+  ADJUSTMENT LIST (owner 2026-11-20, collecting more before the next build - DON'T build until he says go):
+  - Open-top collision (agreed): the port's collision is ONE convex shell that closes over the open cab and troop bay up
+    to 93 units, so bullets stop on an invisible lid - the driver (head at 63, cab side top 61) and future bay riders
+    can't be shot. Build the collision from the mesh as several convex pieces (floor, side walls, front armour/visor,
+    engine deck), top left open ($concave), checked against the mesh like phy_fit; the armour still stops what hits it.
+    Exposure is realistic: from above / behind / over a folded visor.
+  - Rides with it: the collision-vs-mesh INVARIANT (H1b) and, once the owner approves the preview, H2 (driver).
   **H1 BUILD 2026-11-20: 44846448265** (owner asleep, said "go ahead and build this whole thing" + anything that improves
   the experience): wheels, steering, sprung body, measured track scroll, dust. Not yet tested in game.
   **H2 PREPARED 2026-11-20 (not built - the driver's animations wait for the owner's look at the preview).**
