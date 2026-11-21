@@ -75,8 +75,9 @@
 //                    kicks the hull (2). The models have no lurch animation (only 'idle' / turret 'aim') - it's code.
 //                    H1: a model whose "dodsp_wheels" gives a body_pivot (the rigged halftrack) rides its BODY on these
 //                    springs over wheels that stay on the ground (client, every frame) instead of tipping whole;
-//                    susp_roll (degrees outward per 100 units/s^2 sideways, 1.0) and susp_travel (units a steered tyre
-//                    may rise/drop to follow the ground, 6) apply to those only.
+//                    susp_roll (degrees outward per 100 units/s^2 sideways, 1.0) applies to those only. How far each
+//                    wheel / suspension unit travels is the MODEL's (vehicle_rig.py measures it into "dodsp_wheels"),
+//                    never a key here.
 //   Halftracks and the carrier have no weapons yet (their MG mounts are V2b).
 //   turret_offset    (V3e) = CoD2's tag_turret x 1.028 - exact (the turret models' origins sit on it); the lint checks it.
 // Sources (2026-11-20): Wikipedia (Panzer II, 2 cm KwK 30, Tiger I, 8.8 cm KwK 36, M4 Sherman, Crusader tank, Ordnance QF
@@ -410,7 +411,6 @@
 		"susp_freq"			"1.3"
 		"susp_damp"			"0.6"
 		"susp_roll"			"1.2"
-		"susp_travel"		"7"
 		// Sd.Kfz. 251: front 14.5, sides 8 (V-shaped, steeply angled - lean est.), open top; engine at the front.
 		"armour"
 		{

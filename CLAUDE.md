@@ -902,7 +902,7 @@ If you learn something like this, add it here in the same commit as the fix.
   weight" only held for one extra weight and failed on the Tiger; checked on all 2654 xmodelsurfs of the owner's
   cod2models.zip, every one parses to the last byte; reader dodsp_tools/vehicle_preview/cod2_xmodel.py) and his
   Crowbar decompile of the port. The doors are CoD surfaces on hatch_open_left/right (140 triangles each, + 4 marking
-  triangles on the left leaf); the hinges turn about the vertical. halftrack_rig.py (was halftrack_doors.py) puts the port's matching
+  triangles on the left leaf); the hinges turn about the vertical. halftrack_rig.py (was halftrack_doors.py; now vehicle_rig.py) puts the port's matching
   triangles (by triangle middle; the leaves' seam faces share a plane, settled by which way they face) on bones
   door_left / door_right and writes per variant body SMD + closed/open frames blended by the pose parameter "doors"
   (0..1 = 0..100 degrees) + the port's own QC settings and collision. Crowbar names every decompile's mesh body.smd
@@ -956,7 +956,7 @@ If you learn something like this, add it here in the same commit as the fix.
   - More MGs: the Tiger's coax (find its real spot), the Sherman bow .30 (ball mount, front right) and roof .50, the
     halftrack front MG42 (tag_turret) and the carrier's Bren (V2b, with visible gunners), the Buffalo 30-cal (tag_ai_30cal).
   - Hatch lids that open: panzer2 / tiger (hatch_open, 1 lid), sherman / crusader (2 lids), the armoured car's grenade
-    screens (2) - rigged like the halftrack doors (halftrack_rig.py generalised: the port's triangles onto the lid bones,
+    screens (2) - rigged like the halftrack doors (vehicle_rig.py: the port's triangles onto the lid bones,
     a pose parameter); the bail-out crew opens the hatch before climbing out. CoD2 also has crusader_tankride_tank_closehatch
     / crusader_tankride_guy0_closehatch and armoredcar_hatch_open_pose (xanim - needs a reader, or a procedural hinge).
   - Gun recoil: barrel_recoil carries mesh on every tank gun (panzer2 126 tris, tiger 330, sherman 34, crusader 58,
@@ -984,7 +984,7 @@ If you learn something like this, add it here in the same commit as the fix.
   previewed against the mesh first.
   **H1 BUILT 2026-11-20 (not yet in game).** The port was ONE bone (wheels part of the hull: they never turned - not a
   regression). CoD2's halftrack_mg1 has every wheel on its own bone with its own mesh, and all 5928 port triangles match
-  a CoD triangle (MATCH 0.05). dodsp_tools/vehicle_preview/halftrack_rig.py (was halftrack_doors.py - one rig tool for
+  a CoD triangle (MATCH 0.05). dodsp_tools/vehicle_preview/halftrack_rig.py (now vehicle_rig.py - was halftrack_doors.py - one rig tool for
   every moving part) puts doors + 18 wheels on bones: wheel_<side>_01 front tyre (r 17.5, steers), _02 drive sprocket,
   _03.._08 road wheels, _09 idler (r 12.6); CoD's tag_wheel_back/middle/upper_* are TRACK strips (stay on the root).
   ONE owner of wheel facts = the MODEL: the rig measures each radius and the wheelbase (122.1: front axle to the middle
@@ -1062,6 +1062,35 @@ If you learn something like this, add it here in the same commit as the fix.
     their own radius; texture scroll stays (dodsp_treads.txt). Tanks keep their whole-hull lurch. Preview (wheel_preview
     style, over a bumpy profile) before any build; the owner recompiles the hulls with Crowbar.
   - Rides with it: the collision-vs-mesh INVARIANT (H1b) and, once the owner approves the preview, H2 (driver).
+  **T1 PREPARED 2026-11-20 (tracks like the wheels; code in, NOT built - previews t1_tracks_<vehicle>.gif with the owner).**
+  ONE rig tool: dodsp_tools/vehicle_preview/vehicle_rig.py (replaces halftrack_rig.py) for panzer2 (+winter), tiger,
+  tiger_brush, sherman (+desert), crusader, carrier (+desert), halftrack (5 variants). Every port triangle of every one of
+  them lies on a CoD2 triangle (x 1.0284, mesh frame), so each corner takes CoD's bones AND weights (<= 3). CoD2 rigs
+  every vehicle alike: tag_wheel_<front|middle|back>_<side> = suspension units ON THE GROUND (z 0) -> susp_<side>_<pos>;
+  road wheels are their children; sprocket/idler (first/last wheel) on tag_origin; the belt's bottom run is weighted to
+  the units, blended to tag_origin at the ends; tag_wheel_upper_* = the top run where it RESTS on the road wheels (Tiger,
+  carrier, halftrack), a child of a unit. TRIED: the top run on the chassis (it rides return rollers on real tanks) - the
+  Tiger's and halftrack's wheels then sat jammed under it (0 travel); CoD's parenting kept. Facts into "dodsp_wheels":
+  "susp_<side>_<pos>" "up u down d" (u = vertical ray from everything that moves with the unit - its wheels, belt
+  weighted >= 0.5 to it - up to the first triangle weighted only to root/body/doors, less 0.5, max 12; d = u),
+  "wheel_*" "radius r [steer 1]" (the old "clear" is gone: the steered tyre's room is its unit's up). Measured: Panzer II
+  7-9, Tiger 6-10, Sherman 2 (the VVSS bogie top meets the sponson), Crusader 12 (cap - Christie, nothing over it),
+  carrier front 9 / back 6 / MIDDLE 0 (its return roller sits in a fixed bracket), halftrack tyre 6.4 (H1 measured 6.5) /
+  bogies 3. SUSP_FROM: the brush Tiger takes the Tiger's travel (its foliage hangs over the tracks: 1.9-6.9 measured).
+  Collision: written straight from the compiled .phy (phy_fit.py write_from_phy: VPHY ledges, by their stored size -
+  every vehicle here is ONE convex piece), QC settings from the compiled .mdl header (QC $illumposition = (y, -x, z) of
+  the header's, $bbox = the header's hull) - no Crowbar decompile needed. Client (c_dodsp_vehicle.cpp): UpdateSuspension
+  (ClientThink, every vehicle) is THE writer of a unit's lift: a trace down at its contact, along the vehicle's up,
+  clamped to its travel (a start inside a bank = full up), followed at 160 units/s; over a sprung body the room shrinks
+  by how far the body came down there. BuildTransformations moves each unit's bones (m_SuspOf: the nearest unit at or
+  above a bone) before the wheels spin about their (moved) centres. Server: susp_travel type key and m_flBodySuspTravel
+  gone (travel is the model's); load line adds "N suspension units" or "has no suspension units ... vehicle_rig.py".
+  Lint check_vehicle_body: flLift written only in UpdateSuspension/BuildWheelList (tested with a stray write), no
+  susp_travel key in the script. Preview: track_preview.py drives each rig over a log (both tracks), a rock (left only)
+  and a dip (right only) with the server's BuildAngles + the client's maths; prints travel used and belt stretch (worst
+  edge growth 0.9 Sherman/halftrack .. 5.2 Tiger units - a skinned belt stretches, it can't tear). Owner side once
+  approved: compile every variant's QC from dodsp_vehicle_rigs_t1.zip with Crowbar (replaces the hulls in place).
+  Undo: the previous client.dll + the old models.
   **H1 BUILD 2026-11-20: 44846448265** (owner asleep, said "go ahead and build this whole thing" + anything that improves
   the experience): wheels, steering, sprung body, measured track scroll, dust. Not yet tested in game.
   **H2 PREPARED 2026-11-20 (not built - the driver's animations wait for the owner's look at the preview).**

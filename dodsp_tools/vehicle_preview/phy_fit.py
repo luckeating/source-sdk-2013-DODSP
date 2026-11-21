@@ -17,28 +17,62 @@ import itertools, struct, sys, numpy as np
 FIT_TOLERANCE = 0.5          # units: every SMD corner must land this close to a corner of the compiled collision
 
 def phy_points(path):
+    return np.concatenate(phy_pieces(path))
+
+def phy_pieces(path):
+    """the corner points of every convex piece (IVP ledge) of a compiled .phy, one array per piece, game units/axes"""
     d = open(path, 'rb').read()
     hsize, _, nsolid, _ = struct.unpack_from('<iiii', d, 0)
     o, out = hsize, []
     for s in range(nsolid):
-        size, = struct.unpack_from('<i', d, o); start = o + 4
+        ssize, = struct.unpack_from('<i', d, o); start = o + 4
         if d[start:start + 4] != b'VPHY':
             raise SystemExit('%s: solid %d is not a VPHY compact surface (old .phy format?)' % (path, s))
         cs = start + 28                                         # compactsurfaceheader_t -> IVP_Compact_Surface
         root, = struct.unpack_from('<i', d, cs + 32)           # offset_ledgetree_root: the ledges end there
-        L, pts = cs + 48, set()
+        L = cs + 48
         while L < cs + root:
-            pofs, _, _, ntri = struct.unpack_from('<iiiH', d, L)
+            pofs, _, bits, ntri = struct.unpack_from('<iiIH', d, L)
+            size = (bits >> 8) * 16                             # IVP_Compact_Ledge: size_div_16 in the top 24 bits
+            pts = set()
             for t in range(ntri):
                 for e in range(3):
                     v, = struct.unpack_from('<I', d, L + 16 + 16 * t + 4 + 4 * e)
                     pts.add(L + pofs + 16 * (v & 0xffff))
-            L += 16 + 16 * ntri
-        for p in pts:
-            x, y, z = struct.unpack_from('<fff', d, p)
-            out.append((x, z, -y))                              # IVP axes -> game axes
-        o = start + size
-    return np.array(out) / 0.0254                               # metres -> units
+            P = [struct.unpack_from('<fff', d, p) for p in sorted(pts)]
+            out.append(np.array([(x, z, -y) for x, y, z in P]) / 0.0254)    # IVP axes, metres -> game axes, units
+            if size < 16 + 16 * ntri:
+                raise SystemExit('%s: a convex piece of %d bytes for %d triangles - not the layout this reads' % (path, size, ntri))
+            L += size
+        o = start + ssize
+    return out
+
+def phy_settings(path):
+    """the .phy's text section: {key: value} of its first solid (mass, inertia, damping, rotdamping, surfaceprop)"""
+    import re
+    t = open(path, 'rb').read().decode('latin1')
+    m = re.search(r'solid \{(.*?)\}', t, re.S)
+    return dict(re.findall(r'"([^"]+)" "([^"]*)"', m.group(1))) if m else {}
+
+def write_from_phy(phy, out):
+    """the compiled collision itself as a collision SMD in the reference mesh's frame: every convex piece's hull.
+    Returns the number of pieces (more than one = the QC needs $concave)."""
+    from scipy.spatial import ConvexHull
+    pieces = phy_pieces(phy)
+    Gt = G_from_mesh().T                                        # game -> mesh
+    with open(out, 'w', newline='\n') as f:
+        f.write('version 1\nnodes\n0 "root" -1\nend\nskeleton\ntime 0\n0 0 0 0 0 0 0\nend\ntriangles\n')
+        for P in pieces:
+            h = ConvexHull(P); c = P.mean(0)
+            for simplex, eq in zip(h.simplices, h.equations):
+                tri = P[simplex]
+                if np.dot(np.cross(tri[1] - tri[0], tri[2] - tri[0]), eq[:3]) < 0: tri = tri[[0, 2, 1]]   # outward
+                f.write('phy\n')
+                for q in tri:
+                    m, n = Gt @ q, Gt @ eq[:3]
+                    f.write('0 %.6f %.6f %.6f %.6f %.6f %.6f 0 0\n' % (m[0], m[1], m[2], n[0], n[1], n[2]))
+        f.write('end\n')
+    return len(pieces)
 
 def read_physics_smd(path):
     L = open(path, encoding='latin1').read().replace('\r\n', '\n').split('\n')

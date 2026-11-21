@@ -6,9 +6,15 @@
 // Wheels (H1): the model says which bones are wheels, how big each is and which steer - $keyvalues "dodsp_wheels",
 // measured from the mesh by the rig tool (dodsp/dodsp_vehicle_wheels.h, shared with the server). Each turns about the
 // axle (the model's up x forward) through its own centre by distance / its radius; the steered ones are turned first
-// about the up axis by the server's steering angle (m_flSteer). A model without the block (the tanks) keeps V1's rule:
-// every bone with "wheel" in its name, radius = its height above the vehicle's floor, nothing steers. Done after the
-// animation has built the skeleton (BuildTransformations), so any model works without an animation of its own.
+// about the up axis by the server's steering angle (m_flSteer). A model without the block keeps V1's rule: every bone
+// with "wheel" in its name, radius = its height above the vehicle's floor, nothing steers. Done after the animation
+// has built the skeleton (BuildTransformations), so any model works without an animation of its own.
+//
+// Suspension (T1): the model's suspension units (susp_*, CoD2's own running-gear rig, travel measured from the mesh)
+// each sit on the ground under them, every frame (UpdateSuspension, the ONE writer of a unit's lift), within their
+// travel; the unit's bone and every bone under it (its road wheels, the top run where it rests on them) move with it,
+// and the track belt bends between units by its vertex weights. On a sprung body the room over a unit shrinks by
+// however far the body has come down over it.
 //
 // Tracks (H1): material proxy "DoDSPTrackScroll" (also answers to the CoD2 conversion's "COD2TreadScroll"). WHICH
 // materials are tracks, which texture axis runs along them and how fast is measured from the meshes
@@ -117,12 +123,17 @@ private:
 		int		iBone;
 		float	flRadius;		// 0 = the height rule
 		bool	bSteer;
-		float	flClear;		// steered tyres: room between its top and the wing over it
-		float	flLift;			// H1: how far it has risen (+) / dropped to the ground under it (steered tyres)
-		Vector	vecRest;		// its centre before the lift, world, as of the last skeleton
+	};
+	struct Susp_t
+	{
+		int		iBone;
+		float	flUp, flDown;	// its travel (the model's, measured from the mesh)
+		float	flLift;			// how far it has risen (+) / dropped (-) to the ground under it - UpdateSuspension only
+		Vector	vecRest;		// its ground contact before the lift, world, as of the last skeleton
 		bool	bRest;
 	};
 	void			BuildWheelList( CStudioHdr *pStudioHdr );
+	void			UpdateSuspension( float dt );
 	void			CheckTreadProxies( CStudioHdr *pStudioHdr );
 	void			BodySprings( float dt );
 	void			KickDust( float dt );
@@ -136,6 +147,8 @@ private:
 	float			m_flDistanceTime;
 	CUtlVector<Wheel_t>	m_Wheels;
 	CUtlVector<bool>	m_IsWheel;			// per bone
+	CUtlVector<Susp_t>	m_Susp;
+	CUtlVector<int>		m_SuspOf;			// per bone: the unit it rides on (itself or an ancestor), -1 = none
 	CUtlVector<bool>	m_IsBody;			// per bone: tips with the sprung body (the model's body_bone and its children)
 	CStudioHdr		*m_pWheelHdr;			// the model the wheel list was made for
 	float			m_flBodyPivot;			// model forward (x) the body tips about (the model's "body_pivot")
@@ -143,7 +156,7 @@ private:
 
 	// H1 suspension (server: m_bBodySprung): the body rides on springs over planted wheels, run here every frame
 	bool			m_bBodySprung;
-	float			m_flBodySuspAccel, m_flBodySuspRoll, m_flBodySuspFreq, m_flBodySuspDamp, m_flBodySuspTravel;
+	float			m_flBodySuspAccel, m_flBodySuspRoll, m_flBodySuspFreq, m_flBodySuspDamp;
 	int				m_nBodyKicks, m_nBodyKicksSeen;
 	float			m_flBodyKickPitch, m_flBodyKickRoll;
 	float			m_flBodyPitch, m_flBodyPitchVel;	// degrees, nose up +
@@ -163,7 +176,6 @@ IMPLEMENT_CLIENTCLASS_DT( C_DoDSPVehicle, DT_DoDSPVehicle, CDoDSPVehicle )
 	RecvPropFloat( RECVINFO( m_flBodySuspRoll ) ),
 	RecvPropFloat( RECVINFO( m_flBodySuspFreq ) ),
 	RecvPropFloat( RECVINFO( m_flBodySuspDamp ) ),
-	RecvPropFloat( RECVINFO( m_flBodySuspTravel ) ),
 	RecvPropInt( RECVINFO( m_nBodyKicks ) ),
 	RecvPropFloat( RECVINFO( m_flBodyKickPitch ) ),
 	RecvPropFloat( RECVINFO( m_flBodyKickRoll ) ),
@@ -180,7 +192,7 @@ C_DoDSPVehicle::C_DoDSPVehicle()
 	m_flBodyPivot = 0.0f;
 	m_bHasPivot = false;
 	m_bBodySprung = false;
-	m_flBodySuspAccel = m_flBodySuspRoll = m_flBodySuspDamp = m_flBodySuspTravel = 0.0f;
+	m_flBodySuspAccel = m_flBodySuspRoll = m_flBodySuspDamp = 0.0f;
 	m_flBodySuspFreq = 1.0f;
 	m_nBodyKicks = 0;
 	m_nBodyKicksSeen = -1;
@@ -203,6 +215,7 @@ void C_DoDSPVehicle::OnDataChanged( DataUpdateType_t type )
 void C_DoDSPVehicle::ClientThink( void )
 {
 	BodySprings( gpGlobals->frametime );
+	UpdateSuspension( gpGlobals->frametime );
 	KickDust( gpGlobals->frametime );
 }
 
@@ -280,7 +293,7 @@ void C_DoDSPVehicle::KickDust( float dt )
 // H1: THE body's springs (sprung bodies only; tanks keep the server's lurch). Driven by what the vehicle is visibly
 // doing - its drawn (interpolated) origin and yaw, so it can't step with the 20 Hz thinks - plus the server's kicks.
 // Pitch: nose up per 100 units/s^2 of acceleration (susp_accel); roll: outward per 100 units/s^2 sideways (speed x yaw
-// rate, susp_roll); spring susp_freq Hz with susp_damp damping. The steered tyres then follow the ground under them.
+// rate, susp_roll); spring susp_freq Hz with susp_damp damping. (The wheels follow the ground in UpdateSuspension.)
 void C_DoDSPVehicle::BodySprings( float dt )
 {
 	Vector vecOrigin = GetAbsOrigin();
@@ -331,33 +344,41 @@ void C_DoDSPVehicle::BodySprings( float dt )
 		m_flBodyRoll = clamp( m_flBodyRoll + m_flBodyRollVel * h, -8.0f, 8.0f );
 	}
 
-	// the steered tyres sit on the ground under them, within their travel (the body doesn't move for it) - and never
-	// rise into their wing: the room is the measured gap ("clear") less however far the body has come down over it
+}
+
+// T1: THE suspension. Every unit sits on the ground straight under its contact (its bone's rest spot, on the ground),
+// as a height along the vehicle's up, within its measured travel, followed at VEHICLE_SUSP_RATE. Over a sprung body the
+// room above a unit shrinks by however far the body has come down there (the halftrack's wings over its front tyres).
+#define VEHICLE_SUSP_RATE	160.0f		// units/s
+void C_DoDSPVehicle::UpdateSuspension( float dt )
+{
+	if ( !m_Susp.Count() || dt <= 0.0f )
+		return;
+	matrix3x4_t matEnt;
+	AngleMatrix( GetAbsAngles(), matEnt );
 	Vector vecUp;
 	VectorRotate( Vector( 0, 0, 1 ), matEnt, vecUp );
-	float flTravel = MAX( m_flBodySuspTravel, 0.0f );
 	matrix3x4_t matBody;
 	bool bTipped = BodyMatrix( matBody );
-	FOR_EACH_VEC( m_Wheels, k )
+	float flStep = VEHICLE_SUSP_RATE * MIN( dt, 0.1f );
+	FOR_EACH_VEC( m_Susp, k )
 	{
-		Wheel_t &wh = m_Wheels[k];
-		if ( !wh.bSteer || !wh.bRest || wh.flRadius <= 0.0f )
+		Susp_t &su = m_Susp[k];
+		if ( !su.bRest )
 			continue;
-		trace_t tr;
-		UTIL_TraceLine( wh.vecRest + vecUp * ( flTravel + 1.0f ), wh.vecRest - vecUp * ( wh.flRadius + flTravel + 2.0f ),
-						MASK_SOLID_BRUSHONLY, this, COLLISION_GROUP_NONE, &tr );
-		float flWant = ( tr.fraction < 1.0f && !tr.startsolid ) ? DotProduct( tr.endpos - wh.vecRest, vecUp ) + wh.flRadius : -flTravel;
-		float flUp = flTravel;
-		if ( wh.flClear > 0.0f )
+		float flUp = su.flUp;
+		if ( bTipped && !m_IsBody[su.iBone] )
 		{
-			Vector vecWing = wh.vecRest + vecUp * ( wh.flRadius + wh.flClear ), vecWingNow = vecWing;
-			if ( bTipped )
-				VectorTransform( vecWing, matBody, vecWingNow );
-			flUp = MIN( flUp, wh.flClear + DotProduct( vecWingNow - vecWing, vecUp ) - 0.5f );
+			Vector vecOver = su.vecRest + vecUp * su.flUp, vecOverNow;
+			VectorTransform( vecOver, matBody, vecOverNow );
+			flUp = MIN( flUp, su.flUp + DotProduct( vecOverNow - vecOver, vecUp ) );
 		}
-		flWant = clamp( flWant, -flTravel, MAX( flUp, -flTravel ) );
-		float flStep = 160.0f * dt;
-		wh.flLift += clamp( flWant - wh.flLift, -flStep, flStep );
+		trace_t tr;
+		UTIL_TraceLine( su.vecRest + vecUp * ( su.flUp + 8.0f ), su.vecRest - vecUp * ( su.flDown + 2.0f ),
+						MASK_SOLID_BRUSHONLY, this, COLLISION_GROUP_NONE, &tr );
+		float flWant = tr.startsolid ? flUp : ( tr.fraction < 1.0f ? DotProduct( tr.endpos - su.vecRest, vecUp ) : -su.flDown );	// inside a bank = as high as it goes
+		flWant = clamp( flWant, -su.flDown, MAX( flUp, -su.flDown ) );
+		su.flLift += clamp( flWant - su.flLift, -flStep, flStep );
 	}
 }
 
@@ -375,6 +396,10 @@ float C_DoDSPVehicle::GetDistance( void )
 void C_DoDSPVehicle::BuildWheelList( CStudioHdr *pStudioHdr )
 {
 	m_Wheels.RemoveAll();
+	m_Susp.RemoveAll();
+	m_SuspOf.SetCount( pStudioHdr->numbones() );
+	FOR_EACH_VEC( m_SuspOf, i )
+		m_SuspOf[i] = -1;
 	m_IsWheel.SetCount( pStudioHdr->numbones() );
 	FOR_EACH_VEC( m_IsWheel, i )
 		m_IsWheel[i] = false;
@@ -407,10 +432,6 @@ void C_DoDSPVehicle::BuildWheelList( CStudioHdr *pStudioHdr )
 			w.iBone = Studio_BoneIndexByName( pStudioHdr, data.wheels[i].szBone );
 			w.flRadius = data.wheels[i].flRadius;
 			w.bSteer = data.wheels[i].bSteer;
-			w.flClear = data.wheels[i].flClear;
-			w.flLift = 0.0f;
-			w.vecRest.Init();
-			w.bRest = false;
 			if ( w.iBone < 0 )
 			{
 				char szKey[MAX_PATH];
@@ -423,9 +444,34 @@ void C_DoDSPVehicle::BuildWheelList( CStudioHdr *pStudioHdr )
 			m_Wheels.AddToTail( w );
 			m_IsWheel[w.iBone] = true;
 		}
+		FOR_EACH_VEC( data.susp, i )
+		{
+			Susp_t su;
+			su.iBone = Studio_BoneIndexByName( pStudioHdr, data.susp[i].szBone );
+			su.flUp = data.susp[i].flUp;
+			su.flDown = data.susp[i].flDown;
+			su.flLift = 0.0f;
+			su.vecRest.Init();
+			su.bRest = false;
+			if ( su.iBone < 0 )
+			{
+				char szKey[MAX_PATH];
+				Q_snprintf( szKey, sizeof( szKey ), "%s:%s", modelinfo->GetModelName( GetModel() ), data.susp[i].szBone );
+				if ( WarnOnce( szKey ) )
+					Warning( "INVARIANT DOD-SP wheels: %s's dodsp_wheels names suspension unit %s, which the model hasn't got - recompile it from its rig\n",
+							 modelinfo->GetModelName( GetModel() ), data.susp[i].szBone );
+				continue;
+			}
+			m_Susp.AddToTail( su );
+		}
+		// each bone rides on the nearest unit at or above it (its road wheels, the top run resting on them)
+		for ( int b = 0; b < pStudioHdr->numbones(); b++ )
+			for ( int j = b; j >= 0 && m_SuspOf[b] < 0; j = pStudioHdr->pBone( j )->parent )
+				FOR_EACH_VEC( m_Susp, k )
+					if ( m_Susp[k].iBone == j ) { m_SuspOf[b] = k; break; }
 		if ( bByName )
 			FOR_EACH_VEC( m_IsBody, i )
-				m_IsBody[i] = !m_IsWheel[i];
+				m_IsBody[i] = !m_IsWheel[i] && m_SuspOf[i] < 0;
 		return;
 	}
 	for ( int i = 0; i < pStudioHdr->numbones(); i++ )
@@ -435,10 +481,6 @@ void C_DoDSPVehicle::BuildWheelList( CStudioHdr *pStudioHdr )
 			w.iBone = i;
 			w.flRadius = 0.0f;
 			w.bSteer = false;
-			w.flClear = 0.0f;
-			w.flLift = 0.0f;
-			w.vecRest.Init();
-			w.bRest = false;
 			m_Wheels.AddToTail( w );
 			m_IsWheel[i] = true;
 		}
@@ -498,7 +540,7 @@ void C_DoDSPVehicle::BuildTransformations( CStudioHdr *pStudioHdr, Vector *pos, 
 		BuildWheelList( pStudioHdr );
 		CheckTreadProxies( pStudioHdr );
 	}
-	if ( !m_Wheels.Count() )
+	if ( !m_Wheels.Count() && !m_Susp.Count() )
 		return;
 
 	float flDist = GetDistance();
@@ -515,6 +557,25 @@ void C_DoDSPVehicle::BuildTransformations( CStudioHdr *pStudioHdr, Vector *pos, 
 	matrix3x4_t matSteer;
 	MatrixBuildRotationAboutAxis( vecUp, m_flSteer, matSteer );		// + = the front of the wheel turns left
 
+	// T1: each suspension unit and everything riding on it moves up/down by the unit's lift (UpdateSuspension)
+	FOR_EACH_VEC( m_Susp, k )
+	{
+		Susp_t &su = m_Susp[k];
+		if ( !( pStudioHdr->boneFlags( su.iBone ) & boneMask ) )
+			continue;
+		MatrixGetColumn( GetBoneForWrite( su.iBone ), 3, su.vecRest );		// UpdateSuspension traces from here
+		su.bRest = true;
+	}
+	for ( int i = 0; i < pStudioHdr->numbones() && i < m_SuspOf.Count(); i++ )
+	{
+		if ( m_SuspOf[i] < 0 || !( pStudioHdr->boneFlags( i ) & boneMask ) )
+			continue;
+		matrix3x4_t &bone = GetBoneForWrite( i );
+		Vector vecPos;
+		MatrixGetColumn( bone, 3, vecPos );
+		MatrixSetColumn( vecPos + vecUp * m_Susp[m_SuspOf[i]].flLift, 3, bone );
+	}
+
 	for ( int k = 0; k < m_Wheels.Count(); k++ )
 	{
 		Wheel_t &w = m_Wheels[k];
@@ -522,10 +583,7 @@ void C_DoDSPVehicle::BuildTransformations( CStudioHdr *pStudioHdr, Vector *pos, 
 			continue;
 		matrix3x4_t &bone = GetBoneForWrite( w.iBone );
 		Vector vecCentre;
-		MatrixGetColumn( bone, 3, vecCentre );
-		w.vecRest = vecCentre;		// BodySprings traces the ground under it from here
-		w.bRest = true;
-		vecCentre += vecUp * w.flLift;
+		MatrixGetColumn( bone, 3, vecCentre );		// already moved with its suspension unit
 		float flRadius = w.flRadius;
 		if ( flRadius <= 0.0f )
 		{

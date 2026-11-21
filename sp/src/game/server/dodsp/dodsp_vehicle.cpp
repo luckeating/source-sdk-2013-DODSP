@@ -303,7 +303,6 @@ struct VehicleType_t
 	float	flSuspFreq, flSuspDamp;	// its spring: rocks at this many Hz, this much damping (0..1)
 	float	flRecoil;				// the main gun kicks the hull back this many degrees
 	float	flSuspRoll;				// H1 sprung bodies: degrees the body rolls outward per 100 units/s^2 sideways
-	float	flSuspTravel;			// H1 sprung bodies: how far a front tyre may rise / drop to follow the ground
 	DoDSPArmour_t armour;			// V4 ("armour" block; invalid = it can't be hurt, and the load says so)
 	bool	bVariant;				// has a "base" (a paint scheme): the pen chart lists the base only
 	char	szDeadModel[MAX_PATH];	// V4: the wreck
@@ -406,7 +405,6 @@ static void LoadVehicleTypes( bool bForce )
 		t->flSuspDamp = pType->GetFloat( "susp_damp", 0.35f );
 		t->flRecoil = pType->GetFloat( "recoil", 2.0f );
 		t->flSuspRoll = pType->GetFloat( "susp_roll", 1.0f );
-		t->flSuspTravel = pType->GetFloat( "susp_travel", 6.0f );
 		t->flTurretRate = pType->GetFloat( "turret_rate", 30.0f );
 		t->flPitchRate = pType->GetFloat( "pitch_rate", 15.0f );
 		KeyValues *pGun = pType->FindKey( "gun" );
@@ -1119,7 +1117,6 @@ private:
 	CNetworkVar( float, m_flBodySuspRoll );
 	CNetworkVar( float, m_flBodySuspFreq );
 	CNetworkVar( float, m_flBodySuspDamp );
-	CNetworkVar( float, m_flBodySuspTravel );
 	CNetworkVar( int, m_nBodyKicks );			// +1 per kick
 	CNetworkVar( float, m_flBodyKickPitch );	// the last kick (degrees/s, nose up +)
 	CNetworkVar( float, m_flBodyKickRoll );		// (degrees/s, right side down +)
@@ -1332,7 +1329,6 @@ IMPLEMENT_SERVERCLASS_ST( CDoDSPVehicle, DT_DoDSPVehicle )
 	SendPropFloat( SENDINFO( m_flBodySuspRoll ), 0, SPROP_NOSCALE ),
 	SendPropFloat( SENDINFO( m_flBodySuspFreq ), 0, SPROP_NOSCALE ),
 	SendPropFloat( SENDINFO( m_flBodySuspDamp ), 0, SPROP_NOSCALE ),
-	SendPropFloat( SENDINFO( m_flBodySuspTravel ), 0, SPROP_NOSCALE ),
 	SendPropInt( SENDINFO( m_nBodyKicks ), 8, SPROP_UNSIGNED ),
 	SendPropFloat( SENDINFO( m_flBodyKickPitch ), 0, SPROP_NOSCALE ),
 	SendPropFloat( SENDINFO( m_flBodyKickRoll ), 0, SPROP_NOSCALE ),
@@ -1629,7 +1625,7 @@ void CDoDSPVehicle::MeasureBody( void )
 	m_flHalfLength = 0.5f * fabs( DotProduct( vecMaxs - vecMins, vecFwd ) );
 	m_flHalfWidth = 0.5f * fabs( DotProduct( vecMaxs - vecMins, Vector( -vecFwd.y, vecFwd.x, 0.0f ) ) );
 	m_flBodyHeight = MAX( vecMaxs.z, VEHICLE_STEP + 8.0f );		// above its origin (the ground point)
-	// H1: the wheels' facts come from the model (dodsp_vehicle_wheels.h: halftrack_rig.py measured them from the mesh)
+	// H1: the wheels' facts come from the model (dodsp_vehicle_wheels.h: vehicle_rig.py measured them from the mesh)
 	DoDSPWheels_t wheels;
 	bool bWheelData = DoDSP_ReadWheels( GetModel(), wheels );
 	int nSteer = 0;
@@ -1642,17 +1638,18 @@ void CDoDSPVehicle::MeasureBody( void )
 	m_flBodySuspRoll = m_pType->flSuspRoll;
 	m_flBodySuspFreq = m_pType->flSuspFreq;
 	m_flBodySuspDamp = m_pType->flSuspDamp;
-	m_flBodySuspTravel = m_pType->flSuspTravel;
 	static CUtlDict<bool, int> s_Reported;
 	const char *pszModel = STRING( GetModelName() );
 	if ( s_Reported.Find( pszModel ) == s_Reported.InvalidIndex() )
 	{
 		s_Reported.Insert( pszModel, true );
 		if ( bWheelData )
-			Msg( "DOD-SP vehicle wheels: %s - %d wheels from the model, %d steer, wheelbase %.0f%s\n", pszModel, wheels.wheels.Count(), nSteer,
-				 wheels.flWheelbase, wheels.bBodyPivot ? ", body on springs over the wheels" : "" );
+			Msg( "DOD-SP vehicle wheels: %s - %d wheels from the model, %d steer, wheelbase %.0f, %d suspension units%s\n", pszModel,
+				 wheels.wheels.Count(), nSteer, wheels.flWheelbase, wheels.susp.Count(), wheels.bBodyPivot ? ", body on springs over the wheels" : "" );
+		if ( bWheelData && !wheels.susp.Count() && !V_stristr( pszModel, "_dead" ) )
+			Msg( "DOD-SP vehicle wheels: %s has no suspension units - its wheels can't follow the ground (recompile it from vehicle_rig.py)\n", pszModel );
 		else if ( !m_pType->bTracked && !V_stristr( pszModel, "_dead" ) )
-			Msg( "DOD-SP vehicle wheels: %s has no wheel data - its wheels can't turn or steer (recompile it from its rig, e.g. halftrack_rig.py)\n", pszModel );
+			Msg( "DOD-SP vehicle wheels: %s has no wheel data - its wheels can't turn or steer (recompile it from vehicle_rig.py)\n", pszModel );
 	}
 	if ( m_flHalfWidth > m_flHalfLength * 1.05f )
 		Warning( "INVARIANT DOD-SP vehicle %s (%s): the model is %.0f long but %.0f wide along forward_yaw %.0f - a vehicle is longer than it is wide, so forward_yaw is probably wrong (90 off)\n",

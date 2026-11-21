@@ -15,6 +15,7 @@ bool DoDSP_ReadWheels( const model_t *pModel, DoDSPWheels_t &out )
 	out.bBodyPivot = false;
 	out.szBodyBone[0] = 0;
 	out.wheels.RemoveAll();
+	out.susp.RemoveAll();
 	if ( !pModel )
 		return false;
 	const char *pszText = modelinfo->GetModelKeyValueText( pModel );
@@ -47,12 +48,9 @@ bool DoDSP_ReadWheels( const model_t *pModel, DoDSPWheels_t &out )
 					out.bBodyPivot = true;
 					continue;
 				}
-				DoDSPWheel_t w;
-				Q_strncpy( w.szBone, pKey->GetName(), sizeof( w.szBone ) );
-				w.flRadius = 0.0f;
-				w.bSteer = false;
-				w.flClear = 0.0f;
-				// "radius <r> [steer 1 clear <c>]"
+				// "word value" pairs: wheels "radius <r> [steer 1]", suspension units "up <u> down <d>"
+				float flRadius = 0.0f, flUp = -1.0f, flDown = -1.0f;
+				bool bSteer = false;
 				char szWord[32];
 				const char *p = pKey->GetString();
 				while ( p && *p )
@@ -65,18 +63,39 @@ bool DoDSP_ReadWheels( const model_t *pModel, DoDSPWheels_t &out )
 					const char *pszValue = p;
 					while ( *p && *p != ' ' && *p != '\t' ) p++;
 					if ( !Q_stricmp( szWord, "radius" ) )
-						w.flRadius = Q_atof( pszValue );
+						flRadius = Q_atof( pszValue );
 					else if ( !Q_stricmp( szWord, "steer" ) )
-						w.bSteer = Q_atoi( pszValue ) != 0;
-					else if ( !Q_stricmp( szWord, "clear" ) )
-						w.flClear = Q_atof( pszValue );
+						bSteer = Q_atoi( pszValue ) != 0;
+					else if ( !Q_stricmp( szWord, "up" ) )
+						flUp = Q_atof( pszValue );
+					else if ( !Q_stricmp( szWord, "down" ) )
+						flDown = Q_atof( pszValue );
 				}
-				if ( w.flRadius <= 0.5f )
+				if ( !Q_strnicmp( pKey->GetName(), "susp_", 5 ) )
+				{
+					if ( flUp < 0.0f || flDown < 0.0f )
+					{
+						Warning( "INVARIANT DOD-SP wheels: %s: \"%s\" \"%s\" has no up/down travel - that unit stays put\n",
+								 pszModel, pKey->GetName(), pKey->GetString() );
+						continue;
+					}
+					DoDSPSusp_t su;
+					Q_strncpy( su.szBone, pKey->GetName(), sizeof( su.szBone ) );
+					su.flUp = flUp;
+					su.flDown = flDown;
+					out.susp.AddToTail( su );
+					continue;
+				}
+				if ( flRadius <= 0.5f )
 				{
 					Warning( "INVARIANT DOD-SP wheels: %s: \"%s\" \"%s\" has no radius - that wheel keeps the height rule\n",
 							 pszModel, pKey->GetName(), pKey->GetString() );
 					continue;
 				}
+				DoDSPWheel_t w;
+				Q_strncpy( w.szBone, pKey->GetName(), sizeof( w.szBone ) );
+				w.flRadius = flRadius;
+				w.bSteer = bSteer;
 				out.wheels.AddToTail( w );
 			}
 			bool bSteers = false;

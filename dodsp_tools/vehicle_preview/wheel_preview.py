@@ -18,12 +18,17 @@ def m2g(p): return np.array([-p[1], p[0], p[2]])       # rig mesh frame -> game 
 
 def read_smd(path):
     txt = open(path).read().split('\n')
-    i = txt.index('nodes') + 1; names = {}
+    i = txt.index('nodes') + 1; names = {}; par = {}
     while txt[i] != 'end':
-        k, n, _ = re.match(r'(\d+) "([^"]+)" (-?\d+)', txt[i]).groups(); names[int(k)] = n; i += 1
-    i = txt.index('skeleton') + 2; pivot = {}
+        k, n, p = re.match(r'(\d+) "([^"]+)" (-?\d+)', txt[i]).groups(); names[int(k)] = n; par[int(k)] = int(p); i += 1
+    i = txt.index('skeleton') + 2; local = {}
     while txt[i] != 'end':
-        f = txt[i].split(); pivot[names[int(f[0])]] = m2g(np.array(list(map(float, f[1:4])))); i += 1
+        f = txt[i].split(); local[int(f[0])] = np.array(list(map(float, f[1:4]))); i += 1
+    pivot = {}
+    for k in local:                      # rest positions are local to the parent (no rotations): add up the chain
+        p, q = local[k].copy(), par[k]
+        while q >= 0: p += local[q]; q = par[q]
+        pivot[names[k]] = m2g(p)
     i = txt.index('triangles') + 1; tris = []
     while txt[i] != 'end':
         mat = txt[i]; vs = [txt[i + 1 + k].split() for k in range(3)]
@@ -35,7 +40,7 @@ def read_wheels(qc):
     out, wb = {}, 0.0
     for k, v in re.findall(r'"([^"]+)"\s*"([^"]+)"', m.group(1)):
         if k == 'wheelbase': wb = float(v); continue
-        if k in ('body_pivot', 'body_bone'): continue
+        if k in ('body_pivot', 'body_bone') or k.startswith('susp_'): continue
         f = v.split(); d = dict(zip(f[0::2], f[1::2]))
         out[k] = (float(d['radius']), d.get('steer', '0') == '1')
     return out, wb

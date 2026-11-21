@@ -624,7 +624,9 @@ def check_vehicle_body():
     bad = []
     for path, var_re, allowed in ((VEHICLE_CPP_PATH, r"\bm_flSuspVel\s*(\+|-)?=(?!=)|\bm_flSuspPitch\s*=(?!=)",
                                    ("BodyKick", "DriveThink", "HaltMotion", "CDoDSPVehicle")),
-                                  (CLIENT_VEHICLE, r"\bm_flBody(Pitch|Roll)(Vel)?\s*(\+|-)?=(?!=)", ("BodySprings", "C_DoDSPVehicle"))):
+                                  (CLIENT_VEHICLE, r"\bm_flBody(Pitch|Roll)(Vel)?\s*(\+|-)?=(?!=)", ("BodySprings", "C_DoDSPVehicle")),
+                                  # T1: a suspension unit's lift - UpdateSuspension follows the ground, BuildWheelList starts it at 0
+                                  (CLIENT_VEHICLE, r"\bflLift\s*(\+|-)?=(?!=)", ("UpdateSuspension", "BuildWheelList"))):
         func = None
         for n, line in enumerate(open(path, encoding="utf-8").read().split("\n"), 1):
             m = re.match(r"^(?:[A-Za-z][^(]*?[\s*&])?(?:CDoDSPVehicle|C_DoDSPVehicle)::(~?\w+)\s*\(", line)
@@ -632,8 +634,11 @@ def check_vehicle_body():
                 func = m.group(1)
             code = line.split("//")[0]
             if re.search(var_re, code) and func not in allowed:
-                bad.append("%s:%d (%s) writes the body's rock - kicks go through BodyKick, the springs are their only writers"
-                           % (os.path.basename(path), n, func))
+                bad.append("%s:%d (%s) writes the body's rock / a suspension unit's lift - kicks go through BodyKick, the "
+                           "springs and UpdateSuspension are their only writers" % (os.path.basename(path), n, func))
+    # T1: how far a wheel travels is the MODEL's (vehicle_rig.py measures it) - never a vehicle-type key
+    if re.search(r'"susp_travel"', open(VEHICLE_SCRIPT, encoding="utf-8").read()):
+        bad.append("dodsp_vehicles.txt has a susp_travel key - suspension travel is measured into the model (vehicle_rig.py)")
     return bad
 
 def main():
@@ -650,7 +655,7 @@ def main():
                      ("a rider seat or ride path is broken (V3)", check_vehicle_seats),
                      ("an NPC is moved by code outside CDoDSPNpcMotion (V3e: position and pose drawn equally late)", check_npc_motion),
                      ("the measured track table or its reader is broken (H1)", check_vehicle_treads),
-                     ("the vehicle body's rock is written outside its owners (H1)", check_vehicle_body)):
+                     ("the vehicle body's rock or suspension is written outside its owners (H1, T1)", check_vehicle_body)):
         vbad = fn()
         if vbad:
             print("dodsp_lint_client: %s:" % what)
