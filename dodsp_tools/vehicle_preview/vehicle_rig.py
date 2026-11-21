@@ -57,18 +57,55 @@ SUSP_FROM = {'tiger_brush_hull': 'tiger_hull'}
 MEASURED = {}                 # variant -> its suspension facts, for SUSP_FROM
 # OPEN TOPS (owner 2026-11-20): every port's collision is ONE convex shell, so over an open cab / troop bay it closes a
 # lid at the top - bullets stopped in the air over the crew and riders. For these the collision is built instead from
-# convex pieces with the top left open (game frame, units; measured on the halftrack mesh 2026-11-21: bay floor z 30,
-# walls up to z 77 with their inner face beyond |y| 30, the bay from the rear doors (x -105) to the cab's armoured
-# front plate and visor (x 20 - ahead of the driver's hands, x 8-17); the engine and front armour ahead of it):
-#   floor  = the compiled shell cut at z <= floor + 2 (the running gear and everything below the floor)
-#   front  = the hull of every mesh corner ahead of x1 (engine, front armour, front tyres)
-#   rear   = the hull of every mesh corner behind x0 above the floor (rear plate and doors)
-#   walls  = the hull of every mesh corner between x0 and x1 above the floor and further out than wall_y, per side
-# Checked: every seat in the bay (and the driver's) stays OUT of every piece up to head height, and the pieces' bounds
-# are the shell's within 1 unit.
-OPEN_TOP = {'halftrack': dict(x0=-105.0, x1=20.0, floor=30.0, wall_y=30.0,
-                              keep_open=[(11.3, 15.2, 29.1), (-26.0, 17.9, 41.8), (-32.2, -17.9, 41.8), (-88.7, 17.9, 41.8),
-                                         (-59.2, -17.8, 41.8), (-86.8, -17.4, 41.8), (-53.1, 17.9, 41.8)])}
+# OPEN-TOPPED VEHICLES: the collision is convex pieces that leave the top open (studiomdl $concave), not the port's one
+# shell, which closes over the crew compartment like a lid (bullets stop on air over the crew and riders). Each piece is
+# a named box of the vehicle's mesh corners (game frame, units; None = no bound; bounds inclusive), except "floor" =
+# the compiled shell cut at z <= floor + 2 (the running gear and everything below the floor). Corners above "ztop" are
+# no piece's (an antenna must not wrap a piece up to its tip). The places that must stay open are read from the
+# vehicle SCRIPT (one owner: dodsp_vehicles.txt - every rider seat, crew seat and hatch), checked from 8 to 32 units up.
+# The pieces' footprint and floor must be the shell's within 1 unit; their top may be lower (that's the open top).
+#   halftrack (measured 2026-11-21): bay floor z 30, walls up to z 77 with their inner face beyond |y| 30, the bay from
+#     the rear doors (x -105) to the cab's armoured front plate and visor (x 20 - ahead of the driver's hands, x 8-17).
+#   carrier (measured 2026-11-21, REQUIRED FIX): compartment floor z 15; the hull's inner walls at |y| 27-29 up to z 37 and
+#     the tracks outside them (sponsons, z <= 38.5); thin side screens and posts at |y| >= 39 up to z 62 (the riders sit
+#     over the tracks inside them, at |y| 34); the engine housing down the middle (|y| <= 10, x -45..14, top z 52); the
+#     bulkhead between it and the front compartment (x 14-23, up to z 55-62); the front plates from x 44; the rear deck,
+#     rear plate and stowage behind x -45. The antenna (rear, to z 104) and a post at the front right (to z 80) stay out
+#     (ztop 66).
+def _box(x=None, y=None, z=None): return dict(x=x, y=y, z=z)
+OPEN_TOP = {
+    'halftrack': dict(floor=30.0, ztop=None, pieces=[
+        ('front',      _box(x=(20.0, None))),
+        ('rear',       _box(x=(None, -105.0), z=(28.0, None))),
+        ('left wall',  _box(x=(-105.0, 20.0), y=(30.0, None), z=(28.0, None))),
+        ('right wall', _box(x=(-105.0, 20.0), y=(None, -30.0), z=(28.0, None)))]),
+    'carrier': dict(floor=15.0, ztop=66.0, pieces=[
+        ('front',          _box(x=(44.0, None), z=(13.0, None))),
+        ('rear',           _box(x=(None, -45.0), z=(13.0, None))),
+        ('bulkhead',       _box(x=(14.0, 23.0), y=(-27.0, 27.0), z=(13.0, None))),
+        ('engine',         _box(x=(-45.0, 14.0), y=(-10.0, 10.0), z=(13.0, None))),
+        ('left track',     _box(y=(26.5, None), z=(13.0, 38.5))),
+        ('right track',    _box(y=(None, -26.5), z=(13.0, 38.5))),
+        ('left screen',    _box(x=(-45.0, 44.0), y=(39.0, None), z=(38.5, None))),
+        ('right screen',   _box(x=(-45.0, 44.0), y=(None, -39.0), z=(38.5, None)))]),
+}
+VEHICLE_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'content', 'scripts', 'dodsp_vehicles.txt')
+
+def keep_open_points(variants):
+    """every rider seat, crew seat and hatch of the script type that uses one of these models (the script is their owner)"""
+    from editor_models import types_from_script
+    types = types_from_script(VEHICLE_SCRIPT)
+    hits = [t for t in types.values() if os.path.splitext(os.path.basename(t.get('model', '')))[0] in variants]
+    if not hits: raise SystemExit('open top: no vehicle type in %s uses %s' % (VEHICLE_SCRIPT, variants))
+    pts = []
+    for t in hits:
+        for _, seat in t.get('seats', []):
+            pts.append(('seat', [float(v) for v in dict(seat)['origin'].split()]))
+        for role, cs in t.get('crew_seats', []):
+            pts.append(('%s seat' % role, [float(v) for v in dict(cs)['origin'].split()]))
+        for role, h in t.get('hatches', []):
+            pts.append(('%s hatch' % role, [float(v) for v in h.split()[1:4]]))
+    return pts
 
 # rig name: (CoD2 model, steers, has doors, [port variants])
 VEHICLES = {
@@ -309,7 +346,7 @@ def write_variant(rig, var, ports, out, cod, steers, doors):
     # open-topped vehicle pieces that leave the top open (OPEN_TOP)
     from scipy.spatial import cKDTree
     if rig in OPEN_TOP:
-        pc = open_top_pieces(rows, phy, OPEN_TOP[rig], var)
+        pc = open_top_pieces(rows, phy, OPEN_TOP[rig], var, keep_open_points(VEHICLES[rig][3]))
         pieces = write_pieces(pc, os.path.join(out, var + '_physics.smd'))
         Q = np.concatenate(phy_pieces(phy)); W = np.concatenate(pc)
         n = connected_pieces(os.path.join(out, var + '_physics.smd'))
@@ -376,37 +413,42 @@ def connected_pieces(smd):
         for k in ks[1:]: par[find(k)] = find(ks[0])
     return len({find(k) for k in par})
 
-def open_top_pieces(rows, phy, c, var):
-    """the convex pieces of an open-topped vehicle's collision (OPEN_TOP), game frame; stops if a seat ends up inside"""
+def open_top_pieces(rows, phy, c, var, keep):
+    """the convex pieces of an open-topped vehicle's collision (OPEN_TOP), game frame; stops if a place that must stay
+    open (keep: the script's seats and hatches) ends up inside one"""
     from scipy.spatial import ConvexHull, HalfspaceIntersection, Delaunay
     V = np.array([mesh_to_game(p) for mat, vs in rows for p, n, uv, w in vs])
+    if c['ztop'] is not None: V = V[V[:, 2] <= c['ztop']]
     shell = np.concatenate(phy_pieces(phy)); h = ConvexHull(shell)
     # floor: the shell cut by z <= floor + 2 (a point inside both: low in the middle of the shell)
     hs = np.vstack([h.equations, [0, 0, 1, -(c['floor'] + 2.0)]])
     inside = np.array([shell[:, 0].mean(), shell[:, 1].mean(), (shell[:, 2].min() + c['floor']) / 2])
-    floor = HalfspaceIntersection(hs, inside).intersections
-    up = V[:, 2] >= c['floor'] - 2.0
-    mid = (V[:, 0] > c['x0']) & (V[:, 0] < c['x1'])
-    pieces = [floor, V[V[:, 0] >= c['x1']], V[(V[:, 0] <= c['x0']) & up],
-              V[mid & up & (V[:, 1] >= c['wall_y'])], V[mid & up & (V[:, 1] <= -c['wall_y'])]]
-    names = ['floor', 'front', 'rear', 'left wall', 'right wall']
+    names, pieces = ['floor'], [HalfspaceIntersection(hs, inside).intersections]
+    for nm, box in c['pieces']:
+        m = np.ones(len(V), bool)
+        for ax, k in enumerate('xyz'):
+            if box[k] is None: continue
+            lo, hi = box[k]
+            if lo is not None: m &= V[:, ax] >= lo
+            if hi is not None: m &= V[:, ax] <= hi
+        names.append(nm); pieces.append(V[m])
     for nm, P in zip(names, pieces):
         if len(P) < 4: raise SystemExit('%s: open-top piece "%s" has %d corners' % (var, nm, len(P)))
-    # every seat stays open from the seat up to head height (a man sitting there can be shot from above)
-    for s in c['keep_open']:
+    # every seat and hatch stays open from 8 to 32 units up (a man sitting there can be shot from above)
+    for what, s in keep:
         for dz in (8.0, 20.0, 32.0):
             q = np.array(s) + [0, 0, dz]
             for nm, P in zip(names, pieces):
                 if Delaunay(P).find_simplex(q) >= 0:
-                    raise SystemExit('%s: the seat at %s is inside the "%s" piece %.0f units up' % (var, s, nm, dz))
-    print('    open top: %s' % ', '.join('%s %d corners' % (nm, len(ConvexHull(P).vertices)) for nm, P in zip(names, pieces)))
+                    raise SystemExit('%s: the %s at %s is inside the "%s" piece %.0f units up' % (var, what, s, nm, dz))
+    print('    open top: %s; %d seats/hatches open' % (', '.join('%s %d corners' % (nm, len(ConvexHull(P).vertices)) for nm, P in zip(names, pieces)), len(keep)))
     # studiomdl ($concave) splits the collision into convex pieces by CONNECTED triangles - pieces that share a corner
     # position would be welded into one and wrapped in one hull (the lid again). Each piece is drawn in by 0.05 units
     # toward its middle, so no two share a corner; write_variant checks the written file splits into len(pieces).
     out = []
     for P in pieces:
-        H = P[ConvexHull(P).vertices]; c = H.mean(0)
-        out.append(c + (H - c) * (1.0 - 0.05 / max(np.linalg.norm(H - c, axis=1).max(), 1.0)))
+        H = P[ConvexHull(P).vertices]; m = H.mean(0)
+        out.append(m + (H - m) * (1.0 - 0.05 / max(np.linalg.norm(H - m, axis=1).max(), 1.0)))
     return out
 
 def fmt(v): return ('%.3f' % float(v)).rstrip('0').rstrip('.')

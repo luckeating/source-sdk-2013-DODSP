@@ -1326,6 +1326,16 @@ If you learn something like this, add it here in the same commit as the fix.
   open crew compartment, so the crew and its 2 side-wall riders can't be shot. Same fix as the halftrack: an OPEN_TOP
   entry in vehicle_rig.py (measure floor, walls, front/rear from the mesh; keep every seat open; check the pieces stay
   separate), owner recompiles the two carrier QCs. Model only - no code build.
+  PREPARED 2026-11-21 (dodsp_carrier_open_top.zip, both variants; meshes/skeletons byte-identical to T1b, only the
+  collision + `$concave`): 9 pieces - floor (shell cut at z 17), tracks |y| >= 26.5 up to z 38.5 (the hull's inner walls
+  at |y| 27-29 + the tracks), engine housing (|y| <= 10, x -45..14, to z 55), bulkhead (x 14-23, to z 63), side screens
+  (|y| >= 39 above the tracks, to z 62), front (x >= 44: plates and nose), rear (x <= -45: deck, plate, stowage). The
+  antenna (rear, to z 104 - why the old shell was a lid that high) and a front-right post (to z 80) are left out (ztop
+  66). 7% of mesh corners lie in no piece, all interior fittings (dashboard/levers, stowage inside the walls).
+  OPEN_TOP is now general (named boxes per vehicle, vehicle_rig.py) and the places that must stay open come from the
+  SCRIPT (every rider seat, crew seat and hatch of the type using the model - one owner; the halftrack's hand-copied
+  list is gone). The halftrack's output is byte-identical to H3's with the new code. Seats/hatches checked open 8..32
+  units up: carrier 2 riders + 3 hatches. Picture: carrier_open_top.png (collision top, before/after).
 
 ## The owner's goal for the mod (2026-11-21)
 - Beyond the campaign: classic Battlefield / Battlefront II style - NPC armies fighting over CAPTURE OBJECTIVES, vehicles
