@@ -703,6 +703,21 @@ def check_vehicle_push():
     return bad
 
 
+def check_vehicle_eyes():
+    """H3b: INVARIANT - every vehicle sees, armed or not (its crew's eyes: UpdateQuarry, the riders' "contact"). The
+    unarmed halftrack's WeaponThink returned before the target scan, so it never noticed anyone and its riders never
+    got off on contact. WeaponThink must scan (FindTarget) before any return that skips the guns."""
+    src = open(VEHICLE_CPP, encoding="latin-1").read()
+    m = re.search(r"void CDoDSPVehicle::WeaponThink\([^)]*\)\s*\{(.*?)\n\}", src, re.S)
+    if not m:
+        return ["dodsp_vehicle.cpp: CDoDSPVehicle::WeaponThink not found"]
+    body = "\n".join(l.split("//")[0] for l in m.group(1).split("\n"))
+    scan, ret = body.find("FindTarget()"), body.find("return;")
+    if scan < 0 or (0 <= ret < scan):
+        return ["dodsp_vehicle.cpp: WeaponThink can return before its target scan - an unarmed vehicle would be blind"]
+    return []
+
+
 def check_vehicle_body():
     """H1: the body's rock has one owner per kind of vehicle - tanks: the server spring (m_flSuspPitch/Vel, written only
     by the spring in DriveThink, BodyKick and HaltMotion; every blow / recoil goes through BodyKick, which networks it
@@ -749,7 +764,8 @@ def main():
                      ("an NPC is moved by code outside CDoDSPNpcMotion (V3e: position and pose drawn equally late)", check_npc_motion),
                      ("the measured track table or its reader is broken (H1)", check_vehicle_treads),
                      ("the vehicle body's rock or suspension is written outside its owners (H1, T1)", check_vehicle_body),
-                     ("a vehicle's physics shadow can take its moves back (H3b)", check_vehicle_push)):
+                     ("a vehicle's physics shadow can take its moves back (H3b)", check_vehicle_push),
+                     ("a vehicle can be blind (H3b)", check_vehicle_eyes)):
         vbad = fn()
         if vbad:
             print("dodsp_lint_client: %s:" % what)

@@ -1250,6 +1250,20 @@ If you learn something like this, add it here in the same commit as the fix.
   exists, doesn't hand a PUSH vehicle to the engine's check, DriveThink runs the watchdog; tested by putting the call
   back). Known: a heavy loose prop can no longer stop a vehicle (it's shoved by the shadow). Files: dodsp_vehicle.cpp,
   dodsp_lint_client.py. Undo: the H3 server.dll (build 44890308250).
+  SAME TEST: riders on "contact" never got off. The halftrack has no gun yet (its MG42 = V2b), and WeaponThink returned
+  BEFORE the target scan for an unarmed vehicle - so it never saw anyone (m_hTarget = UpdateQuarry's "own eyes") and
+  contact depended on some soldier of its side reporting an enemy. H3b: a vehicle's eyes don't depend on its guns -
+  an unarmed one scans like an armed one out to VEHICLE_SIGHT_RANGE (3000) and returns after the scan (no 3x distance
+  for vehicles it can't hurt: it hurts nothing). Lint check_vehicle_eyes: WeaponThink never returns before FindTarget
+  (tested by an early return).
+  CRASH READER (2026-11-21, owner's dodsp_crash.txt: server.dll+0x585431 at 03:17 on the H3 build): the crash log has
+  addresses only and the game PDBs never left CI, so a server/client crash couldn't be named. Now every game build
+  publishes dodsp_game_symbols_win32_Release (client/server dll + pdb), and .github/workflows/dodsp_crash.yml (Claude
+  dispatches it via the REST API: POST .../actions/workflows/dodsp_crash.yml/dispatches, inputs run_id + addresses)
+  names the addresses with cdb (devtools/dodsp_symbolize.py) - from that run's symbols, or for an older build by
+  rebuilding its commit and first checking each .text section is byte-identical to the owner's dlls.
+  Also seen in every session's log: client.dll+0x16xxxx reading 0x68056c08, then executing a no-module address - once per
+  game run (shutdown?), not reported by the owner; named by the same reader.
   **H1 BUILD 2026-11-20: 44846448265** (owner asleep, said "go ahead and build this whole thing" + anything that improves
   the experience): wheels, steering, sprung body, measured track scroll, dust. Not yet tested in game.
   **H2 PREPARED 2026-11-20 (not built - the driver's animations wait for the owner's look at the preview).**

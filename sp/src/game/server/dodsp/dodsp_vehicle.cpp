@@ -2661,6 +2661,7 @@ void CDoDSPVehicle::DriveThink( void )
 // It never fires when a friend is in the line of fire or near the impact (the shell kills everyone there).
 //-----------------------------------------------------------------------------
 #define VEHICLE_SCAN_INTERVAL	0.3f
+#define VEHICLE_SIGHT_RANGE		3000.0f		// H3b: an unarmed vehicle's crew notices enemies this far (armed: its longest gun)
 #define VEHICLE_GUN_CONE		1.5f		// degrees: the barrel must be this close to the target to fire the main gun
 #define VEHICLE_COAX_CONE		5.0f
 
@@ -3104,6 +3105,8 @@ bool CDoDSPVehicle::TargetValid( CBaseEntity *pTarget, float flRange, bool bNeed
 CBaseEntity *CDoDSPVehicle::FindTarget( void )
 {
 	float flRange = MAX( m_pType->gun.bHas ? m_pType->gun.flRange : 0.0f, m_pType->flMGRange );
+	if ( !m_pType->gun.bHas && !m_pType->nMGs )
+		flRange = VEHICLE_SIGHT_RANGE;		// H3b: unarmed - how far its crew notices an enemy
 	if ( m_hForcedTarget.Get() )
 		return TargetValid( m_hForcedTarget.Get(), flRange, false ) ? m_hForcedTarget.Get() : NULL;
 	// keep the one it has while it's still good
@@ -3131,8 +3134,8 @@ CBaseEntity *CDoDSPVehicle::FindTarget( void )
 		// V4: a vehicle whose armour facing it its gun can't get through counts as 3x as far (it still shoots it
 		// when nothing else is there - a hit on the tracks or a lucky angle)
 		CDoDSPVehicle *pV = dynamic_cast<CDoDSPVehicle *>( p );
-		if ( pV && !CanHurt( pV ) )
-			flDist *= 3.0f;
+		if ( pV && ( m_pType->gun.bHas || m_pType->nMGs ) && !CanHurt( pV ) )
+			flDist *= 3.0f;		// (an unarmed one hurts nothing - it just notices the nearest)
 		if ( flDist < flBest && CanSee( p ) )
 		{
 			flBest = flDist;
@@ -3387,9 +3390,12 @@ void CDoDSPVehicle::FireHullMGs( CBaseEntity *pTarget, const Vector &vecAimPoint
 
 void CDoDSPVehicle::WeaponThink( float dt )
 {
-	if ( !m_pType->gun.bHas && !m_pType->nMGs )
-		return;
-	if ( m_hTurret.Get() && !m_bTurretCalibrated )
+	// H3b: a vehicle's EYES don't depend on its guns - its crew sees. The halftrack has no gun yet (its MG42 is V2b),
+	// so this returned before the scan: m_hTarget never set, "its own eyes" in UpdateQuarry blind, and riders on
+	// "contact" got off only if some soldier of its side happened to report an enemy (owner's H3 test: they never
+	// did). An unarmed vehicle scans like an armed one, out to VEHICLE_SIGHT_RANGE (FindTarget), then stops here.
+	bool bArmed = m_pType->gun.bHas || m_pType->nMGs;
+	if ( bArmed && m_hTurret.Get() && !m_bTurretCalibrated )
 		CalibrateTurret();
 	float now = gpGlobals->curtime;
 
@@ -3408,6 +3414,8 @@ void CDoDSPVehicle::WeaponThink( float dt )
 					 ( m_hTarget->WorldSpaceCenter() - AimPivot() ).Length() );
 		}
 	}
+	if ( !bArmed )
+		return;		// seen (UpdateQuarry's own eyes, the riders' contact) - nothing to aim or fire
 	CBaseEntity *pTarget = m_hTarget.Get();
 
 	// turn the turret and raise the barrel toward it (in the hull's frame), else back to the front
