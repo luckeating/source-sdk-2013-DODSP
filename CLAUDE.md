@@ -1171,6 +1171,10 @@ If you learn something like this, add it here in the same commit as the fix.
   SITTING for every seat we place ourselves: pelvis above the surface under it = the driver's 7.6 (+-3; his fit is
   confirmed in game) and soles on the floor (+-4) - prints FAIL. LESSON: a borrowed animation's root is not its seat -
   place a seated man by where his PELVIS lands, and measure it before the owner sees it.
+  CONFIRMED 2026-11-21 (build 44886303731 + the commander origin edited into the owner's script + ride pack h2b2): the
+  commander sits on his seat; the driver killed slumps in his seat while the commander stays seated - "good to go".
+  KNOWN-GOOD for H2b. The console's one `dodsp_vehicle_halftrack... thinking for 119.88 ms!!!` at map load = the node-link
+  grading (graded in 0.12 s), once per map.
   **H3 PREVIEW 2026-11-21 (the troop complement - not built).** Owner: riders in the bay, "when they get out they quickly run
   to any of the sides of the vehicle so the other guys can get out quickly, normal movement can take over from there,
   similar to combine soldiers getting out of dropships"; and CoD2's run-death. dodsp_tools/vehicle_preview/troop_preview.py
