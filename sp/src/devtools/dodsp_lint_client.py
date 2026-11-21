@@ -438,6 +438,7 @@ DAMAGE_WRITERS = {
 
 
 RIDE_PATHS = os.path.join(ROOT, "..", "..", "dodsp_tools", "content", "scripts", "dodsp_ride_paths.txt")
+RIDE_SEQUENCES = os.path.join(ROOT, "..", "..", "dodsp_tools", "generated", "ride_pack_sequences.txt")
 SOLDIER_CPP = os.path.join(ROOT, "game", "server", "dodsp", "npc_german_soldier.cpp")
 RIDER_LAND_GAP = 30
 
@@ -506,6 +507,17 @@ def check_vehicle_seats():
                 bad.append("%s seat %d: origin '%s' is not x y z" % (name, k + 1, d.get("origin")))
             if "getout" in d and d["getout"] not in paths:
                 bad.append("%s seat %d: get-out %s has no path in dodsp_ride_paths.txt" % (name, k + 1, d["getout"]))
+    # H2b: every sequence a seat or crew seat names is in the ride pack the owner compiles (a name the pack hasn't
+    # got = an INVARIANT at the first seat and a man who ragdolls / stands in a T-pose instead)
+    with open(RIDE_SEQUENCES, encoding="utf-8") as f:
+        packseq = set(l.strip() for l in f if l.strip() and not l.startswith("//"))
+    for name, t in types.items():
+        for block in ("seats", "crew_seats"):
+            for key, blk in (kv_get(t, block) if isinstance(kv_get(t, block), list) else []):
+                d = dict(blk) if isinstance(blk, list) else {}
+                for k in ("idle", "getout", "death", "fidget"):
+                    if d.get(k) and d[k] not in packseq:
+                        bad.append("%s %s '%s': %s '%s' is not in the ride pack (generated/ride_pack_sequences.txt)" % (name, block, key, k, d[k]))
     func = ""
     with open(SOLDIER_CPP, encoding="latin-1") as f:
         for n, line in enumerate(f, 1):

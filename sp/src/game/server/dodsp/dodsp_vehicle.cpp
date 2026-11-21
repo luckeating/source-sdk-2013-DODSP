@@ -59,7 +59,7 @@
 // this; the lint checks the repo copy against it, the loader checks the owner's copy (V4e's first run: the old script
 // had no hatches, every crewman got out beside the tank and nothing at bail time said why). Bump both together
 // whenever the code starts needing a new key in the script.
-#define DODSP_VEHICLE_SCRIPT_VERSION	"H2"
+#define DODSP_VEHICLE_SCRIPT_VERSION	"H2b"
 static char s_szVehicleScriptVersion[32] = "not loaded";
 
 // V4h: how a shell's strike on the armour went - what HitFeedback shows and plays (name table guarded below)
@@ -233,8 +233,8 @@ COMPILE_TIME_ASSERT( ARRAYSIZE( s_pszBail ) == NUM_VBAILS );
 extern bool GermanSoldier_BailOut( CBaseEntity *pEnt, const Vector &vecHatch, const Vector &vecGround, const Vector &vecRun, float flYaw );
 // V3 riders (npc_german_soldier.cpp owns how a man rides and gets off; the vehicle owns when)
 extern bool GermanSoldier_BeginRide( CBaseEntity *pEnt, CBaseEntity *pVehicle, const Vector &vecSeat, float flYaw, const char *pszIdle, const char *pszGetout, const char *pszFidget );
-extern int GermanSoldier_RideGetOut( CBaseEntity *pEnt, bool bForce );
-extern void GermanSoldier_SetSeatDeath( CBaseEntity *pEnt, const char *pszDeath );	// H2b: he dies in that seat with it	// 1 going, 0 can't, -1 his landing spot is taken
+extern int GermanSoldier_RideGetOut( CBaseEntity *pEnt, bool bForce );	// 1 going, 0 can't, -1 his landing spot is taken
+extern void GermanSoldier_SetSeatDeath( CBaseEntity *pEnt, const char *pszDeath );	// H2b: he dies in that seat with it
 extern void GermanSoldier_RideAbort( CBaseEntity *pEnt );
 extern int GermanSoldier_RideState( CBaseEntity *pEnt );		// 0 off, 1 seated, 2 getting off
 #define VEHICLE_MAX_SEATS		8

@@ -244,3 +244,6 @@ H3 (2026-11-21): seated deaths, ANCHORED (xanim_to_smd.py --anchor / --start-at 
 appended to the officer QC as cod2_vi_halftrack_bay_death1/2 and cod2_vi_halftrack_commander_death; the pack rebuilt with
 the --want list + those three (every existing SMD within 1e-4 except driver_death, re-anchored; ride paths unchanged).
 Checked with vehicle_preview/seat_death_preview.py (jump <= 3 units at every seat).
+
+After delivering a ride pack: regenerate dodsp_tools/generated/ride_pack_sequences.txt from its .qc (every $sequence name;
+the lint checks the vehicle script's seats against it). H2b's delivered pack: dodsp_npc_ww2_anims_ride_h2b2.zip.
