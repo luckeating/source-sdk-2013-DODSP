@@ -44,6 +44,8 @@ $Project "Client (HL2)"
 		$File	"dodsp\c_dodsp_lamps.cpp"
 		$File	"dodsp\c_npc_german_soldier.cpp"
 		$File	"dodsp\c_dodsp_vehicle.cpp"
+		$File	"$SRCDIR\game\shared\dodsp\dodsp_vehicle_wheels.cpp"
+		$File	"$SRCDIR\game\shared\dodsp\dodsp_vehicle_wheels.h"
 	}
 
 	$Folder	"Source Files"

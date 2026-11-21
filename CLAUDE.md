@@ -902,7 +902,7 @@ If you learn something like this, add it here in the same commit as the fix.
   weight" only held for one extra weight and failed on the Tiger; checked on all 2654 xmodelsurfs of the owner's
   cod2models.zip, every one parses to the last byte; reader dodsp_tools/vehicle_preview/cod2_xmodel.py) and his
   Crowbar decompile of the port. The doors are CoD surfaces on hatch_open_left/right (140 triangles each, + 4 marking
-  triangles on the left leaf); the hinges turn about the vertical. halftrack_doors.py puts the port's matching
+  triangles on the left leaf); the hinges turn about the vertical. halftrack_rig.py (was halftrack_doors.py) puts the port's matching
   triangles (by triangle middle; the leaves' seam faces share a plane, settled by which way they face) on bones
   door_left / door_right and writes per variant body SMD + closed/open frames blended by the pose parameter "doors"
   (0..1 = 0..100 degrees) + the port's own QC settings and collision. Crowbar names every decompile's mesh body.smd
@@ -956,7 +956,7 @@ If you learn something like this, add it here in the same commit as the fix.
   - More MGs: the Tiger's coax (find its real spot), the Sherman bow .30 (ball mount, front right) and roof .50, the
     halftrack front MG42 (tag_turret) and the carrier's Bren (V2b, with visible gunners), the Buffalo 30-cal (tag_ai_30cal).
   - Hatch lids that open: panzer2 / tiger (hatch_open, 1 lid), sherman / crusader (2 lids), the armoured car's grenade
-    screens (2) - rigged like the halftrack doors (halftrack_doors.py generalised: the port's triangles onto the lid bones,
+    screens (2) - rigged like the halftrack doors (halftrack_rig.py generalised: the port's triangles onto the lid bones,
     a pose parameter); the bail-out crew opens the hatch before climbing out. CoD2 also has crusader_tankride_tank_closehatch
     / crusader_tankride_guy0_closehatch and armoredcar_hatch_open_pose (xanim - needs a reader, or a procedural hinge).
   - Gun recoil: barrel_recoil carries mesh on every tank gun (panzer2 126 tris, tiger 330, sherman 34, crusader 58,
@@ -978,6 +978,38 @@ If you learn something like this, add it here in the same commit as the fix.
   - Player positions: tag_playerride / tag_player (the player riding a tank / at a gun) - if the owner wants them.
   - Artillery crews (flak88_antitank/antiair aimer/loader/ejecter/leader animations) and the flakvierling, jeeps,
     Higgins boat, planes: in the pack, not looked at yet.
+- **HALFTRACK, a whole vehicle (owner 2026-11-20: "lets actually just build out a whole vehicle starting with the halftrack").**
+  Stages: H1 wheels + tracks, H2 driver (seated, steering, he IS the crew driver), then riders inside through the rear
+  doors (CoD2 tag_guy01..06 + the halftrack get-outs), the front MG42 + gunner (V2b), damage as V4. Every animation
+  previewed against the mesh first.
+  **H1 BUILT 2026-11-20 (not yet in game).** The port was ONE bone (wheels part of the hull: they never turned - not a
+  regression). CoD2's halftrack_mg1 has every wheel on its own bone with its own mesh, and all 5928 port triangles match
+  a CoD triangle (MATCH 0.05). dodsp_tools/vehicle_preview/halftrack_rig.py (was halftrack_doors.py - one rig tool for
+  every moving part) puts doors + 18 wheels on bones: wheel_<side>_01 front tyre (r 17.5, steers), _02 drive sprocket,
+  _03.._08 road wheels, _09 idler (r 12.6); CoD's tag_wheel_back/middle/upper_* are TRACK strips (stay on the root).
+  ONE owner of wheel facts = the MODEL: the rig measures each radius and the wheelbase (122.1: front axle to the middle
+  of the ground-touching road wheels) from the mesh and writes $keyvalues "dodsp_wheels" into the QC; shared reader
+  game/shared/dodsp/dodsp_vehicle_wheels.cpp (client + server vpc). Client: each wheel turns by distance / its own
+  radius, steered ones first about up by m_flSteer (+ = left); models without the block keep V1's height rule (tanks).
+  Server: THE steering angle (DriveThink, after the heading): bicycle model steer = atan(wheelbase x yaw rate / speed),
+  full lock = atan(wheelbase / min_turn_radius) = 22.1 deg, held while standing, straightened with no goal, wound at
+  VEHICLE_STEER_RATE 90 deg/s; networked m_flSteer, saved. Clearance measured on the mesh: the front tyres clear the
+  wings to 22-24 deg (dodsp_tools/vehicle_preview/wheel_preview.py renders the client's maths from the rig output and
+  checks it). Load line `DOD-SP vehicle wheels: <model> - N wheels from the model, M steer, wheelbase W` or "has no wheel
+  data ... recompile it" (once per model); INVARIANT for a dodsp_wheels bone the model hasn't got.
+  TRACKS: owner 2026-11-20 - the halftrack tread .vmt had NO proxy; on the Tiger and Sherman the CoD2 conversion's
+  "COD2TreadScroll" sat on the WHEEL MARKINGS (Sherman mtl_masked_wheels) and ran backwards - the "kinda" moving tracks.
+  Whole-class fix: which material is a track, its axis and rate are MEASURED from the meshes (tread_scroll.py: a track
+  is a loop - bottom and top runs change the texture coordinate steadily along the vehicle with opposite signs) into
+  dodsp_tools/content/scripts/dodsp_treads.txt (ships in the game artifact's scripts\); the proxy ignores the .vmt's
+  numbers, a proxy on a non-track material stays still (INVARIANT names it), a measured track whose .vmt has no proxy is
+  named at load with the line to add: "Proxies" { "DoDSPTrackScroll" { } }. The bump map scrolls with the colour.
+  Sign: offset = g x distance, g = d(coord)/d(forward) on the bottom run (a ground mark under hull point f is under f - d
+  after driving d). LESSON: I first wrote -g; re-derived it on numbers before shipping - check a sign on a worked example,
+  not on algebra alone. Lint check_vehicle_treads (table generated + well formed; the client reads that file and never a
+  .vmt's scale/axis - tested by putting a .vmt read back). Owner side: compile dodsp_halftrack_h1_rig.zip with Crowbar
+  (replaces models/cod2/vehicles/halftrack*.mdl in place) and add the Proxies line to the tread .vmts the console names.
+  Undo: the previous client.dll + server.dll, the door-rig halftrack model.
 - CoD1 set (owner's vehicles_part2.zip, 2026-11-19): REFERENCE ONLY except the **SU-152, which we keep**. One model per
   vehicle, turret/gun as BONES (tag_turret, tag_barrel, tag_flash = muzzle, tag_coaxel), faces +X (forward_yaw 0),
   CoD's rider tags tag_guy01..06 (Sherman, Elefant, SU-152: 6; Opel truck driver/passenger + 4), NO .phy (needs a

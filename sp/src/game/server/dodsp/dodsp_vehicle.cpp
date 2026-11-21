@@ -46,6 +46,7 @@
 #include "smoke_trail.h"
 #include "itempents.h"
 #include "props_shared.h"
+#include "dodsp/dodsp_vehicle_wheels.h"
 #include "tier1/fmtstr.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
@@ -67,6 +68,7 @@ COMPILE_TIME_ASSERT( ARRAYSIZE( s_pszHitSound ) == NUM_VHITFX );
 #define VEHICLE_HITFX_MIN_CALIBRE	15.0f		// mm: shells show their strike, bullets keep the engine's impacts
 #define VEHICLE_HIT_SOUNDLEVEL		SNDLVL_120dB
 #define VEHICLE_THINK			0.05f
+#define VEHICLE_STEER_RATE		90.0f		// H1: degrees/s the steered wheels turn at (a driver winding the wheel)
 #define VEHICLE_STEP			24.0f		// what it climbs without noticing (kerbs, rubble)
 #define VEHICLE_MAX_STEP_PER_32	36.0f		// ground change between two samples 32 units apart (a slope of ~48 degrees)
 #define VEHICLE_STUCK_TIME		3.0f
@@ -1098,10 +1100,12 @@ private:
 	string_t		m_iszInitialGoal;
 	VehicleType_t	*m_pType;
 	float			m_flHalfWidth, m_flHalfLength, m_flBodyHeight;	// from the model (MeasureBody), not saved
+	float			m_flWheelbase;		// H1: from the model's "dodsp_wheels" (MeasureBody); 0 = nothing steers
 	EHANDLE			m_hTurret;
 
 	CNetworkVar( float, m_flTrackSpeed );		// signed, units/s (client: wheel spin, track scroll)
 	CNetworkVar( float, m_flModelForwardYaw );
+	CNetworkVar( float, m_flSteer );			// H1: degrees the steered wheels are turned, + = left (client: wheels)
 
 	float			m_flSpeed;
 	float			m_flHeading;			// degrees, world yaw of the vehicle's front
@@ -1234,6 +1238,7 @@ BEGIN_DATADESC( CDoDSPVehicle )
 	DEFINE_KEYFIELD( m_iszInitialGoal, FIELD_STRING, "goal" ),
 	DEFINE_FIELD( m_hTurret, FIELD_EHANDLE ),
 	DEFINE_FIELD( m_flSpeed, FIELD_FLOAT ),
+	DEFINE_FIELD( m_flSteer, FIELD_FLOAT ),
 	DEFINE_FIELD( m_flHeading, FIELD_FLOAT ),
 	DEFINE_FIELD( m_flMaxSpeedScale, FIELD_FLOAT ),
 	DEFINE_FIELD( m_bHasGoal, FIELD_BOOLEAN ),
@@ -1304,6 +1309,7 @@ END_DATADESC()
 IMPLEMENT_SERVERCLASS_ST( CDoDSPVehicle, DT_DoDSPVehicle )
 	SendPropFloat( SENDINFO( m_flTrackSpeed ), 0, SPROP_NOSCALE ),
 	SendPropFloat( SENDINFO( m_flModelForwardYaw ), 0, SPROP_NOSCALE ),
+	SendPropFloat( SENDINFO( m_flSteer ), 0, SPROP_NOSCALE ),
 END_SEND_TABLE()
 
 CDoDSPVehicle::CDoDSPVehicle()
@@ -1321,6 +1327,8 @@ CDoDSPVehicle::CDoDSPVehicle()
 	m_bInitialGoalDone = false;
 	m_flNavCheckTime = 0.0f;
 	m_flHalfWidth = m_flHalfLength = m_flBodyHeight = 0.0f;
+	m_flWheelbase = 0.0f;
+	m_flSteer = 0.0f;
 	m_eFaction = DODSP_FACTION_AXIS;
 	m_eBehavior = 0;
 	m_flLeash = 0.0f;
@@ -1549,6 +1557,23 @@ void CDoDSPVehicle::MeasureBody( void )
 	m_flHalfLength = 0.5f * fabs( DotProduct( vecMaxs - vecMins, vecFwd ) );
 	m_flHalfWidth = 0.5f * fabs( DotProduct( vecMaxs - vecMins, Vector( -vecFwd.y, vecFwd.x, 0.0f ) ) );
 	m_flBodyHeight = MAX( vecMaxs.z, VEHICLE_STEP + 8.0f );		// above its origin (the ground point)
+	// H1: the wheels' facts come from the model (dodsp_vehicle_wheels.h: halftrack_rig.py measured them from the mesh)
+	DoDSPWheels_t wheels;
+	bool bWheelData = DoDSP_ReadWheels( GetModel(), wheels );
+	int nSteer = 0;
+	FOR_EACH_VEC( wheels.wheels, i )
+		nSteer += wheels.wheels[i].bSteer ? 1 : 0;
+	m_flWheelbase = ( nSteer && !m_pType->bTracked ) ? wheels.flWheelbase : 0.0f;
+	static CUtlDict<bool, int> s_Reported;
+	const char *pszModel = STRING( GetModelName() );
+	if ( s_Reported.Find( pszModel ) == s_Reported.InvalidIndex() )
+	{
+		s_Reported.Insert( pszModel, true );
+		if ( bWheelData )
+			Msg( "DOD-SP vehicle wheels: %s - %d wheels from the model, %d steer, wheelbase %.0f\n", pszModel, wheels.wheels.Count(), nSteer, wheels.flWheelbase );
+		else if ( !m_pType->bTracked && !V_stristr( pszModel, "_dead" ) )
+			Msg( "DOD-SP vehicle wheels: %s has no wheel data - its wheels can't turn or steer (recompile it from its rig, e.g. halftrack_rig.py)\n", pszModel );
+	}
 	if ( m_flHalfWidth > m_flHalfLength * 1.05f )
 		Warning( "INVARIANT DOD-SP vehicle %s (%s): the model is %.0f long but %.0f wide along forward_yaw %.0f - a vehicle is longer than it is wide, so forward_yaw is probably wrong (90 off)\n",
 				 Label(), m_pType->szName, m_flHalfLength * 2.0f, m_flHalfWidth * 2.0f, m_pType->flForwardYaw );
@@ -2249,6 +2274,25 @@ void CDoDSPVehicle::DriveThink( void )
 
 	// heading, then the orientation and height the ground gives at the next spot
 	m_flHeading = AngleNormalize( m_flHeading + flYawRate * dt );
+
+	// H1: THE steering angle the client turns the steered wheels by - from the turn it is really making (bicycle model:
+	// yaw rate = speed x tan(steer) / wheelbase, so steer = atan(wheelbase x yaw rate / speed); reversing flips it by
+	// itself). Full lock = the type's min_turn_radius. Standing still it holds the wheel where it was, and straightens
+	// it once there's nowhere to go. Wound at VEHICLE_STEER_RATE, like a driver turning the wheel.
+	if ( m_flWheelbase > 0.0f )
+	{
+		float flLock = RAD2DEG( atanf( m_flWheelbase / MAX( m_pType->flMinTurnRadius, 50.0f ) ) );
+		float flWantSteer = m_flSteer;
+		if ( fabs( m_flSpeed ) > 2.0f )
+			flWantSteer = RAD2DEG( atanf( m_flWheelbase * DEG2RAD( flYawRate ) / m_flSpeed ) );
+		else if ( !m_bHasGoal )
+			flWantSteer = 0.0f;
+		flWantSteer = clamp( flWantSteer, -flLock, flLock );
+		float flStep = VEHICLE_STEER_RATE * dt;
+		m_flSteer = m_flSteer + clamp( flWantSteer - m_flSteer, -flStep, flStep );
+	}
+	else if ( m_flSteer != 0.0f )
+		m_flSteer = 0.0f;
 	Vector vecNext = vecPos + vecFwd * ( m_flSpeed * dt );
 	float flGroundZ;
 	QAngle angWant = BuildAngles( m_flHeading, vecNext, &flGroundZ );
