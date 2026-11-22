@@ -1533,6 +1533,29 @@ If you learn something like this, add it here in the same commit as the fix.
   so its 90% tilt = NORMAL_TILT90_TARGET (23.2, the citizen's) - one rule, no per-file values (NORMAL_STRENGTH gone):
   tunic x0.52, gear x0.50, face x0.59, helmet x0.35. Sent dodsp_cod3_normals_relief_fix.zip (4 VTFs, mesh unchanged).
   LESSON: before porting texture data, put its numbers next to the same kind of file from the target game.
+  GEOMETRY (owner 2026-11-21: wrists, inside elbows, left leg). MEASURED, not fixed yet:
+  - character/helper_shares.py fits each CoD helper bone's share between our two neighbouring bones on VERTEX
+    POSITIONS (CoD's own skinning vs the blend, 4200 poses of CoD2 animations) -> generated/cod3_helper_shares.json.
+    Merging helpers whole costs <= 1.5 units (wrist twist 1.0 -> 0.5 at 78% to the hand; elbow bulge 1.0 -> 0.75 at
+    24% to the forearm; hip / shoulder twists no gain) except j_legextra (3.8-4.2, no blend of pelvis/thigh explains
+    it). So the weights are NOT what the owner sees. Converter left unchanged (its hand-set shouldertwist 0.5 split
+    was chosen by eye for raised-arm shoulders; the fit says 0-0.22 - revisit with the twist bones).
+  - READER FIX: an xanim's bone translation keys are OFFSETS from the rest position (j_head 0..0.4, j_elbow_bulge 0..2
+    along the arm, 312 animations with all-zero keys on every arm joint). cod2_xanim.world(..., offsets=True) reads
+    them right; the default stays the old reading so xanim_to_smd (rotations only; its learned pelvis constants
+    absorbed the misread j_mainroot) and the delivered packs are unchanged. The first fit, on the old reading, blamed
+    the elbow bulge for 10 units.
+  - THE WRISTS: DoD's poses roll the hand about the forearm (vs bind) - K98 aim left 91-104 deg; 400 DoD player anims
+    median 72 / 90% 98 / max 125 (left), our NPC pack 54 / 99 / 132. With no twist bone the whole roll happens in the
+    ring of skin at the wrist = candy wrapper; no weight split fixes a 90-degree roll under linear blend skinning.
+    Valve's answer: procedural helper bones ($proceduralbones .vrd, quaternion helpers driven by the hand - HL2's
+    Ulna). Runtime = bone_setup.cpp DoQuatInterpBone (weights 1 - 2 acos|q.trigger| / tolerance, normalised blend of
+    the trigger targets' quats and positions). .vrd: `<helper> bone parent driverParent driver`, `<basepos>`,
+    `<trigger> tolerance  driver XYZ  target XYZ  target pos XYZ` (degrees; VDC $proceduralbones). The DoD/HL2
+    citizen hacks here (germanmale*.mdl) have L/R_Wrist bones but proctype 0 - no template. PLAN (awaiting go):
+    wrist-twist helper per arm taking a measured share of the hand's ROLL only (triggers along the roll, swing
+    left out), forearm skin graded onto it; elbow helper with CoD's measured bulge slide; previewed with a Python
+    copy of DoQuatInterpBone in the K98 poses before anything ships; verified by reading the owner's compile back.
 
 ## READY TO SHIP - REMIND THE OWNER (2026-11-21: "continue to remind me about the vehicle build ready to ship, we wont let it
 ## be ignored for long")

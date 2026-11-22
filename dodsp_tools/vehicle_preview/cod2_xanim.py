@@ -116,10 +116,15 @@ def root_motion(anim, f):
         t = _at(tf, tv, f)
     return R, t
 
-def world(anim, skeleton, f, travel=True):
+def world(anim, skeleton, f, travel=True, offsets=False):
     """{bone name: (R, t)} at frame f, on an xmodelparts skeleton (cod2_xmodel.parts): an animated bone takes the
     animation's local rotation / position, the rest keep the skeleton's; the root (tag_origin) carries the animation's
-    root motion when travel is True"""
+    root motion when travel is True.
+    offsets: an xanim's bone TRANSLATION keys are OFFSETS from the bone's rest position, not positions (2026-11-21,
+    over all 3669: j_head 0..0.4, j_elbow_bulge 0..2 along the arm, 312 animations with all-zero keys on every arm
+    joint - read as positions those put each joint ON its parent). offsets=True reads them right. The default (False)
+    keeps the old reading for xanim_to_smd: it takes only rotations from here, and its learned pelvis constants absorbed
+    j_mainroot's misread translation - so the delivered animation packs stay byte-identical. New code passes True."""
     out = {}
     for i, b in enumerate(skeleton):
         lR, lt = b['lR'], b['lt']
@@ -128,7 +133,7 @@ def world(anim, skeleton, f, travel=True):
         a = anim['bones'].get(b['name'])
         if a is not None:
             if len(a['rot'][0]): lR = qmat(_at(a['rot'][0], a['rot'][1], f))
-            if len(a['trans'][0]): lt = _at(a['trans'][0], a['trans'][1], f)
+            if len(a['trans'][0]): lt = (lt if offsets and b['parent'] >= 0 else 0) + _at(a['trans'][0], a['trans'][1], f)
         if b['parent'] < 0:
             out[b['name']] = (lR, lt)
         else:

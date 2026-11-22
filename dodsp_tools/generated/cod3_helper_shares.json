@@ -1,0 +1,105 @@
+{
+ "poses": 4205,
+ "helpers": {
+  "j_elbow_bulge_le": {
+   "on": "ValveBiped.Bip01_L_UpperArm",
+   "to": null,
+   "share": 0.0,
+   "share_fitted": 0.244,
+   "via": "j_elbow_le",
+   "err_whole": 0.954,
+   "err_split": 0.731,
+   "weight": 14.1
+  },
+  "j_elbow_bulge_ri": {
+   "on": "ValveBiped.Bip01_R_UpperArm",
+   "to": null,
+   "share": 0.0,
+   "share_fitted": 0.24,
+   "via": "j_elbow_ri",
+   "err_whole": 1.016,
+   "err_split": 0.806,
+   "weight": 14.9
+  },
+  "j_hiptwist_le": {
+   "on": "ValveBiped.Bip01_L_Thigh",
+   "to": null,
+   "share": 0.0,
+   "share_fitted": 0.003,
+   "via": "j_knee_le",
+   "err_whole": 1.383,
+   "err_split": 1.383,
+   "weight": 52.0
+  },
+  "j_hiptwist_ri": {
+   "on": "ValveBiped.Bip01_R_Thigh",
+   "to": null,
+   "share": 0.0,
+   "share_fitted": 0.084,
+   "via": "j_mainroot",
+   "err_whole": 1.485,
+   "err_split": 1.481,
+   "weight": 59.7
+  },
+  "j_legextra_le": {
+   "on": "ValveBiped.Bip01_Pelvis",
+   "to": null,
+   "share": 0.0,
+   "share_fitted": 0.21,
+   "via": "j_hip_le",
+   "err_whole": 3.818,
+   "err_split": 3.81,
+   "weight": 14.8
+  },
+  "j_legextra_ri": {
+   "on": "ValveBiped.Bip01_Pelvis",
+   "to": null,
+   "share": 0.0,
+   "share_fitted": 0.358,
+   "via": "j_hip_ri",
+   "err_whole": 4.207,
+   "err_split": 3.878,
+   "weight": 8.4
+  },
+  "j_shouldertwist_le": {
+   "on": "ValveBiped.Bip01_L_UpperArm",
+   "to": null,
+   "share": 0.0,
+   "share_fitted": 0.0,
+   "via": "j_elbow_le",
+   "err_whole": 0.378,
+   "err_split": 0.378,
+   "weight": 42.1
+  },
+  "j_shouldertwist_ri": {
+   "on": "ValveBiped.Bip01_R_UpperArm",
+   "to": null,
+   "share": 0.0,
+   "share_fitted": 0.223,
+   "via": "j_clavicle_ri",
+   "err_whole": 1.126,
+   "err_split": 1.07,
+   "weight": 37.3
+  },
+  "j_wristtwist_le": {
+   "on": "ValveBiped.Bip01_L_Forearm",
+   "to": "ValveBiped.Bip01_L_Hand",
+   "share": 0.779,
+   "share_fitted": 0.81,
+   "via": "j_wrist_le",
+   "err_whole": 1.108,
+   "err_split": 0.528,
+   "weight": 1.9
+  },
+  "j_wristtwist_ri": {
+   "on": "ValveBiped.Bip01_R_Forearm",
+   "to": "ValveBiped.Bip01_R_Hand",
+   "share": 0.779,
+   "share_fitted": 0.748,
+   "via": "j_wrist_ri",
+   "err_whole": 0.917,
+   "err_split": 0.523,
+   "weight": 2.9
+  }
+ }
+}
