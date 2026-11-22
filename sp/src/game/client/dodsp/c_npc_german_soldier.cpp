@@ -125,6 +125,7 @@ private:
 	void	RotateSubtreeTo( CStudioHdr *pStudioHdr, int iBone, const Vector &vecFrom, const Vector &vecTo, int iSkip );
 	void	ApplyHitKick( CStudioHdr *pStudioHdr );
 	void	SupportHandIK( CStudioHdr *pStudioHdr );
+	void	RecomputeProceduralBones( CStudioHdr *pStudioHdr, int boneMask );
 	void	SteadyRifleThroughBlends( CStudioHdr *pStudioHdr );
 	bool	IsBlending( void );
 	bool	IsCoDSequence( CStudioHdr *pStudioHdr, int iSeq );
@@ -251,6 +252,24 @@ void C_NPC_GermanSoldier::BuildTransformations( CStudioHdr *pStudioHdr, Vector *
 	ApplyHitKick( pStudioHdr );		// moves the torso; arms and gun ride along
 	SteadyRifleThroughBlends( pStudioHdr );	// the K98 stays in the right hand while poses cross-fade
 	SupportHandIK( pStudioHdr );	// then the support hand onto the gun
+	RecomputeProceduralBones( pStudioHdr, boneMask );	// LAST: the joint helpers follow whatever the fixes above moved
+}
+
+//-----------------------------------------------------------------------------
+// The model's procedural bones (the half-angle joint helpers, $proceduralbones: each turns half as far as its joint's
+// child bone - bone_setup.cpp DoQuatInterpBone) are computed by the base class IN its bone loop, from the animated
+// pose. The fixes above then turn arms and hands (SupportHandIK: the upper arm, forearm and hand onto the rifle), so
+// the helpers would keep the old elbow / wrist angle - the skin across those joints tears between the two. INVARIANT:
+// a procedural bone is computed from the FINAL pose of its driver. So they are computed again, parents first (bone
+// order), after every fix. Guard: dodsp_lint_client.py check_procedural_last - this call stays the last statement.
+//-----------------------------------------------------------------------------
+void C_NPC_GermanSoldier::RecomputeProceduralBones( CStudioHdr *pStudioHdr, int boneMask )
+{
+	for ( int i = 0; i < pStudioHdr->numbones(); i++ )
+	{
+		if ( ( pStudioHdr->boneFlags( i ) & boneMask ) && ( pStudioHdr->boneFlags( i ) & BONE_ALWAYS_PROCEDURAL ) )
+			CalcProceduralBone( pStudioHdr, i, m_BoneAccessor );
+	}
 }
 
 void C_NPC_GermanSoldier::RotateSubtreeTo( CStudioHdr *pStudioHdr, int iBone, const Vector &vecFrom, const Vector &vecTo, int iSkip )

@@ -13,10 +13,11 @@ import os, re, sys, struct, json
 import numpy as np
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path[:0] = [HERE]
-import cod2_char as C, cod2_assets as A, normal_seams as NS, twist_bones as TW, mdl48, vtf
+import cod2_char as C, cod2_assets as A, normal_seams as NS, joint_volume as JV, mdl48, vtf
 from scipy import ndimage as nd
 
 MATDIR = 'models/dodsp/cod3'
+JV_WORSE_TOL = 0.02     # a joint helper may not leave any joint thinner than without it (median or worst 10% of poses)
 # How strongly a normal map tilts the surface (its x/y scaled, then renormalised), per map - the one owner.
 # The owner's in-game isolation 2026-11-21: black streaks on the tunic folds with the normal maps on (same with our
 # per-pixel sun off), gone with mat_bumpmap 0; the colour map and the compiled tangents are clean. CoD3's tunic map is
@@ -158,11 +159,15 @@ def textures(pack, tris, outdir):
                          green=done.get(nmap.lstrip('~').split('-')[0]) if nmap else None)
     return report
 
-def build(pack, npz, ref, soldier, out, name, helmet, models):
+def build(pack, npz, ref, soldier, out, name, helmet, models, pose_dirs):
     z = np.load(npz, allow_pickle=False)
     mapping = dict(Rg=z['Rg'], off=dict(zip(z['off_names'], z['off'])))
     rig, tris, info = C.build(pack, mapping, ref, [helmet] + models)
-    tris, twist = TW.add_to_rig(rig, tris)      # wrist-twist helpers: the hand's roll spread down the forearm
+    # half-angle joint helpers (joint_volume.py): Source's linear blend skinning collapses every bent joint; a helper at
+    # each joint turning half as far keeps it. Triggers fitted to every full-pose animation we play (pose_dirs).
+    poses = JV.load_poses(pose_dirs)
+    base_rig_nodes, base_local, base_tris = list(rig.nodes), rig.local(), tris
+    tris, helpers = JV.add_to_rig(rig, tris, poses)
     S = mdl48.read(soldier); bn = [b['name'] for b in S['bones']]
     assert set(bn) <= set(n for n, p in rig.nodes), set(bn) - set(n for n, p in rig.nodes)
     base = os.path.basename(name); src = os.path.join(out, 'modelsrc', base); os.makedirs(src, exist_ok=True)
@@ -196,8 +201,24 @@ def build(pack, npz, ref, soldier, out, name, helmet, models):
         q.append('$hboxset "%s"' % s['name'])
         for b in s['boxes']:
             q.append('$hbox %d "%s" %.3f %.3f %.3f %.3f %.3f %.3f' % (b['group'], bn[b['bone']], *b['mn'], *b['mx']))
-    TW.write_vrd(os.path.join(src, base + '.vrd'), rig, twist); TW.check_vrd(os.path.join(src, base + '.vrd'), rig, twist)
-    q += ['', '// wrist-twist helpers (twist_bones.py): the engine turns them with the hand (bone_setup.cpp DoQuatInterpBone)',
+    vrd = os.path.join(src, base + '.vrd')
+    JV.write_vrd(vrd, rig, helpers); JV.check_vrd(vrd, rig, helpers)
+    # the guard: every joint measured over every pose, before (no helpers) and after (the .vrd as written, through the
+    # engine's DoQuatInterpBone) - no joint may come out thinner, and the report carries both
+    sk0 = JV.Skeleton(base_rig_nodes, base_local); m0 = JV.Mesh(base_tris, len(sk0.nodes))
+    r0, _, _ = JV.measure(sk0, m0, poses)
+    sk1 = JV.engine_skeleton(rig, helpers, vrd); m1 = JV.Mesh(tris, len(sk1.nodes))
+    r1, w1, _ = JV.measure(sk1, m1, poses)
+    joints = {}
+    for k in r0:
+        a, b = r0[k], r1[k]
+        joints['%s %s' % k] = dict(before=[round(float(np.median(a)), 2), round(float(np.percentile(a, 10)), 2)],
+                                   after=[round(float(np.median(b)), 2), round(float(np.percentile(b, 10)), 2)],
+                                   worst_after=[(round(q, 2), l) for q, l in w1[k][:3]])
+        if np.percentile(b, 10) < np.percentile(a, 10) - JV_WORSE_TOL or np.median(b) < np.median(a) - JV_WORSE_TOL:
+            raise SystemExit('joint helpers make the %s %s thinner (median / worst 10%%: %.2f / %.2f -> %.2f / %.2f) - not shipping'
+                             % (k + (np.median(a), np.percentile(a, 10), np.median(b), np.percentile(b, 10))))
+    q += ['', '// half-angle joint helpers (joint_volume.py): the engine turns them half as far as the joint\'s child bone (bone_setup.cpp DoQuatInterpBone)',
           '$proceduralbones "%s.vrd"' % base]
     q += ['', '$sequence "ragdoll" "ragdoll.smd" ACT_DIERAGDOLL 1 fps 30', '']
     sol = [kv for k, kv in pinfo if k == 'solid']; total = sum(float(s['mass']) for s in sol)
@@ -216,12 +237,14 @@ def build(pack, npz, ref, soldier, out, name, helmet, models):
     q += ['}', '']
     open(os.path.join(src, base + '.qc'), 'w').write('\n'.join(q))
     info.update(eye=[round(float(v), 2) for v in eye], soldier_eye=[round(float(v), 2) for v in S['attachments'][[a['name'] for a in S['attachments']].index('eyes')]['m'][:, 3]],
-                twist=[dict(helper=rig.nodes[t][0], forearm=rig.nodes[f][0], hand=rig.nodes[h][0], triggers=len(tr)) for _, t, f, h, _, tr in twist],
+                joint_helpers=[dict(helper=rig.nodes[h['helper']][0], band=h['band'], triggers=len(h['triggers']), tol=h['tol'], error_deg=h['error'], poses=h['samples']) for h in helpers],
+                joints=joints, poses=len(poses),
                 textures=tex, ragdoll_solids=len(solids), ragdoll_mass=round(total, 2), body_tris=len(body), helmet_tris=len(helm))
     json.dump(info, open(os.path.join(src, 'report.json'), 'w'), indent=1, default=str)
     return info
 
 if __name__ == '__main__':
     a = sys.argv[1:]
-    info = build(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7:])
-    print(json.dumps({k: info[k] for k in ('faces_out', 'eye', 'soldier_eye', 'ragdoll_solids', 'ragdoll_mass', 'body_tris', 'helmet_tris', 'height', 'textures')}, indent=1))
+    k = a.index('--poses'); pose_dirs = a[k + 1].split(','); a = a[:k] + a[k + 2:]
+    info = build(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7:], pose_dirs)
+    print(json.dumps({k: info[k] for k in ('faces_out', 'eye', 'soldier_eye', 'ragdoll_solids', 'ragdoll_mass', 'body_tris', 'helmet_tris', 'height', 'joints', 'joint_helpers')}, indent=1))

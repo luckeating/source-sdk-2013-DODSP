@@ -1481,11 +1481,16 @@ RULES (each learned the hard way on the first CoD3 soldier, 2026-11-21 - details
    (generated/cod3_helper_shares.json): merging costs <= 1.5 units except j_legextra (~4). The wrists are not weights:
    DoD poses roll the hand 70-130 deg about the forearm (K98 aim: left 91-104), which linear blend skinning wrings at
    the wrist - the fix is procedural twist bones (.vrd quaternion helpers; runtime = bone_setup.cpp DoQuatInterpBone).
+   SUPERSEDED 2026-11-22 (see LOG "JOINT HELPERS"): the pinch is the BEND, not the roll; every bending joint gets a
+   half-angle helper (joint_volume.py) and the package refuses to ship if any joint measures thinner than without them.
+12. Measure deformation per SLICE across each joint over EVERY full-pose animation we play (joint_volume.measure), not
+    in a window around the expected fault and not pooled - twist2 passed its window and changed nothing in game.
 10. CoD2 xanim bone translations are OFFSETS from the rest position: cod2_xanim.world(..., offsets=True) in new code.
 11. Every test step for a character says exactly which zip to unzip into DOD-SP, whether Crowbar must recompile, and
     to restart the game fully.
 Files: dodsp_tools/character/ (cod2_assets.py, cod2_char.py, cod2_package.py, normal_seams.py, helper_shares.py,
-char_preview.py, mdl48.py, vtf.py, vvd_tangents.py), vehicle_preview/cod2_xmodel.py + cod2_xanim.py, generated/.
+char_preview.py, mdl48.py, vtf.py, vvd_tangents.py, joint_volume.py, joint_preview.py; twist_bones.py now only lends
+engine_quat_interp / read_vrd / check_compiled), vehicle_preview/cod2_xmodel.py + cod2_xanim.py, generated/.
 Model: german/npc_german_cod3_rifleman.mdl, materials models/dodsp/cod3/. Test: the Hammer "model" key on one
 npc_german_soldier.
 
@@ -1677,6 +1682,33 @@ LOG:
   knee / hip, the twist spread over more than one segment), passing a stated bar before anything ships.
   Also (code, not built): SupportHandIK turns the hand AFTER the engine computed the procedural bones, so the helpers
   don't follow the IK's hand turn in CoD animations - re-run the procedural bones after every client post-fix.
+  JOINT HELPERS BUILT 2026-11-22 (owner: "build that and ill recompile"). character/joint_volume.py = THE owner of
+  (a) the measure: per joint (shoulder / elbow / wrist / hip / knee / ankle, both sides) the skin within 6 units, cut
+  in 1-unit slices across the joint; a slice's thickness = 5th percentile of posed / bind distance to the bone line
+  (parent segment + child segment), the INSIDE of a bend > 25 deg left out (real flesh squeezes there too); the joint
+  = its thinnest slice; over every FULL-pose animation (in_DoD @ files, the ww2 / c1 / ride packs: 4249 poses;
+  delta / corrective / layer files dropped by name and by limb lengths, pose_valid); (b) the helpers: per side and
+  joint `dodsp_<L|R>_<joint>_half` under the joint's parent, at the joint, oriented like the child at bind, turning
+  HALF its child's turn (exact target slerp(I, rel, 0.5)); 32 triggers (the engine's weight[32]) = the bind + farthest
+  -point / k-means picks over the child's rotations in every pose, tolerance chosen by the engine's own blend
+  (engine_quat_interp) - median error 0.5-4.8 deg; (c) the skin: inside a band each side of the joint the corner's
+  parent + child weight goes parent -> helper -> child by a smoothstep across the band (one function, split_weight /
+  toward_child, used by the measure and the package); never past half the bone a side lies on (the clavicle is 6 -
+  shoulder's parent side 3), except the hip's (buttock / belly follow the thigh part way). Bands from a per-joint
+  search (JOINT_BAND): shoulder 6, elbow 5, wrist 1.5, hip 6, knee 6, ankle 3. cod2_package: `--poses <dirs>` (the
+  pose set the triggers are fitted to), writes the .vrd, reads it back (check_vrd), then measures every joint before
+  (no helpers) and after (the .vrd as written, through the engine's blend) and STOPS if any joint's median or worst
+  10% gets thinner by > 0.02 (JV_WORSE_TOL). Result (median / worst 10%, before -> after): L wrist 0.78/0.58 ->
+  0.93/0.85, R wrist 0.94/0.78 -> 0.95/0.89, L elbow 0.49/0.27 -> 0.80/0.52, R elbow 0.49/0.30 -> 0.71/0.58,
+  L hip 0.69/0.19 -> 0.86/0.49, R hip 0.63/0.18 -> 0.91/0.73, shoulders 0.59/0.32, 0.56/0.22 -> 0.85/0.64, 0.85/0.58,
+  ankles 0.93/0.8 -> 0.96/0.88; knees barely move (0.87/0.18 -> 0.87/0.25, 0.80/0.17 -> 0.88/0.20): their worst
+  poses are deep crouches where the measure itself can't tell real squeeze from collapse - judge knees by eye.
+  joint_preview.py renders before | after close-ups from the package's own files. Delivered
+  dodsp_cod3_rifleman_joints.zip (model source; replaces twist / twist2 - the ForeTwist helpers are gone).
+  CLIENT (same day): C_NPC_GermanSoldier::RecomputeProceduralBones - the last statement of BuildTransformations computes
+  every BONE_ALWAYS_PROCEDURAL bone again (parents first), so the helpers follow the hit kick and SupportHandIK
+  (it turns upper arm, forearm and hand AFTER the engine computed the helpers). Lint check_procedural_last (tested by
+  moving the call up). After the owner's compile: check_compiled against the .vrd (read_vrd) as for twist2.
 
 
 ## READY TO SHIP - REMIND THE OWNER (2026-11-21: "continue to remind me about the vehicle build ready to ship, we wont let it

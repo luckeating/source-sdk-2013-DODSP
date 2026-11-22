@@ -888,6 +888,25 @@ def check_hashint():
     return bad
 
 
+def check_procedural_last():
+    """INVARIANT: a procedural bone (the half-angle joint helpers) is computed from the FINAL pose of its driver. The
+    soldier's client fixes (hit kick, rifle hold, support-hand IK) turn arms and hands after the engine computed the
+    helpers, so C_NPC_GermanSoldier::BuildTransformations must end by computing them again, and nothing may follow."""
+    path = os.path.join(ROOT, "game", "client", "dodsp", "c_npc_german_soldier.cpp")
+    src = open(path, encoding="latin-1").read()
+    m = re.search(r"void C_NPC_GermanSoldier::BuildTransformations\([^)]*\)\s*\{(.*?)\n\}", src, re.S)
+    if not m:
+        return ["c_npc_german_soldier.cpp: BuildTransformations not found"]
+    stmts = [l.split("//")[0].strip() for l in m.group(1).split("\n")]
+    stmts = [l for l in stmts if l]
+    if not stmts or not stmts[-1].startswith("RecomputeProceduralBones("):
+        return ["c_npc_german_soldier.cpp: BuildTransformations must END with RecomputeProceduralBones (last is: %s)" % (stmts[-1] if stmts else "nothing")]
+    r = re.search(r"void C_NPC_GermanSoldier::RecomputeProceduralBones\(.*?\n\}", src, re.S)
+    if not r or "CalcProceduralBone" not in r.group(0) or "BONE_ALWAYS_PROCEDURAL" not in r.group(0):
+        return ["c_npc_german_soldier.cpp: RecomputeProceduralBones must run CalcProceduralBone on every BONE_ALWAYS_PROCEDURAL bone"]
+    return []
+
+
 def check_vehicle_body():
     """H1: the body's rock has one owner per kind of vehicle - tanks: the server spring (m_flSuspPitch/Vel, written only
     by the spring RockHull, its settling SettleHull and BodyKick - V5: no longer HaltMotion, which cancelled the
@@ -939,7 +958,8 @@ def main():
                      ("a vehicle can be blind (H3b)", check_vehicle_eyes),
                      ("a vehicle turns a part off its clock (V2b2)", check_vehicle_parts),
                      ("a V5 vehicle fix was undone (hull aim, line of fire, jolt, body attachment)", check_vehicle_v5),
-                     ("tier1's HashInt can read outside its table (a negative key crashed the server)", check_hashint)):
+                     ("tier1's HashInt can read outside its table (a negative key crashed the server)", check_hashint),
+                     ("the soldier's joint helpers aren't recomputed after the client's arm fixes", check_procedural_last)):
         vbad = fn()
         if vbad:
             print("dodsp_lint_client: %s:" % what)
