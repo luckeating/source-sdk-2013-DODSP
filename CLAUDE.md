@@ -25,6 +25,20 @@ If you learn something like this, add it here in the same commit as the fix.
 - Tell the owner when they're wrong (their monitor settings can make screenshots look off).
 - Test steps must list every setting that resets on launch (see "Settings that reset" below).
 
+## Where to look first (triggers - read the named section BEFORE starting that kind of work)
+- **A humanoid character model** (porting a CoD2/CoD3 or any mesh onto our soldier skeleton, its textures / normal maps,
+  its weights, twist bones, how it bends): section "Character ports (humanoid NPC models)" - its RULES list first.
+- **Anything that moves an NPC by code** (get-outs, bail-outs, vaults, jump-downs, parachutes) or **a part a vehicle
+  turns** (turret, MG, a gunner's / driver's pose, doors): Vehicles roadmap V3e/V3f (CDoDSPNpcMotion, motion_sim.py,
+  the MOVETYPE_NONE fact under Code / build) and V2b2 (DrivenTick / StampPart). Stutter = a clock problem first.
+- **Crew / rider / seat animations on a vehicle**: preview first (V4g rule), seat_death_preview's jump check (H3),
+  landings in time (H3), deaths on the ground are ragdolls (H3).
+- **Vehicle work**: Vehicles roadmap + READY TO SHIP + REQUIRED FIXES at the end of this file.
+- **CoD2 / CoD3 files** (xmodel, xmodelparts, xmodelsurfs, xanim, iwi, materials): the readers in dodsp_tools
+  (vehicle_preview/cod2_xmodel.py, cod2_xanim.py, character/cod2_assets.py) and the format notes where they were found.
+- **Shaders**: Engine facts / Shaders. **Lighting**: Lighting roadmap + Open known issues (lighting).
+- **A crash**: the crash reader (Vehicles roadmap, H3b "CRASH READER"); never commit the owner's dump.
+
 ## Engine facts (Source 2013 SP, engine binaries are 2014 builds)
 
 ### Shaders
@@ -1421,6 +1435,50 @@ If you learn something like this, add it here in the same commit as the fix.
   rear step is ~30), truckride_waters_climbin (5 s scene), toujane armored car / carchase / kubelwagon get-ins (over a car
   door). Nothing walks up an aisle and sits (build it like the get-outs in reverse). Boarding is a NEW feature (riders
   are spawned seated today) - a stage of its own, previewed first; the owner to say what triggers it.
+## Character ports (humanoid NPC models)
+RULES (each learned the hard way on the first CoD3 soldier, 2026-11-21 - details in the log below):
+1. Verify every file writer against a known-good file of the TARGET game before handing anything over: SMD winding
+   (check_smd_winding, the SMD convention measured on a model that draws right), VTF layout (vtf.read_header + size
+   check), a compiled result read back (mdl48.py). The soldier shipped inside out once because nothing checked.
+2. CoD stores a vertex's NORMAL in its main bone's frame, like its position - turn it by the bone.
+3. Normal maps (character/cod2_assets.py + normal_seams.py + cod2_package.py - one owner each):
+   - Source's format (VDC "Bump map"): red = +X image-right, green = +Y image-DOWN, blue = out of the surface. Maps
+     look blue because most texels point out; red is used.
+   - CoD3 '-gggr' maps (x in alpha, y in green) are per-axis-clipped SLOPES: decode_normal = normalize(x, y, 1), never
+     z = sqrt(1 - r^2) (2-4% of texels came out lying flat = black streaks).
+   - The SIGNS of red and green differ per FILE in one pack. decide_signs measures them on the mesh's UV seams (both
+     sides must agree in object space), checked against the curl test (which sees only whether red and green agree
+     with each other); a map the seams can't settle needs a by-eye verdict in NORMAL_SIGNS_CHECKED or the tool stops.
+   - Before shipping, integrate the map to a height field and look at a shape you know (a button must be a dome).
+   - Strength: relief_scale puts each map's 90% tilt on NORMAL_TILT90_TARGET (23.2 deg = HL2 citizen_sheet_normal;
+     DoD german_body_normal 3.5). CoD3 maps came in at 40-50 deg - 5x - and drew every fold as a dark band.
+   - Background between UV islands is padded from the nearest island; check_normal_vtf reads every map back.
+4. Put a port's data next to the same kind of file from Source before porting (the tilt table did in one look what
+   three blind fixes didn't).
+5. Diagnose shading IN GAME by isolation, one switch per screenshot at one spot: mat_fullbright 1, mat_bumpmap 0,
+   dodsp_sun_baked 1, +dodsp_sunshader 0 (launch option), and the FLAT normal maps (all texels 128 128 255). Flat clean
+   = the map content; flat unchanged = the file isn't loading. A replaced texture needs a full game restart.
+6. A fix by degree that changes nothing means the fault isn't a degree (strength 0.3 vs inverted relief / z = 0).
+7. When a ported body looks off, render the untouched source mesh beside it before deciding whose fault it is; the
+   preview culls back faces like the engine (char_preview.py) and close-ups go through scratchpad geo/closeups.py-style
+   cameras on the joints (wrists, elbows, thighs) in the poses the game actually plays (DoD's @StandAim_BOLT for K98
+   men - the @HS_* files are delta animations, not poses).
+8. Skeleton: OUR bone lengths in CoD's bind orientation (limbs stretched along the bone, trunk kept in CoD's shape and
+   warped to our joints - TrunkWarp); everything but the mesh comes from the soldier's COMPILED model (cod2_package).
+9. Skinning: our skeleton has no twist / bulge bones. CoD helper bones merge onto ours (cod2_char driver + SPLIT);
+   helper_shares.py measures each helper's share on VERTEX POSITIONS against CoD's own skinning
+   (generated/cod3_helper_shares.json): merging costs <= 1.5 units except j_legextra (~4). The wrists are not weights:
+   DoD poses roll the hand 70-130 deg about the forearm (K98 aim: left 91-104), which linear blend skinning wrings at
+   the wrist - the fix is procedural twist bones (.vrd quaternion helpers; runtime = bone_setup.cpp DoQuatInterpBone).
+10. CoD2 xanim bone translations are OFFSETS from the rest position: cod2_xanim.world(..., offsets=True) in new code.
+11. Every test step for a character says exactly which zip to unzip into DOD-SP, whether Crowbar must recompile, and
+    to restart the game fully.
+Files: dodsp_tools/character/ (cod2_assets.py, cod2_char.py, cod2_package.py, normal_seams.py, helper_shares.py,
+char_preview.py, mdl48.py, vtf.py, vvd_tangents.py), vehicle_preview/cod2_xmodel.py + cod2_xanim.py, generated/.
+Model: german/npc_german_cod3_rifleman.mdl, materials models/dodsp/cod3/. Test: the Hammer "model" key on one
+npc_german_soldier.
+
+LOG:
 - **The owner's CoD3 character pack (z_iw_cod3_playermodels_01_SP.iwd, a CoD2 mod, 2026-11-21)**: models only - 345
   xmodels, character + aitype scripts, no xanims. Every body uses CoD2's skeleton (CoD2's 65 core bones, limbs within
   0.14 units, root rest 3.6 off - animations drive it) and cod2_xmodel.py reads them: CoD2's animations play on them as
@@ -1556,6 +1614,7 @@ If you learn something like this, add it here in the same commit as the fix.
     wrist-twist helper per arm taking a measured share of the hand's ROLL only (triggers along the roll, swing
     left out), forearm skin graded onto it; elbow helper with CoD's measured bulge slide; previewed with a Python
     copy of DoQuatInterpBone in the K98 poses before anything ships; verified by reading the owner's compile back.
+
 
 ## READY TO SHIP - REMIND THE OWNER (2026-11-21: "continue to remind me about the vehicle build ready to ship, we wont let it
 ## be ignored for long")
