@@ -1661,6 +1661,22 @@ LOG:
   +-30 outward (trigger_rolls). Same results (K98 aims -69 / -90.8, rest -> 0). Only the .vrd changed:
   dodsp_cod3_rifleman_twist2.zip. LESSON: a text format's tokenizer rules (which characters it splits on) are part
   of the format - look them up with the syntax.
+  TWIST2 IN GAME 2026-11-22 (owner: "nothing was fixed"; screenshot: the K98 support wrist still wrung). The COMPILE IS
+  RIGHT: check_compiled on his .mdl - both helpers proctype 2, flags 0x404 (ALWAYS_PROCEDURAL + used by vertex),
+  indices 55/56 after the hands (18/37), driven by the hands, 12 triggers each matching the design within 0.05 deg,
+  trigger pos = basepos + offset. The DESIGN was wrong, and my preview hid it: measured along the WHOLE forearm (5th
+  percentile of skin distance from the forearm axis, posed / rest, per tenth of the forearm, StandAim / CrouchAim_BOLT):
+  the worst pinch sits at 0.9 of the forearm (0.42 / 0.59) and is IDENTICAL with and without the twist bone - it is
+  the wrist BENDING (linear blend skinning collapses the inside of any bent joint), not the roll; and the twist's
+  elbow-to-helper weight ramp moved a new squeeze up the forearm (0.2-0.5: 0.95-1.0 -> 0.65-0.85). The preview's
+  arm_metrics looked only at 0.55-1.02 and pooled it into one percentile. LESSON: measure a deformation fix along the
+  whole limb, per segment, before and after - a window chosen around the expected fault hides where the fix moves it.
+  CLASS: the wrists, inner elbows and left leg are the same fault - bending joints collapse under Source's linear
+  blend skinning (no twist / corrective bones in our skeleton). Proposed: one joint-volume tool measuring every limb
+  per segment over every animation we play, then procedural helpers per joint (half-angle helpers at wrist / elbow /
+  knee / hip, the twist spread over more than one segment), passing a stated bar before anything ships.
+  Also (code, not built): SupportHandIK turns the hand AFTER the engine computed the procedural bones, so the helpers
+  don't follow the IK's hand turn in CoD animations - re-run the procedural bones after every client post-fix.
 
 
 ## READY TO SHIP - REMIND THE OWNER (2026-11-21: "continue to remind me about the vehicle build ready to ship, we wont let it
