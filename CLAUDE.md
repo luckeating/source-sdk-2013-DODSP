@@ -1478,6 +1478,15 @@ If you learn something like this, add it here in the same commit as the fix.
   (measured on the halftrack rig's body.smd, which draws right in game: 99.97%) - it fails the shipped file (64%) and
   passes the fixed one (99.8%). char_preview.py now culls back faces like the engine (its two-sided render hid this).
   Owner: "actually pretty nice looking" - recompile from dodsp_cod3_rifleman_fix1.zip (model source only).
+  SECOND LOOK 2026-11-21 (fix1 compiled): right way out; hit animations and the ragdoll "turned out perfect". Owner: "are
+  the normals extremely sharp?" - RIGHT, on the tunic and helmet: CoD3's normal maps don't share one green convention.
+  Measured from the maps themselves (cod2_assets.green_points_down: a baked normal map has no curl, so d(x)/d(row) =
+  +-d(y)/d(col) gives the green axis's direction; per quadrant, stops if they disagree): Source = green toward
+  image-DOWN (DoD german_body_normal 2.0x, HL2 citizen_sheet_normal 2.1x - maps that draw right); CoD3 body + helmet
+  UP (0.29-0.53 / 0.54-0.81), head + gear DOWN. The shipped body/helmet maps were inverted -> folds drawn as cut black
+  grooves. cod2_package now measures every map and flips green where it's UP; each written map is read back DOWN.
+  Owner: copy dodsp_cod3_rifleman_normals_fix.zip (2 VTFs) into DOD-SP. LESSON: a texture convention can differ per
+  FILE inside one pack - measure each, and check it against a known-good file of the target engine.
 
 ## READY TO SHIP - REMIND THE OWNER (2026-11-21: "continue to remind me about the vehicle build ready to ship, we wont let it
 ## be ignored for long")

@@ -95,3 +95,28 @@ def iwi(path):
     elif fmt == 0x02: rgba = np.concatenate([np.frombuffer(full, np.uint8).reshape(h, w, 3)[..., ::-1], np.full((h, w, 1), 255, np.uint8)], -1)
     else: raise ValueError('iwi format %d' % fmt)
     return dict(fmt=fmt, w=w, h=h, rgba=rgba, mips=mips, header_end=28, data_start=end)
+
+
+def green_points_down(x, y, valid):
+    """Which way a normal map's green (Y) axis points, read from the map itself: a normal map baked from a height field
+    has no curl, so d(x)/d(row) == d(y)/d(col) when +y tilts toward image-DOWN (Direct3D) and == -d(y)/d(col) when it
+    tilts toward image-UP (OpenGL). Scored per quadrant at a 7-texel blur (DXT noise); returns (down?, ratios) and
+    stops when the quadrants disagree. Source wants DOWN (measured on maps that draw right: DoD's german_body_normal
+    2.0x, HL2 citizen_sheet_normal 2.1x). CoD3's maps are MIXED: c_wrmcht_body / helm1 UP (0.37 / 0.61), head / gear
+    DOWN (2.4 / 1.2) - so every map is measured, never assumed (the body tunic shipped inverted: "extremely sharp")."""
+    def blur(a, k=3):
+        for ax in (0, 1): a = sum(np.roll(a, s, axis=ax) for s in range(-k, k + 1)) / (2 * k + 1)
+        return a
+    m = valid.copy()
+    for _ in range(6):                                   # keep off the edges of the used islands (seams)
+        m = m & np.roll(m, 1, 0) & np.roll(m, -1, 0) & np.roll(m, 1, 1) & np.roll(m, -1, 1)
+    xb, yb = blur(x), blur(y); h, w = x.shape; ratios = []
+    for i in range(2):
+        for j in range(2):
+            sl = (slice(i * h // 2, (i + 1) * h // 2), slice(j * w // 2, (j + 1) * w // 2))
+            dxr = np.diff(xb[sl], axis=0)[:, :-1]; dyc = np.diff(yb[sl], axis=1)[:-1, :]; mm = m[sl][:-1, :-1]
+            if mm.sum() < 500: continue
+            ratios.append(float(np.abs(dxr + dyc)[mm].mean() / np.abs(dxr - dyc)[mm].mean()))
+    votes = {r > 1 for r in ratios}
+    if len(votes) != 1: raise SystemExit('normal map green axis: quadrants disagree %s - not guessing' % ratios)
+    return votes.pop(), ratios

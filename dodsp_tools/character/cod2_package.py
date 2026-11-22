@@ -96,16 +96,21 @@ def textures(pack, mats, outdir):
             nname = nmap.lstrip('~').split('-')[0]
             if nname not in done:
                 t = A.iwi(os.path.join(pack, 'images', nmap + '.iwi'))['rgba'].astype(np.float32) / 127.5 - 1
-                x, y = t[..., 3], t[..., 1]; z = np.sqrt(np.clip(1 - x * x - y * y, 0, 1))
+                x, y = t[..., 3], t[..., 1]
+                down, ratios = A.green_points_down(x, y, (x * x + y * y) < 0.95)
+                if not down: y = -y                     # Source's green points image-down
+                z = np.sqrt(np.clip(1 - x * x - y * y, 0, 1))
                 rgb = np.clip((np.stack([x, y, z], -1) + 1) * 127.5 + 0.5, 0, 255).astype(np.uint8)
                 chain = vtf.mip_chain(rgb)
                 vtf.write(os.path.join(outdir, nname + '.vtf'), rgb.shape[1], rgb.shape[0], 'BGR888',
                           [c[..., ::-1].tobytes() for c in reversed(chain)], flags=vtf.TEXTUREFLAGS_NORMAL)
-                done[nname] = True
+                done[nname] = 'green %s%s (curl ratios %s)' % ('down' if down else 'UP', '' if down else ' -> flipped',
+                                                               ' '.join('%.2f' % r for r in ratios))
             vmt.append('\t"$bumpmap" "%s/%s"' % (MATDIR, nname))
         vmt += ['}']
         open(os.path.join(outdir, m + '.vmt'), 'w').write('\n'.join(vmt) + '\n')
-        report[m] = dict(colour=mm['colorMap'], size='%dx%d' % (col['w'], col['h']), normal=nmap)
+        report[m] = dict(colour=mm['colorMap'], size='%dx%d' % (col['w'], col['h']), normal=nmap,
+                         green=done.get(nmap.lstrip('~').split('-')[0]) if nmap else None)
     return report
 
 def build(pack, npz, ref, soldier, out, name, helmet, models):
