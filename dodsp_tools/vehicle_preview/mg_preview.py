@@ -1,7 +1,7 @@
 """V2b preview: the halftrack's front MG42 and its gunner - the gun sweeping its arc with the bay empty and with six
 riders aboard, and the gunner shot at the gun.
 
-    python3 mg_preview.py <dodsp_tools dir> <rig out dir> <ride pack dir> <gunner poses dir> <MG42 model dir> <CoD2 pack> <DoD decompile dir> <out dir> [norender]
+    python3 mg_preview.py <dodsp_tools dir> <rig out dir> <ride pack dir> <gunner poses dir> <MG42 model dir> <CoD2 pack> <out dir> [norender]
 
 What it draws is what the game will do (change both together):
   * the vehicle = the rigged halftrack (vehicle_rig.py output, doors shut); the crew and riders on their script seats
@@ -17,7 +17,7 @@ Checks printed: hands off the grips over the whole arc (2-degree grid), the clos
 (bones + thickness) at each arc, and the dead gunner's overlap with seated riders (the owner accepted clipping)."""
 import os, sys, re, numpy as np
 from PIL import Image, ImageDraw
-TOOLS, RIG, PACK, POSES, GUN, COD2, DOD, OUT = sys.argv[1:9]
+TOOLS, RIG, PACK, POSES, GUN, COD2, OUT = sys.argv[1:8]
 sys.path.insert(0, TOOLS); sys.path.insert(0, os.path.join(TOOLS, 'vehicle_preview'))
 from smd import SMD
 from render3d import Camera, _raster, splat_figures
@@ -79,9 +79,9 @@ def figure(s, W, origin, yaw=0.0):
     return segs
 
 # ---- the gunner's two sequences (the engine's blends) ---------------------------------------------------------
-comp = MGC.main(PACK, COD2, os.path.join(TOOLS, 'generated/cod2_vehicle_tags.txt'), DOD, POSES)
+comp = MGC.main(PACK, COD2, os.path.join(TOOLS, 'generated/cod2_vehicle_tags.txt'), POSES)
 YAWS, ROWS, STAND, MOUNT, HOLD = MGC.YAWS, comp['rows'], comp['stand'], comp['mount'], comp['hold_t']
-IDLE = smd(os.path.join(POSES, 'ww2_a_%s.smd' % comp['poses'][(0, comp['rows'][0])]))     # his skeleton (the pack's)
+IDLE = pack_smd('halftrack_mggunner_idle')
 AIM = {(y, p): local(smd(os.path.join(POSES, 'ww2_a_%s.smd' % comp['poses'][(y, p)])), 0) for y in YAWS for p in ROWS}
 DEATH = {y: smd(os.path.join(POSES, 'ww2_a_%s.smd' % comp['deaths'][y])) for y in YAWS}
 def cell(v, keys):
@@ -139,9 +139,9 @@ def closest(gun_segs, segs_list):
     return best
 
 # ---- checks --------------------------------------------------------------------------------------------------
-grid = [(y, p) for y in np.arange(-30, 30.01, 2.0) for p in np.arange(ROWS[0], ROWS[-1] + 0.01, 1.0)]
+grid = [(y, p) for y in np.arange(-30, 30.01, 2.0) for p in np.arange(ROWS[0], ROWS[-1] + 0.01, 2.5)]
 ge = max((grip_error(y, p), y, p) for y, p in grid)
-print('hands off the grips over the arc (engine blend, every 2 deg yaw / 1 deg pitch): worst %.2f units at yaw %+g pitch %+g' % ge)
+print('hands off the grips over the arc (engine blend, every 2 deg / 2.5 deg): worst %.2f units at yaw %+g pitch %+g' % ge)
 for arc in (ARC_EMPTY, ARC_RIDERS):
     worst = min((closest(figure(IDLE, world(IDLE, aim_local(y, p)), STAND), [seated(*r) for r in RIDERS]), y, p)
                 for y, p in grid if abs(y) <= arc + 1e-6)
@@ -172,8 +172,7 @@ def gif(track, riders, cams, path, caption, t_end):
         frames.append(im)
     frames[0].save(path, save_all=True, append_images=frames[1:], duration=67, loop=0, optimize=True)
 def sweep(arc, T=6.0):
-    mid, half = (ROWS[0] + ROWS[-1]) / 2.0, (ROWS[-1] - ROWS[0]) / 2.0
-    return lambda t: (arc * np.sin(2 * np.pi * t / T), mid + half * np.sin(2 * np.pi * t / (T / 2.0) + 0.6), None)
+    return lambda t: (arc * np.sin(2 * np.pi * t / T), 15 * np.sin(2 * np.pi * t / (T / 2.0) + 0.6), None)
 cams = [Camera(200, 32, (-10, 0, 60), 2.4, 620, 460), Camera(180, 89, (-20, 0, 0), 2.0, 380, 460)]
 if 'norender' not in sys.argv:
     gif(sweep(ARC_EMPTY), False, cams, os.path.join(OUT, 'v2b_mg_sweep_empty.gif'), 'bay empty: arc +-%d' % ARC_EMPTY, 6.0)

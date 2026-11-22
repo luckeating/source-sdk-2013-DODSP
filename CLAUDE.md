@@ -1321,6 +1321,23 @@ If you learn something like this, add it here in the same commit as the fix.
   at z 0 and contain "wheel": the client wheel spinner must skip bones at ground height before a CoD1 model drives.
   The Elefant/SU-152 are casemate guns: V2 needs a "hull aims" mode (the owner asked about a StuG).
 
+- **V2b PREVIEWED 2026-11-21 (the halftrack's front MG42 + a visible gunner; owner: "lets get that halftrack completed").**
+  Tools (dodsp_tools/vehicle_preview): mg42_model.py (CoD2's mg42_with_bipod_test1 as dodsp_mg42_pintle: origin = the
+  elevation pivot tag_aim, bones mg_base/mg_gun, pose mg_pitch +-15, attachment muzzle), mg_gunner_compose.py (the gunner =
+  CoD2's halftrack_mggunner_idle on tag_mgguy, the gun turned about tag_turret, spine twist/lean, two-bone arm IK onto the
+  idle's grips, his whole body stepped round the pivot where an arm can't reach; 13 mg_yaw columns x 4 mg_pitch rows =
+  52 poses - studiomdl's ParseSequence keeps a sequence's animations in animations[64] UNCHECKED, so the tool refuses
+  more; and a per-column death, CoD2's death_stand_dropinplace starting on his pose), mg_preview.py (blends the poses the
+  ENGINE's way - nlerp of local rotations - so hands drifting between poses are measured: <= 0.84). Owner's arc: +-30
+  bay empty, +-20 with riders (at +-30 he walks into the seated riders), "accept clipping" for the front two riders.
+  SHOULDERED VERSION (owner asked: "the butt should be on his shoulder ... looks like he's afraid of the gun", period photos)
+  built and previewed, commit c5ef467: DoD's own deployed-MG42 hold (dod_player_shared aimmatrix_deployed_idle_MG_neutral,
+  same skeleton), CoD2's tag_butt in his shoulder pocket, the gun at its REAL size (CoD2's MG42 is 1.21x: 1.48 m vs 1.22;
+  at CoD2's size no standing man can shoulder it), body turning with the gun (hips half + spine twist, a lean out over the
+  wall at the far right), legs IK. Costs: muzzle depression -6 (not -15), a 32-degree lean at -30, more rider clipping.
+  OWNER 2026-11-21: "use the original for now, we can mess with better looking versions later" - so V2b ships the first
+  version; the shouldered tools are in c5ef467 (git show c5ef467:dodsp_tools/vehicle_preview/mg_gunner_compose.py).
+
 ## REQUIRED FIXES (owner said "mark it as a required fix" - do before calling the vehicles done)
 - **Carrier open top** (owner 2026-11-21): carrier.mdl / carrier_desert.mdl collision is one closed convex shell over the
   open crew compartment, so the crew and its 2 side-wall riders can't be shot. Same fix as the halftrack: an OPEN_TOP

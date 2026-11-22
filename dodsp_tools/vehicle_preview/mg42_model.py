@@ -10,11 +10,7 @@ THE MODEL'S FACTS (the server reads them from the compiled model, never from num
     bone mg_base = CoD2's tag_pivot part (the yoke: traverses with the entity, never elevates)
     bone mg_gun  = CoD2's tag_aim_animated part (the gun: elevated by the pose parameter "mg_pitch", + = muzzle up)
     attachment "muzzle" on mg_gun = CoD2's tag_flash (where the bullets and the flash start)
-Units: CoD2's x PORT_SCALE (1.0284), like every CoD2 port - and the GUN (not the yoke) then x GUN_SCALE about its pivot:
-CoD2's MG42 is 1.21x a real one (butt plate to flash hider 59.1 units = 1.48 m at DOD-SP's 40 units a metre; the real gun
-is 1.22 m). At CoD2's size the butt sat 48 units behind the pivot and no man standing on the bay floor could shoulder it;
-at the real size the butt (CoD2's own tag_butt) is at a standing man's shoulder (mg_gunner_compose.py). The yoke keeps
-its size so it still sits on the pintle. Frame: written so studiomdl's default 90-degree turn
+Units: CoD2's x PORT_SCALE (1.0284), like every CoD2 port. Frame: written so studiomdl's default 90-degree turn
 faces it +x in game (an SMD faces -y: game (x, y, z) -> SMD (y, -x, z)), like editor_models.py. UVs: CoD's v runs
 down, an SMD's up (v' = 1 - v). Material: CoD2's own name, mtl_weapon_mg42, in models\\cod2\\ like the vehicles.
 No collision model (the entity is not solid: bullets pass it, as they pass a real gun's air gaps).
@@ -24,39 +20,25 @@ HERE = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, HERE)
 from cod2_xmodel import parts, surfs
 
 PORT_SCALE = 1.0284
-UNITS_PER_METRE = 40.0                         # = DODSP_UNITS_PER_METRE (dodsp_vehicle_armour.h)
-REAL_LENGTH = 1.22                             # m, the MG42 butt plate to flash hider
 PITCH = 15.0                                   # mg_pitch range +-PITCH (the gunner's poses: mg_gunner_compose.py TOP)
 NAME = 'dodsp_mg42_pintle'
 
 def to_smd(p): return np.array([p[1], -p[0], p[2]])
 def Rx(a): a = np.radians(a); c, s = np.cos(a), np.sin(a); return np.array([[1, 0, 0], [0, c, -s], [0, s, c]])
 
-def gun_facts(cod2):
-    """THE one owner of the gun's size and its points, in the GAME frame relative to the pivot (tag_aim), gun level and
-    ahead: scale, butt (CoD2 tag_butt: where it meets the gunner's shoulder), grip (tag_weapon: where CoD2 puts the
-    gunner's right hand), flash (tag_flash: the muzzle). mg_gunner_compose.py and the model both read it."""
+def main(cod2, out):
+    os.makedirs(out, exist_ok=True)
     B = parts(os.path.join(cod2, 'xmodelparts', 'mg42_with_bipod_test1'))
     S = surfs(os.path.join(cod2, 'xmodelsurfs', 'mg42_with_bipod_test1'))
     T = {b['name']: b['t'] * PORT_SCALE for b in B}
     aim = T['tag_aim']
-    g = [s for s in S if B[s['dbone']]['name'] == 'tag_aim_animated']
-    xs = [((B[s['dbone']]['R'] @ v['pos'] + B[s['dbone']]['t']) * PORT_SCALE)[0] for s in g for v in s['verts']]
-    k = REAL_LENGTH * UNITS_PER_METRE / (max(xs) - min(xs))
-    pt = lambda n: (T[n] - aim) * k
-    return dict(B=B, S=S, T=T, aim=aim, scale=k, length=max(xs) - min(xs), butt=pt('tag_butt'), grip=pt('tag_weapon'), flash=pt('tag_flash'))
-
-def main(cod2, out):
-    os.makedirs(out, exist_ok=True)
-    F = gun_facts(cod2); B, S, T, aim, k = F['B'], F['S'], F['T'], F['aim'], F['scale']
     bone_of = {'tag_pivot': 0, 'tag_aim_animated': 1}
     tris = []
     for s in S:
         bname = B[s['dbone']]['name']
         if bname not in bone_of: raise SystemExit('mesh on bone %s - not the yoke or the gun' % bname)
         bi = bone_of[bname]; b = B[s['dbone']]
-        f = k if bi == 1 else 1.0                                       # the gun to its real size, the yoke as it is
-        V = [(to_smd(((b['R'] @ v['pos'] + b['t']) * PORT_SCALE - aim) * f), to_smd(b['R'] @ v['n']), (v['uv'][0], 1.0 - v['uv'][1])) for v in s['verts']]
+        V = [(to_smd((b['R'] @ v['pos'] + b['t']) * PORT_SCALE - aim), to_smd(b['R'] @ v['n']), (v['uv'][0], 1.0 - v['uv'][1])) for v in s['verts']]
         for t in s['tris']:
             tris.append((bi, [V[k] for k in (t[0], t[2], t[1])]))   # CoD winds the other way (as the vehicle ports)
     nodes = 'nodes\n0 "mg_base" -1\n1 "mg_gun" 0\nend\n'
@@ -70,7 +52,7 @@ def main(cod2, out):
     open(os.path.join(out, NAME + '_ref.smd'), 'w', newline='\n').write(ref)
     for tag, deg in (('down', -PITCH), ('up', PITCH)):
         open(os.path.join(out, '%s_%s.smd' % (NAME, tag)), 'w', newline='\n').write('version 1\n' + nodes + skel(deg))
-    m = to_smd(F['flash'])
+    m = to_smd(T['tag_flash'] - aim)
     qc = ('// DOD-SP: CoD2\'s MG42 (mg42_with_bipod_test1) for the halftrack\'s pintle - dodsp_tools/vehicle_preview/mg42_model.py.\n'
           '// Origin = the elevation pivot (CoD2 tag_aim); traverse = the entity\'s yaw; elevation = mg_pitch (+ = up).\n\n'
           '$modelname "dodsp/vehicles/%s.mdl"\n$cdmaterials "models\\cod2\\"\n$surfaceprop "metal"\n\n'
@@ -85,7 +67,6 @@ def main(cod2, out):
     def muzzle(deg): return Rx(-deg) @ m
     up, down = muzzle(PITCH), muzzle(-PITCH)
     if not up[2] > m[2] > down[2]: raise SystemExit('mg_pitch turns the muzzle the wrong way (%s / %s / %s)' % (down, m, up))
-    print('%s: gun x %.3f (CoD2\'s is %.1f units long, a real MG42 %.1f); butt %.1f behind the pivot' % (NAME, k, F['length'], REAL_LENGTH * UNITS_PER_METRE, -F['butt'][0]))
     print('%s: %d triangles; muzzle %.1f ahead of the pivot, %.1f up; mg_pitch +%g lifts it to %.1f, -%g drops it to %.1f'
           % (NAME, len(tris), -m[1], m[2], PITCH, up[2], PITCH, down[2]))
 
