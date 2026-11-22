@@ -22,6 +22,13 @@ struct model_t;
 
 #define DODSP_WHEELS_KEY	"dodsp_wheels"
 
+// V5: a SPRUNG body (body_pivot above) rocks on the client - riders, crew and the guns mounted on it must rock with it.
+// Everything seated or mounted on such a vehicle is parented to this attachment index, which no model has: the server
+// answers it with the vehicle's own transform (so its maths is unchanged), the client with the body's (the vehicle's
+// transform tipped by the body's spring). One owner of "on the body": CDoDSPVehicle::BodyAttachment.
+// It must fit the engine's networked parent attachment (NUM_PARENTATTACHMENT_BITS = 6 bits, 1..63).
+#define DODSP_BODY_ATTACHMENT	63
+
 struct DoDSPWheel_t
 {
 	char	szBone[64];

@@ -66,6 +66,8 @@
 #include "utldict.h"
 #include "tier1/fmtstr.h"
 
+extern int DoDSPVehicle_BodyAttachment( CBaseEntity *pVehicle );	// V5 (dodsp_vehicle.cpp): what a seat on it parents to
+
 void DoDSP_SetWeaponDeployed( CBaseCombatWeapon *pWeapon, bool bDeployed );		// weapon_dodsp_guns.cpp
 
 // memdbgon must be the last include file in a .cpp file!!!
@@ -313,6 +315,7 @@ public:
 	bool		RidePosition( float flNow, Vector *pvecPos, float *pflFrame, float *pflYaw = NULL ) const;
 	void		SetRideWalk( const Vector *pvecWalk, float flYaw ) { m_bRideWalk = pvecWalk != NULL; m_vecRideWalk = pvecWalk ? *pvecWalk : vec3_origin; m_flRideWalkYaw = flYaw; }
 	void		SetRideRally( const Vector *pvecRally ) { m_bRideRally = pvecRally != NULL; m_vecRideRally = pvecRally ? *pvecRally : vec3_origin; }
+	int			ClearLineOfFire( const Vector &vecFrom, const Vector &vecDir );	// V5: 1 moving, 0 can't, -1 just did
 	virtual void PhysicsSimulate( void );
 	void		ScriptedMoveTick( const Vector &vecPos, const float *pflYaw = NULL );	// THE one way a get-out / bail-out moves him (V3e: m_Motion)
 	float		SequenceFps( int iSequence );				// one owner: a sequence's real frame rate, from the model
@@ -840,6 +843,12 @@ private:
 	float				m_flTestPainAllTime;
 	bool				m_bTestCrouch;			// npc_german_test_crouch: hold a crouch whatever the AI wants
 
+	// V5: out of a friendly vehicle gun's line of fire - a short run sideways the vehicle asks for (not saved: a
+	// load forgets the request, the vehicle asks again if he's still in the way)
+	bool				m_bClearLOF;
+	Vector				m_vecClearLOF;
+	float				m_flClearLOFAt;			// not again before this (he stepped aside just now)
+
 	// V4b: bailing out of a knocked-out tank (saved: a load mid-climb puts him on the ground)
 	bool				m_bBailOut, m_bBailRun;
 	Vector				m_vecBailHatch, m_vecBailGround, m_vecBailRun;
@@ -939,6 +948,9 @@ CNPC_GermanSoldier::CNPC_GermanSoldier() : m_AnimMap( DefLessFunc( int ) )
 	m_iAnimMapVersion = -1;
 	m_bBailOut = m_bBailRun = false;
 	m_vecBailHatch = m_vecBailGround = m_vecBailRun = vec3_origin;
+	m_bClearLOF = false;
+	m_vecClearLOF = vec3_origin;
+	m_flClearLOFAt = 0.0f;
 	m_flBailYaw = 0.0f;
 	m_eRide = GERMAN_RIDE_NONE;
 	m_vecRideSeat = m_vecRideTag = vec3_origin;
@@ -6834,6 +6846,13 @@ int CNPC_GermanSoldier::SelectScheduleInner( void )
 		m_vecLastPosition = m_vecBailRun;
 		return SCHED_FORCED_GO_RUN;
 	}
+	// V5: a vehicle of his side can't fire past him - a short run sideways out of its line of fire, then the fight goes on
+	if ( m_bClearLOF && IsAlive() )
+	{
+		m_bClearLOF = false;
+		m_vecLastPosition = m_vecClearLOF;
+		return SCHED_FORCED_GO_RUN;
+	}
 	if ( m_flWantFullFlinch > 0.0f )
 	{
 		bool bFresh = gpGlobals->curtime - m_flWantFullFlinch < 0.5f;
@@ -7654,7 +7673,7 @@ bool CNPC_GermanSoldier::BeginRide( CBaseEntity *pVehicle, const Vector &vecSeat
 	m_bBailOut = m_bBailRun = false;
 	SetMoveType( MOVETYPE_NONE );
 	SetGroundEntity( NULL );
-	SetParent( pVehicle );
+	SetParent( pVehicle, DoDSPVehicle_BodyAttachment( pVehicle ) );	// V5: on a sprung body he rocks with it (the client)
 	SetLocalOrigin( vecSeat );
 	SetLocalAngles( QAngle( 0.0f, flYaw, 0.0f ) );
 	IncrementInterpolationFrame();
@@ -7904,6 +7923,46 @@ void GermanSoldier_SetRideRally( CBaseEntity *pEnt, const Vector *pvecRally )
 	CNPC_GermanSoldier *pG = dynamic_cast<CNPC_GermanSoldier *>( pEnt );
 	if ( pG )
 		pG->SetRideRally( pvecRally );
+}
+// V5: THE way a soldier gets out of a friendly vehicle gun's line of fire (CDoDSPVehicle::NoteBlockingFriend asks). A
+// short run SIDEWAYS from the line - to the side he's already on, 96 then 64 units, then the other side - to a spot his
+// hull fits and has ground under it. Not while riding, bailing out or in a script; not twice within 4 s.
+int CNPC_GermanSoldier::ClearLineOfFire( const Vector &vecFrom, const Vector &vecDir )
+{
+	if ( !IsAlive() || m_eRide != GERMAN_RIDE_NONE || m_bBailOut || m_bBailRun || IsInAScript() )
+		return 0;
+	if ( gpGlobals->curtime < m_flClearLOFAt || m_bClearLOF )
+		return -1;
+	Vector vecRight( vecDir.y, -vecDir.x, 0.0f );
+	if ( VectorNormalize( vecRight ) < 0.01f )
+		return 0;
+	Vector vecMe = GetAbsOrigin();
+	float flSide = ( DotProduct( vecMe - vecFrom, vecRight ) >= 0.0f ) ? 1.0f : -1.0f;
+	static const float s_flDist[] = { 96.0f, 64.0f };
+	for ( int t = 0; t < 4; t++ )
+	{
+		float flSign = ( t < 2 ) ? flSide : -flSide;
+		Vector vecTo = vecMe + vecRight * flSign * s_flDist[t & 1];
+		trace_t tr;
+		Vector vecUp( 0, 0, 18.0f );		// over a kerb or a root
+		UTIL_TraceHull( vecMe + vecUp, vecTo + vecUp, WorldAlignMins(), WorldAlignMaxs(), MASK_NPCSOLID, this, COLLISION_GROUP_NONE, &tr );
+		if ( tr.startsolid || tr.fraction < 1.0f )
+			continue;
+		UTIL_TraceLine( vecTo + vecUp, vecTo - Vector( 0, 0, 64.0f ), MASK_NPCSOLID, this, COLLISION_GROUP_NONE, &tr );	// the ground under his step
+		if ( tr.fraction >= 1.0f || tr.startsolid )
+			continue;
+		m_vecClearLOF = tr.endpos;
+		m_bClearLOF = true;
+		m_flClearLOFAt = gpGlobals->curtime + 4.0f;
+		ClearSchedule( "out of a vehicle gun's line of fire" );
+		return 1;
+	}
+	return 0;
+}
+int GermanSoldier_ClearLineOfFire( CBaseEntity *pEnt, const Vector &vecFrom, const Vector &vecDir )
+{
+	CNPC_GermanSoldier *pG = dynamic_cast<CNPC_GermanSoldier *>( pEnt );
+	return pG ? pG->ClearLineOfFire( vecFrom, vecDir ) : 0;
 }
 int GermanSoldier_RideState( CBaseEntity *pEnt )
 {

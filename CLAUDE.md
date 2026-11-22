@@ -1381,12 +1381,60 @@ If you learn something like this, add it here in the same commit as the fix.
   V2b2: no still frames, hands on the grips. LESSON: a value the server sets on ANOTHER entity reaches the screen at that
   entity's clock - stamp it, or it's drawn at the wrong time (V3e taught it for NPCs moved by code; V2b broke it for
   props and poses driven by the vehicle). Undo: the V2b server.dll (build 44975332307).
+  OWNER 2026-11-21 (same build): "yes it works" - the gun aims and fires at him; the stutter (V2b2) is the one fault.
+- **V5 PREPARED 2026-11-21 (a vehicle fix build, owner: "lets add 2 and 3 ... and the smaller fixes from 4 as well. all
+  of them are visible in game") - with V2b2, NOT built.** One server.dll + client.dll, no models, no script change.
+  (1) HULL AIM. The halftrack's MG42 swings +-30 and nothing ever turned the hull: beside or behind it, an enemy was
+  never shot at (only a tracked tank with a JAMMED turret pivoted). GunsBear = THE answer to "can a gun reach that point
+  from where the hull points" (working turret: all round; jammed: its barrel; hull / pintle MGs: their arcs, infantry
+  only; unmanned / empty guns don't count; optional frame = a spot it would stand at). HullAim (DriveThink, parked only)
+  turns it until one bears: tracked pivot; wheeled = back/forward legs on a full-lock curve, the clear way first (offensive
+  / defensive only - hold and scripted stay put). Reason codes VehicleHullAim_t (guns bear / pivoting / backing / creeping /
+  behaviour keeps it / no room), printed with dodsp_vehicle_debug and in `dodsp_vehicles`. Gives up for 10 s after 5 s
+  without 0.5 degrees gained or 10 legs. It steers 7 degrees inside the arc and stops at 4 - steering AT the stop made
+  the yaw rate fall with the turn left and it crawled forever (dodsp_tools/vehicle_preview/hullaim_sim.py: halftrack
+  45 deg off 1.9 s / 1 leg ... 180 deg 15.5 s / 4 legs, ends within ~150 units of where it stood). ChooseFirePosition
+  adds what GunsBear says the guns would be short at a spot (arrival heading = the line it drives in on; x4 for wheels).
+  Watchdog: `INVARIANT ... no gun can reach X ... and nothing turns it` (parked, mobile, seen target, hull aim idle 3 s).
+  (2) ITS OWN MEN IN ITS LINE OF FIRE. FriendlyInTheWay hands a man ON the line (not one near a shell's impact) to
+  NoteBlockingFriend (one owner): blocking 0.8 s -> GermanSoldier_ClearLineOfFire (the soldier runs 96/64 units
+  sideways, his side first, where his hull fits with ground under it; SCHED_FORCED_GO_RUN from SelectScheduleInner;
+  not while riding / bailing / scripted; 4 s cooldown), asked again after 4.5 s; INVARIANT when one friend blocks a gun
+  8 s without a break. (3) THE KNOCK-OUT'S JOLT. HaltMotion zeroed the hull's spring, so the killing hit showed no
+  jolt; the spring is now RockHull (one owner, DriveThink and SettleHull), HaltMotion leaves it alone and
+  DamageStateThink lets the hull settle (turning only; CheckHalted allows that while m_bHullSettling). (4) THE PIVOT'S
+  SWING. SwingClear: before any turn made below 20 units/s, each corner's arc for the next 2 thinks + 1 degree (a
+  16-unit column box inset at the corner, ground under both ends) against the world (VehicleBoxBlocked) and vehicles
+  (VehicleInTheWay); a corner already inside something may swing on. Blocked = no turn (route: the stuck watchdog
+  replans; hull aim: the other way). Rolling turns aren't checked (their corridor covers them; checking would stop them
+  on graded forest roads). (5) RIDERS TILT WITH THE SPRUNG BODY. Everything seated or mounted on a vehicle (riders, crew,
+  the pintle gun, turret, fire, smoke) is parented to DODSP_BODY_ATTACHMENT (63, dodsp_vehicle_wheels.h) via
+  BodyAttachment() / DoDSPVehicle_BodyAttachment - an index no model has: the SERVER answers it with the vehicle's own
+  transform (every seat / hatch / landing sum unchanged), the CLIENT with the body's (BodyMatrix x the vehicle);
+  BodySprings invalidates those children every frame (the engine moves a child only when its parent moves). INVARIANT
+  if a sprung model has 63+ attachments. Guards: lint check_vehicle_v5 (every rule above, each tested by breaking it)
+  + check_vehicle_body (spring writers: BodyKick, RockHull, SettleHull). Files: dodsp_vehicle.cpp, npc_german_soldier.cpp,
+  c_dodsp_vehicle.cpp, dodsp_vehicle_wheels.h, dodsp_lint_client.py, vehicle_preview/hullaim_sim.py. Undo: the V2b
+  client.dll + server.dll (build 44975332307).
+- **Getting IN (owner asked 2026-11-21: "is there a halftrack get in animation?")**: NO - not in CoD2's 3669 xanims nor
+  CoD1's set. Nearest: germantruck_guya/b/c_climbin (Opel Blitz tailgate, 1.7-2.9 s, a ~45-unit climb; the halftrack's
+  rear step is ~30), truckride_waters_climbin (5 s scene), toujane armored car / carchase / kubelwagon get-ins (over a car
+  door). Nothing walks up an aisle and sits (build it like the get-outs in reverse). Boarding is a NEW feature (riders
+  are spawned seated today) - a stage of its own, previewed first; the owner to say what triggers it.
+- **The owner's CoD3 character pack (z_iw_cod3_playermodels_01_SP.iwd, a CoD2 mod, 2026-11-21)**: models only - 345
+  xmodels, character + aitype scripts, no xanims. Every body uses CoD2's skeleton (CoD2's 65 core bones, limbs within
+  0.14 units, root rest 3.6 off - animations drive it) and cod2_xmodel.py reads them: CoD2's animations play on them as
+  they are (owner's guess, confirmed). US rangers (Normandy, 30cal, medic, radio, named, wet), British, German (Wehrmacht,
+  Fallschirmjager, Panzergrenadier, Waffen, winter / Africa, MG42 gunners, officers), Russian; each character = body +
+  head + gear + a random helmet (xmodelalias) - the "random look per spawn" plan. Candidate for the US infantry (vs the
+  BiA GMod rip). Hobby only, like the rest.
 
 ## REQUIRED FIXES (owner said "mark it as a required fix" - do before calling the vehicles done)
 - **Carrier open top** (owner 2026-11-21): carrier.mdl / carrier_desert.mdl collision is one closed convex shell over the
   open crew compartment, so the crew and its 2 side-wall riders can't be shot. Same fix as the halftrack: an OPEN_TOP
   entry in vehicle_rig.py (measure floor, walls, front/rear from the mesh; keep every seat open; check the pieces stay
   separate), owner recompiles the two carrier QCs. Model only - no code build.
+  CONFIRMED 2026-11-21 (owner recompiled both): "its fine in game, i was able to throw grenades into its hull".
   PREPARED 2026-11-21 (dodsp_carrier_open_top.zip, both variants; meshes/skeletons byte-identical to T1b, only the
   collision + `$concave`): 9 pieces - floor (shell cut at z 17), tracks |y| >= 26.5 up to z 38.5 (the hull's inner walls
   at |y| 27-29 + the tracks), engine housing (|y| <= 10, x -45..14, to z 55), bulkhead (x 14-23, to z 63), side screens

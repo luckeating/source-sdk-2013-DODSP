@@ -116,6 +116,9 @@ public:
 	virtual void	OnDataChanged( DataUpdateType_t type );
 	virtual void	ClientThink( void );
 	float			GetDistance( void );
+	using BaseClass::GetAttachment;
+	virtual bool	GetAttachment( int number, matrix3x4_t &matrix );					// V5: the body attachment
+	virtual bool	GetAttachment( int number, Vector &origin, QAngle &angles );
 
 private:
 	struct Wheel_t
@@ -343,7 +346,35 @@ void C_DoDSPVehicle::BodySprings( float dt )
 		m_flBodyPitch = clamp( m_flBodyPitch + m_flBodyPitchVel * h, -8.0f, 8.0f );
 		m_flBodyRoll = clamp( m_flBodyRoll + m_flBodyRollVel * h, -8.0f, 8.0f );
 	}
+	// V5: what sits or is mounted on the body (parented to DODSP_BODY_ATTACHMENT) follows it: the engine keeps a child's
+	// world position until its parent MOVES, and a body rocking over a parked chassis isn't a move - so say so
+	for ( C_BaseEntity *pChild = FirstMoveChild(); pChild; pChild = pChild->NextMovePeer() )
+		if ( pChild->GetParentAttachment() == DODSP_BODY_ATTACHMENT )
+			pChild->InvalidatePhysicsRecursive( POSITION_CHANGED | ANGLES_CHANGED );
+}
 
+// V5: the body attachment (dodsp_vehicle_wheels.h) - the vehicle's transform tipped by the body's spring, so the riders,
+// the crew and the guns on a sprung body rock with it. The server answers the same index with the untipped vehicle.
+bool C_DoDSPVehicle::GetAttachment( int number, matrix3x4_t &matrix )
+{
+	if ( number != DODSP_BODY_ATTACHMENT )
+		return BaseClass::GetAttachment( number, matrix );
+	matrix3x4_t matBody;
+	if ( BodyMatrix( matBody ) )
+		ConcatTransforms( matBody, EntityToWorldTransform(), matrix );
+	else
+		MatrixCopy( EntityToWorldTransform(), matrix );
+	return true;
+}
+
+bool C_DoDSPVehicle::GetAttachment( int number, Vector &origin, QAngle &angles )
+{
+	if ( number != DODSP_BODY_ATTACHMENT )
+		return BaseClass::GetAttachment( number, origin, angles );
+	matrix3x4_t matrix;
+	GetAttachment( number, matrix );
+	MatrixAngles( matrix, angles, origin );
+	return true;
 }
 
 // T1: THE suspension. Every unit sits on the ground straight under its contact (its bone's rest spot, on the ground),

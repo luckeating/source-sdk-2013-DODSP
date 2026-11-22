@@ -791,6 +791,69 @@ def check_vehicle_parts():
     return bad
 
 
+def _body(src, cls, fn):
+    m = re.search(r"\b%s::%s\([^)]*\)\s*\{(.*?)\n\}" % (cls, fn), src, re.S)
+    return "\n".join(l.split("//")[0] for l in m.group(1).split("\n")) if m else None
+
+def check_vehicle_v5():
+    """V5 (the vehicle fix build): each fix's invariant, so a later edit can't quietly undo it.
+    - hull aim: DriveThink turns a parked vehicle through HullAim when no gun can reach its target, runs the "no gun can
+      reach ... and nothing turns it" watchdog, and checks the body's swing (SwingClear) before it turns; the fire-spot
+      search asks GunsBear (one owner of "can a gun reach it from there") - the halftrack's MG42 sat out every fight
+      beside or behind it, a pivoting tank's tail went through walls;
+    - its own men: FriendlyInTheWay hands a man ON the line to NoteBlockingFriend, which asks him to step aside
+      (GermanSoldier_ClearLineOfFire), and the soldier's schedule runs that request;
+    - the knock-out's jolt: HaltMotion leaves the hull's spring alone, DamageStateThink lets it settle (SettleHull)
+      before CheckHalted;
+    - riders tilt with a sprung body: everything parented to a vehicle goes through its body attachment (BodyAttachment
+      / DoDSPVehicle_BodyAttachment), the client answers that index with the body's transform and moves the children
+      when the body rocks."""
+    bad = []
+    src = open(VEHICLE_CPP, encoding="latin-1").read()
+    drive = _body(src, "CDoDSPVehicle", "DriveThink") or ""
+    for need, why in ((r"(?<!Set)\bHullAim\(", "turn a parked vehicle so a gun bears"), (r"\bSwingClear\(", "check the body's swing before turning"),
+                      (r"no gun can reach", "the hull-aim watchdog")):
+        if not re.search(need, drive):
+            bad.append("dodsp_vehicle.cpp: DriveThink no longer calls %s (%s)" % (need.replace("\\b", "").replace("\\(", "").replace("(?<!Set)", ""), why))
+    if re.search(r"m_bTurretJammed\s*&&\s*!m_bHasGoal", src):
+        bad.append("dodsp_vehicle.cpp: the old jammed-turret pivot is back - HullAim owns turning to bring a gun round")
+    cfp = _body(src, "CDoDSPVehicle", "ChooseFirePosition") or ""
+    if "GunsBear(" not in cfp:
+        bad.append("dodsp_vehicle.cpp: ChooseFirePosition doesn't ask GunsBear - two answers to 'can a gun reach it'")
+    fiw = _body(src, "CDoDSPVehicle", "FriendlyInTheWay") or ""
+    if "NoteBlockingFriend(" not in fiw:
+        bad.append("dodsp_vehicle.cpp: FriendlyInTheWay no longer reports the man on the line (NoteBlockingFriend)")
+    nbf = _body(src, "CDoDSPVehicle", "NoteBlockingFriend") or ""
+    if "GermanSoldier_ClearLineOfFire(" not in nbf or "INVARIANT" not in nbf:
+        bad.append("dodsp_vehicle.cpp: NoteBlockingFriend must ask him to step aside and keep its INVARIANT")
+    sol = open(SOLDIER_CPP, encoding="utf-8", errors="replace").read()
+    ssi = _body(sol, "CNPC_GermanSoldier", "SelectScheduleInner") or ""
+    if not re.search(r"if\s*\(\s*m_bClearLOF\b", ssi):
+        bad.append("npc_german_soldier.cpp: SelectScheduleInner ignores the step-aside request (m_bClearLOF)")
+    halt = _body(src, "CDoDSPVehicle", "HaltMotion") or ""
+    if re.search(r"m_flSusp(Vel|Pitch)\s*=", halt):
+        bad.append("dodsp_vehicle.cpp: HaltMotion zeroes the hull's spring - the knock-out's jolt is cancelled again")
+    dst = _body(src, "CDoDSPVehicle", "DamageStateThink") or ""
+    if "SettleHull()" not in dst or dst.find("SettleHull()") > dst.find("CheckHalted()"):
+        bad.append("dodsp_vehicle.cpp: DamageStateThink must let the hull settle (SettleHull) before CheckHalted")
+    for n, line in enumerate(src.split("\n"), 1):
+        code = line.split("//")[0]
+        if re.search(r"->SetParent\(\s*this\s*[,)]", code) and "BodyAttachment()" not in code:
+            bad.append("dodsp_vehicle.cpp:%d parents something to the vehicle without BodyAttachment() - on a sprung body it "
+                       "wouldn't rock with it" % n)
+    for n, line in enumerate(sol.split("\n"), 1):
+        if re.search(r"\bSetParent\(\s*pVehicle\b", line.split("//")[0]) and "DoDSPVehicle_BodyAttachment(" not in line:
+            bad.append("npc_german_soldier.cpp:%d seats a man without DoDSPVehicle_BodyAttachment - he wouldn't rock with the body" % n)
+    cv = open(CLIENT_VEHICLE, encoding="utf-8").read()
+    ga = _body(cv, "C_DoDSPVehicle", "GetAttachment")
+    if not ga or "DODSP_BODY_ATTACHMENT" not in ga or "BodyMatrix(" not in ga:
+        bad.append("c_dodsp_vehicle.cpp: the body attachment isn't answered with the body's transform")
+    bs = _body(cv, "C_DoDSPVehicle", "BodySprings") or ""
+    if "InvalidatePhysicsRecursive" not in bs:
+        bad.append("c_dodsp_vehicle.cpp: BodySprings doesn't move the body's children - they'd stay put while it rocks")
+    return bad
+
+
 def check_hashint():
     """INVARIANT: tier1's HashInt never reads outside its 256-entry table, for ANY int key. Valve's shifted the signed
     key, so a negative one (ACT_INVALID, asked of the activity hash by TranslateActivity) indexed before the table and
@@ -827,12 +890,13 @@ def check_hashint():
 
 def check_vehicle_body():
     """H1: the body's rock has one owner per kind of vehicle - tanks: the server spring (m_flSuspPitch/Vel, written only
-    by the spring in DriveThink, BodyKick and HaltMotion; every blow / recoil goes through BodyKick, which networks it
+    by the spring RockHull, its settling SettleHull and BodyKick - V5: no longer HaltMotion, which cancelled the
+    knock-out's jolt; every blow / recoil goes through BodyKick, which networks it
     for a sprung body); sprung bodies (a model with a body_pivot): the client's BodySprings, the only writer of the body
     pitch/roll."""
     bad = []
     for path, var_re, allowed in ((VEHICLE_CPP_PATH, r"\bm_flSuspVel\s*(\+|-)?=(?!=)|\bm_flSuspPitch\s*=(?!=)",
-                                   ("BodyKick", "DriveThink", "HaltMotion", "CDoDSPVehicle")),
+                                   ("BodyKick", "RockHull", "SettleHull", "CDoDSPVehicle")),
                                   (CLIENT_VEHICLE, r"\bm_flBody(Pitch|Roll)(Vel)?\s*(\+|-)?=(?!=)", ("BodySprings", "C_DoDSPVehicle")),
                                   # T1: a suspension unit's lift - UpdateSuspension follows the ground, BuildWheelList starts it at 0
                                   (CLIENT_VEHICLE, r"\bflLift\s*(\+|-)?=(?!=)", ("UpdateSuspension", "BuildWheelList"))):
@@ -874,6 +938,7 @@ def main():
                      ("a vehicle's physics shadow can take its moves back (H3b)", check_vehicle_push),
                      ("a vehicle can be blind (H3b)", check_vehicle_eyes),
                      ("a vehicle turns a part off its clock (V2b2)", check_vehicle_parts),
+                     ("a V5 vehicle fix was undone (hull aim, line of fire, jolt, body attachment)", check_vehicle_v5),
                      ("tier1's HashInt can read outside its table (a negative key crashed the server)", check_hashint)):
         vbad = fn()
         if vbad:

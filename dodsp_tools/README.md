@@ -21,6 +21,8 @@ Python helpers used to build DOD-SP model assets (not part of the game build).
   (must match the German's, same order) and the hand IK "release" rules every CoD animation carries
   (DoD's own sequences lock the left hand to the right with `ikrule "lhand" touch`).
 - `render_pose.py`, `render_compare.py` – forward kinematics + quick pose plots for checking retargets.
+- `vehicle_preview/hullaim_sim.py` – V5 hull aim: how a wheeled vehicle (the halftrack) backs and creeps round until
+  its fixed-arc gun bears, with the code's margins and stall rule.
 - `driven_sim.py` – what the client draws when the vehicle's code turns a part (pintle MG + its gunner's pose,
   turret, steering, doors): engine latch/window rules, V2b as shipped vs V2b2's per-tick DrivenTick. Run it before
   changing how a vehicle drives a part.

@@ -160,6 +160,37 @@ static const char *s_pszTacticWhy[] = { "", "ordered", "no enemy known", "enemy 
 	"enemy too close", "no shot from here", "reported by its side", "no node with a shot", "leash", "settling", "immobilised" };
 COMPILE_TIME_ASSERT( ARRAYSIZE( s_pszTacticWhy ) == NUM_VWHYS );
 
+// V5 hull aim: a vehicle whose guns can't reach its target turns its nose until one can (a tank with a jammed turret,
+// the halftrack's +-30 degree MG42, the carrier, later the SU-152). One owner: HullAim (DriveThink, parked only).
+enum VehicleHullAim_t
+{
+	VHULL_NONE,				// a gun bears (or there's nothing to aim at / no gun that could)
+	VHULL_PIVOT,			// tracked: turning on the spot
+	VHULL_BACK,				// wheeled: backing on a turning curve
+	VHULL_FORWARD,			// wheeled: creeping forward on a turning curve
+	VHULL_NOT_ALLOWED,		// wheeled, and its behaviour (hold / scripted) keeps it where it stands
+	VHULL_GAVE_UP,			// no room to turn / no progress - waits VEHICLE_HULLAIM_RETRY before trying again
+	NUM_VHULLS
+};
+static const char *s_pszHullAim[] = { "guns bear", "pivoting to bring a gun round", "backing round to bring a gun round",
+	"creeping round to bring a gun round", "its behaviour keeps it in place", "no room to turn" };
+COMPILE_TIME_ASSERT( ARRAYSIZE( s_pszHullAim ) == NUM_VHULLS );
+#define VEHICLE_HULLAIM_START	2.0f		// degrees off a gun's arc before it starts turning
+#define VEHICLE_HULLAIM_MARGIN	4.0f		// ... and it turns until the target is this far inside the arc
+#define VEHICLE_HULLAIM_AIM		7.0f		// ... steering for this far inside (past the stop: the yaw rate falls with the
+											// turn left, so steering AT the stop crawled and never got there - hullsim)
+#define VEHICLE_HULLAIM_SPEED	80.0f		// wheeled: legs driven at most this fast
+#define VEHICLE_HULLAIM_LEGS	10			// wheeled: back / forward legs before it gives up
+#define VEHICLE_HULLAIM_STALL	5.0f		// no turn gained (0.5 degrees) in this long = give up
+#define VEHICLE_HULLAIM_RETRY	10.0f		// after giving up, this long before it tries again
+#define VEHICLE_HULLAIM_WATCH	3.0f		// INVARIANT: a gun that can't bear this long while nothing turns it
+#define VEHICLE_SWING_SPEED		20.0f		// SwingClear checks turns made slower than this (pivots)
+
+// V5: a friend standing in a gun's line of fire is asked to step aside (NoteBlockingFriend)
+#define VEHICLE_LOF_ASK			0.8f		// blocking this long -> asked
+#define VEHICLE_LOF_REASK		4.5f		// still there this long after he was asked -> asked again
+#define VEHICLE_LOF_WATCH		8.0f		// INVARIANT: one friend blocking a gun this long without a break
+
 #define VEHICLE_TACTIC_INTERVAL	1.0f
 #define VEHICLE_FORGET_TIME		30.0f		// an enemy unseen and unreported this long is forgotten
 #define VEHICLE_SPOTTER_RANGE	3000.0f		// its side's soldiers this close share what they see
@@ -243,6 +274,7 @@ extern void GermanSoldier_SetRideWalk( CBaseEntity *pEnt, const Vector *pvecWalk
 extern void GermanSoldier_SetRideRally( CBaseEntity *pEnt, const Vector *pvecRally );		// H3: once down he runs to this spot (vehicle space)
 extern void GermanSoldier_RideAbort( CBaseEntity *pEnt );
 extern int GermanSoldier_RideState( CBaseEntity *pEnt );		// 0 off, 1 seated, 2 getting off
+extern int GermanSoldier_ClearLineOfFire( CBaseEntity *pEnt, const Vector &vecFrom, const Vector &vecDir );	// V5: 1 moving, 0 can't, -1 just did
 #define VEHICLE_MAX_SEATS		8
 #define VEHICLE_DOOR_KEYS		32			// H3: keys in a "doors" curve
 #define VEHICLE_MAX_CREW_SEATS	3			// H2: crew members you can see in their seats (the halftrack's driver, commander, V2b MG gunner)
@@ -1062,6 +1094,11 @@ class CDoDSPVehicle : public CBaseAnimating
 {
 public:
 	DECLARE_CLASS( CDoDSPVehicle, CBaseAnimating );
+	// V5: the body attachment (dodsp_vehicle_wheels.h DODSP_BODY_ATTACHMENT) - here it IS the vehicle's own transform
+	using BaseClass::GetAttachment;
+	virtual bool	GetAttachment( int iAttachment, matrix3x4_t &attachmentToWorld );
+	int				BodyAttachment( void ) const { return m_bBodyAttach ? DODSP_BODY_ATTACHMENT : 0; }	// what rides ON the body parents here
+	bool			m_bBodyAttach;				// a sprung body whose model leaves the index free (MeasureBody; not saved)
 	DECLARE_DATADESC();
 	DECLARE_SERVERCLASS();
 
@@ -1141,6 +1178,9 @@ private:
 	void			MakeFire( float flSize, bool bEngine );
 	void			SetState( int eNew, CBaseEntity *pAttacker );
 	void			HaltMotion( void );
+	QAngle			RockHull( const QAngle &angGround, float flAccel, float dt );
+	void			SettleHull( void );
+	bool			m_bHullSettling;			// V5: out of the fight, the hull's spring still turning it (not saved)
 	void			CheckHalted( void );
 	void			FireKnockedOut( CBaseEntity *pAttacker );
 	bool			PlanRoute( void );
@@ -1175,6 +1215,10 @@ private:
 	Vector			BarrelDir( void );
 	Vector			MuzzlePos( const Vector &vecDir );
 	bool			FriendlyInTheWay( const Vector &vecFrom, const Vector &vecDir, float flRange, float flRadius, CBaseEntity **ppWho );
+	void			NoteBlockingFriend( CBaseEntity *pFriend, const Vector &vecFrom, const Vector &vecDir );
+	EHANDLE			m_hLOFFriend;				// V5: who's blocking a gun now (not saved)
+	float			m_flLOFFirst, m_flLOFLast, m_flLOFAskedAt;
+	bool			m_bLOFWarned;
 	void			FireMainGun( const Vector &vecDir );
 	void			FireMG( int iMG, const Vector &vecSrc, const Vector &vecDir );
 	Vector			MGMuzzle( int iMG );				// V3e: the one owner of where a machine gun's bullets start
@@ -1283,6 +1327,21 @@ private:
 	float			m_flNoRepositionUntil;
 	float			m_flSuspPitch, m_flSuspVel, m_flPrevSpeed;	// the hull's rock on its suspension (degrees, nose up +)
 	bool			m_bPreferReverse;			// keep the front to the enemy: back away rather than turn round
+	// V5 hull aim (VehicleHullAim_t) - transient except the retry time
+	int				m_eHullAim;
+	int				m_iHullLegDir;				// wheeled: -1 backing, +1 forward
+	Vector			m_vecHullLegStart;
+	int				m_nHullLegs;
+	bool			m_bHullLegBlocked;			// the last think's drive found the leg blocked: turn the other way
+	float			m_flHullAimBest, m_flHullAimBestAt;	// the smallest turn still needed so far, and when
+	float			m_flHullAimRetryAt;
+	float			m_flNoBearSince;			// the watchdog: since when no gun bears and nothing turns it (0 = not)
+	bool			m_bNoBearWarned;
+	float			m_flNextSwingMsg;
+	bool			GunsBear( CBaseEntity *pTarget, const Vector &vecPoint, float flMargin, float *pflTurn, const matrix3x4_t *pFrame = NULL );
+	void			HullAim( const Vector &vecPos, float *pflTargetSpeed, float *pflYawRate );
+	void			SetHullAim( int eNew );
+	bool			SwingClear( float flYawStep, CorridorWhy_t *pWhy );
 	bool			m_bReversing;
 	struct BadSpot_t { int iNode; float flUntil; };
 	BadSpot_t		m_BadSpots[8];				// firing spots that gave no shot (ring), not saved
@@ -1423,6 +1482,7 @@ BEGIN_DATADESC( CDoDSPVehicle )
 	DEFINE_FIELD( m_hQuarry, FIELD_EHANDLE ),
 	DEFINE_FIELD( m_vecQuarryPos, FIELD_POSITION_VECTOR ),
 	DEFINE_FIELD( m_flQuarryTime, FIELD_TIME ),
+	DEFINE_FIELD( m_flHullAimRetryAt, FIELD_TIME ),
 	DEFINE_FIELD( m_eFaction, FIELD_INTEGER ),
 	DEFINE_FIELD( m_hForcedTarget, FIELD_EHANDLE ),
 	DEFINE_FIELD( m_bHoldFire, FIELD_BOOLEAN ),
@@ -1514,7 +1574,7 @@ CDoDSPVehicle::CDoDSPVehicle()
 	m_flHalfWidth = m_flHalfLength = m_flBodyHeight = 0.0f;
 	m_flWheelbase = 0.0f;
 	m_flSteer = m_flSteerWant = 0.0f;
-	m_bBodySprung = false;
+	m_bBodySprung = m_bBodyAttach = false;
 	m_nBodyKicks = 0;
 	m_flBodyKickPitch = m_flBodyKickRoll = 0.0f;
 	m_eFaction = DODSP_FACTION_AXIS;
@@ -1533,6 +1593,19 @@ CDoDSPVehicle::CDoDSPVehicle()
 	m_iReposition = 0;
 	m_flNoRepositionUntil = 0.0f;
 	m_bPreferReverse = m_bReversing = false;
+	m_eHullAim = VHULL_NONE;
+	m_iHullLegDir = 0;
+	m_vecHullLegStart = vec3_origin;
+	m_nHullLegs = 0;
+	m_bHullLegBlocked = false;
+	m_flHullAimBest = m_flHullAimBestAt = 0.0f;
+	m_flHullAimRetryAt = 0.0f;
+	m_flNoBearSince = 0.0f;
+	m_bNoBearWarned = false;
+	m_flNextSwingMsg = 0.0f;
+	m_bHullSettling = false;
+	m_flLOFFirst = m_flLOFLast = m_flLOFAskedAt = 0.0f;
+	m_bLOFWarned = false;
 	m_flSuspPitch = m_flSuspVel = m_flPrevSpeed = 0.0f;
 	m_iDamageSmoke = 0;
 	m_bHoldFire = false;
@@ -1763,7 +1836,7 @@ void CDoDSPVehicle::Spawn( void )
 			pTurret->KeyValue( "model", m_pType->szTurretModel );
 			pTurret->KeyValue( "solid", "0" );
 			DispatchSpawn( pTurret );
-			pTurret->SetParent( this );
+			pTurret->SetParent( this, BodyAttachment() );
 			pTurret->SetLocalOrigin( m_pType->vecTurretOffset );
 			pTurret->SetLocalAngles( vec3_angle );		// dodsp-lint: part placed
 			m_hTurret = pTurret;
@@ -1844,6 +1917,14 @@ void CDoDSPVehicle::MeasureBody( void )
 	m_flWheelbase = ( nSteer && !m_pType->bTracked ) ? wheels.flWheelbase : 0.0f;
 	// H1 suspension: the body rides on springs over its wheels when the model says where it tips (the client runs it)
 	m_bBodySprung = bWheelData && wheels.bBodyPivot;
+	CStudioHdr *pHdr = GetModelPtr();
+	m_bBodyAttach = m_bBodySprung;
+	if ( m_bBodySprung && pHdr && pHdr->GetNumAttachments() >= DODSP_BODY_ATTACHMENT )
+	{
+		Warning( "INVARIANT DOD-SP vehicle %s: its model has %d attachments - the body attachment (%d) would be one of them; "
+				 "riders and guns won't rock with the body\n", Label(), pHdr->GetNumAttachments(), DODSP_BODY_ATTACHMENT );
+		m_bBodyAttach = false;
+	}
 	m_flBodySuspAccel = m_pType->flSuspAccel;
 	m_flBodySuspRoll = m_pType->flSuspRoll;
 	m_flBodySuspFreq = m_pType->flSuspFreq;
@@ -2452,6 +2533,244 @@ bool CDoDSPVehicle::BadSpot( int iNode )
 }
 
 //-----------------------------------------------------------------------------
+// V5 hull aim. THE answer to "can a gun of this vehicle reach that point from where its hull points": a working
+// turret reaches all round; a jammed one only along its barrel; hull and pintle MGs (infantry only) inside their arcs.
+// true = one bears (or no usable gun could hurt it - nothing to aim); false = *pflTurn is the smallest hull turn (degrees,
+// + = left) that brings one to bear, with flMargin degrees inside its arc. All in the entity's frame (+x its front) -
+// where it stands now, or pFrame: where it WOULD stand (ChooseFirePosition asks about a spot it would arrive at).
+//-----------------------------------------------------------------------------
+bool CDoDSPVehicle::GunsBear( CBaseEntity *pTarget, const Vector &vecPoint, float flMargin, float *pflTurn, const matrix3x4_t *pFrame )
+{
+	*pflTurn = 0.0f;
+	Vector vecLocal;
+	VectorITransform( vecPoint, pFrame ? *pFrame : EntityToWorldTransform(), vecLocal );
+	float flBearing = RAD2DEG( atan2f( vecLocal.y, vecLocal.x ) );
+	bool bArmour = dynamic_cast<CDoDSPVehicle *>( pTarget ) != NULL;
+	bool bAny = false;
+	float flBest = FLT_MAX;
+	// the main gun (and every MG riding the turret)
+	bool bMainGun = m_pType->gun.bHas && !m_bGunOut && ( m_pType->gun.nRounds <= 0 || m_iRounds > 0 );
+	bool bTurretMGs = false;
+	for ( int k = 0; k < m_pType->nMGs; k++ )
+		if ( ( m_pType->mgs[k].eMount == VehicleType_t::MG_TURRET || m_pType->mgs[k].eMount == VehicleType_t::MG_BARREL ) && MGManned( k ) )
+			bTurretMGs = true;
+	if ( m_hTurret.Get() && CanAim() && ( bMainGun || ( bTurretMGs && !bArmour ) ) )
+	{
+		if ( !m_bTurretJammed )
+			return true;				// it turns to anything
+		float flHalf = MAX( 1.5f - 0.2f * flMargin, 0.0f );	// the barrel's own 1.5-degree cone; margins scaled to it
+		float flOff = AngleDiff( flBearing, m_flTurretYaw + m_flTurretFwdOffset );
+		bAny = true;
+		if ( fabs( flOff ) <= flHalf )
+			return true;
+		flBest = flOff;
+	}
+	// hull / pintle machine guns: infantry only, inside their arcs about the front
+	if ( !bArmour )
+	{
+		for ( int k = 0; k < m_pType->nMGs; k++ )
+		{
+			const VehicleType_t::MG_t &m = m_pType->mgs[k];
+			if ( ( m.eMount != VehicleType_t::MG_HULL && m.eMount != VehicleType_t::MG_PINTLE ) || !MGManned( k ) )
+				continue;
+			float flArc = ( m.eMount == VehicleType_t::MG_PINTLE ) ? PintleArc( k ) : m.flArc;
+			float flHalf = MAX( flArc - flMargin, 0.5f );
+			bAny = true;
+			if ( fabs( flBearing ) <= flHalf )
+				return true;
+			float flTurn = flBearing - ( flBearing > 0.0f ? flHalf : -flHalf );	// to the arc's near edge (+ margin)
+			if ( fabs( flTurn ) < fabs( flBest ) )
+				flBest = flTurn;
+		}
+	}
+	if ( !bAny )
+		return true;					// nothing it has could hurt it: no reason to turn
+	*pflTurn = flBest;
+	return false;
+}
+
+void CDoDSPVehicle::SetHullAim( int eNew )
+{
+	if ( eNew == m_eHullAim )
+		return;
+	if ( dodsp_vehicle_debug.GetBool() )
+		Msg( "DOD-SP vehicle %s: hull aim - %s\n", Label(), s_pszHullAim[eNew] );
+	bool bWasTurning = m_eHullAim == VHULL_PIVOT || m_eHullAim == VHULL_BACK || m_eHullAim == VHULL_FORWARD;
+	bool bTurning = eNew == VHULL_PIVOT || eNew == VHULL_BACK || eNew == VHULL_FORWARD;
+	m_eHullAim = eNew;
+	if ( bWasTurning && bTurning )
+		return;			// backing <-> creeping: one manoeuvre, its legs and progress carry on
+	m_nHullLegs = 0;
+	m_iHullLegDir = 0;
+	m_bHullLegBlocked = false;
+	m_flHullAimBest = FLT_MAX;
+	m_flHullAimBestAt = gpGlobals->curtime;
+}
+
+// V5: THE one owner of turning a PARKED vehicle so a gun bears on its target (its seen target, else where its enemy was
+// last known). Tracked: on the spot. Wheeled (the halftrack can't pivot): short legs backing and creeping forward on a
+// full-lock curve, the nose swinging toward the target on each, the clear way first; only for the tactical behaviours
+// (offensive / defensive - hold and scripted keep it where it stands). Gives up (VEHICLE_HULLAIM_RETRY) when it gains
+// nothing for VEHICLE_HULLAIM_STALL or runs out of legs. Replaces V4's "a jammed turret turns the whole tracked tank".
+// The drive below it still checks every leg (CorridorClear ahead, other vehicles, the body's swing) and says when one
+// was blocked (m_bHullLegBlocked) - the next think turns the other way.
+void CDoDSPVehicle::HullAim( const Vector &vecPos, float *pflTargetSpeed, float *pflYawRate )
+{
+	float now = gpGlobals->curtime;
+	CBaseEntity *pTarget = m_hTarget.Get();
+	Vector vecPoint;
+	if ( pTarget )
+		vecPoint = pTarget->WorldSpaceCenter();
+	else if ( m_hQuarry.Get() && now - m_flQuarryTime < VEHICLE_FORGET_TIME )
+	{
+		pTarget = m_hQuarry.Get();		// (what it is decides which guns count: no MG against armour)
+		vecPoint = m_vecQuarryPos;
+	}
+	else
+	{
+		SetHullAim( VHULL_NONE );
+		return;
+	}
+	float flTurn;
+	bool bActive = m_eHullAim == VHULL_PIVOT || m_eHullAim == VHULL_BACK || m_eHullAim == VHULL_FORWARD;
+	if ( GunsBear( pTarget, vecPoint, bActive ? VEHICLE_HULLAIM_MARGIN : -VEHICLE_HULLAIM_START, &flTurn ) )
+	{
+		SetHullAim( VHULL_NONE );
+		return;
+	}
+	GunsBear( pTarget, vecPoint, VEHICLE_HULLAIM_AIM, &flTurn );		// steer for a little deeper than the stop
+	if ( now < m_flHullAimRetryAt )
+	{
+		SetHullAim( VHULL_GAVE_UP );
+		return;
+	}
+	bool bWheeled = !m_pType->bTracked;
+	if ( bWheeled && m_eBehavior != VBEHAVE_OFFENSIVE && m_eBehavior != VBEHAVE_DEFENSIVE )
+	{
+		SetHullAim( VHULL_NOT_ALLOWED );
+		return;
+	}
+	// progress: the turn still needed must shrink
+	if ( bActive )
+	{
+		if ( fabs( flTurn ) < m_flHullAimBest - 0.5f )
+		{
+			m_flHullAimBest = fabs( flTurn );
+			m_flHullAimBestAt = now;
+		}
+		else if ( now - m_flHullAimBestAt > VEHICLE_HULLAIM_STALL || m_nHullLegs > VEHICLE_HULLAIM_LEGS )
+		{
+			m_flHullAimRetryAt = now + VEHICLE_HULLAIM_RETRY;
+			if ( dodsp_vehicle_debug.GetBool() )
+				Msg( "DOD-SP vehicle %s: hull aim - gave up %.0f degrees short (%d legs)\n", Label(), fabs( flTurn ), m_nHullLegs );
+			SetHullAim( VHULL_GAVE_UP );
+			return;
+		}
+	}
+	float flSign = ( flTurn > 0.0f ) ? 1.0f : -1.0f;
+	if ( !bWheeled )
+	{
+		SetHullAim( VHULL_PIVOT );
+		*pflTargetSpeed = 0.0f;
+		*pflYawRate = clamp( flTurn * 2.0f, -m_pType->flTurnRate, m_pType->flTurnRate );
+	}
+	else
+	{
+		// a leg ends after half its length + 32 units, or when the drive found it blocked: the other way next
+		float flLeg = m_flHalfLength + 32.0f;
+		bool bNewLeg = m_iHullLegDir == 0 || m_bHullLegBlocked || ( vecPos - m_vecHullLegStart ).Length2D() >= flLeg;
+		if ( bNewLeg )
+		{
+			int iDir = ( m_iHullLegDir == 0 ) ? -1 : -m_iHullLegDir;		// backing first: the nose swings round away from walls ahead
+			Vector vecFwd( cosf( DEG2RAD( m_flHeading ) ), sinf( DEG2RAD( m_flHeading ) ), 0.0f );
+			for ( int t = 0; t < 2; t++, iDir = -iDir )
+			{
+				Vector vecEnd = vecPos + vecFwd * iDir * ( m_flHalfLength + flLeg );
+				if ( CorridorClear( vecPos, vecEnd, m_flHalfWidth, m_flBodyHeight, this ) && !VehicleInTheWay( vecPos, vecEnd, m_flHalfWidth, VSPACE_DRIVING ) )
+					break;
+			}
+			Vector vecEnd = vecPos + vecFwd * iDir * ( m_flHalfLength + flLeg );
+			if ( !CorridorClear( vecPos, vecEnd, m_flHalfWidth, m_flBodyHeight, this ) || VehicleInTheWay( vecPos, vecEnd, m_flHalfWidth, VSPACE_DRIVING ) )
+			{
+				m_flHullAimRetryAt = now + VEHICLE_HULLAIM_RETRY;
+				if ( dodsp_vehicle_debug.GetBool() )
+					Msg( "DOD-SP vehicle %s: hull aim - no room to back or creep, %.0f degrees to go\n", Label(), fabs( flTurn ) );
+				SetHullAim( VHULL_GAVE_UP );
+				return;
+			}
+			SetHullAim( iDir < 0 ? VHULL_BACK : VHULL_FORWARD );
+			m_nHullLegs++;
+			m_iHullLegDir = iDir;
+			m_vecHullLegStart = vecPos;
+			m_bHullLegBlocked = false;
+		}
+		float flSpeed = MIN( VEHICLE_HULLAIM_SPEED, ( m_iHullLegDir < 0 ? m_pType->flReverseSpeed : m_pType->flMaxSpeed ) * m_flMaxSpeedScale );
+		*pflTargetSpeed = m_iHullLegDir * flSpeed;
+		// a car turns only while it rolls (yaw rate = speed / radius) - either way it rolls, the nose goes toward the target
+		float flRateMax = MIN( RAD2DEG( fabs( m_flSpeed ) / MAX( m_pType->flMinTurnRadius, 50.0f ) ), m_pType->flTurnRate );
+		*pflYawRate = flSign * MIN( fabs( flTurn ) * 2.0f, flRateMax );
+		m_bReversing = m_iHullLegDir < 0;
+	}
+}
+
+// V5: the body's swing. A turn sweeps the body's corners round its origin; CorridorClear covers only what lies ahead,
+// so a tank pivoting on the spot swung its tail through walls and other vehicles (pushers go through the world). Every
+// turn checks each corner's arc (a column box, VEHICLE_BODY_COLUMN, inset at the corner) for the next flYawStep degrees:
+// against the world (as CorridorClear: VehicleBoxBlocked) and other vehicles (VehicleInTheWay). A corner already inside
+// something may swing out of it (only its end is tested then).
+bool CDoDSPVehicle::SwingClear( float flYawStep, CorridorWhy_t *pWhy )
+{
+	Vector vecMins = CollisionProp()->OBBMins(), vecMaxs = CollisionProp()->OBBMaxs();
+	float flCol = VEHICLE_BODY_COLUMN;
+	float flBodyUp = MAX( m_flBodyHeight - VEHICLE_STEP, 8.0f );
+	Vector vecBoxMins( -flCol, -flCol, 0.0f ), vecBoxMaxs( flCol, flCol, flBodyUp );
+	Vector vecOrigin = GetAbsOrigin();
+	float c = cosf( DEG2RAD( flYawStep ) ), sn = sinf( DEG2RAD( flYawStep ) );
+	CTraceFilterVehicleWorld filter( this );
+	for ( int i = 0; i < 4; i++ )
+	{
+		Vector vecLocal( ( i & 1 ) ? vecMaxs.x - flCol : vecMins.x + flCol, ( i & 2 ) ? vecMaxs.y - flCol : vecMins.y + flCol, 0.0f );
+		Vector a, b;
+		VectorTransform( vecLocal, EntityToWorldTransform(), a );
+		Vector d = a - vecOrigin;
+		b = vecOrigin + Vector( d.x * c - d.y * sn, d.x * sn + d.y * c, d.z );
+		float flZa, flZb;
+		if ( !GroundAt( a, 64.0f, 128.0f, &flZa, NULL, this ) )
+			flZa = vecOrigin.z;
+		if ( !GroundAt( b, 64.0f, 128.0f, &flZb, NULL, this ) )
+			flZb = flZa;
+		a.z = flZa + VEHICLE_STEP;
+		b.z = flZb + VEHICLE_STEP;
+		trace_t tr;
+		UTIL_TraceHull( a, a, vecBoxMins, vecBoxMaxs, MASK_SOLID, &filter, &tr );
+		// a corner already inside something (pushers clip through the world) may swing on - stopping it there would
+		// leave the vehicle unable to turn at all; one starting clear must stay clear
+		bool bBlocked = !tr.startsolid && VehicleBoxBlocked( vecBoxMins, vecBoxMaxs, a, b, &filter, &tr );
+		if ( bBlocked )
+		{
+			if ( pWhy )
+			{
+				pWhy->eFail = CFAIL_BLOCKED;
+				pWhy->vecAt = tr.endpos;
+				Q_strncpy( pWhy->szWhat, VehicleHitName( tr ), sizeof( pWhy->szWhat ) );
+			}
+			return false;
+		}
+		if ( CDoDSPVehicle *pV = VehicleInTheWay( a, b, flCol, VSPACE_DRIVING ) )
+		{
+			if ( pWhy )
+			{
+				pWhy->eFail = CFAIL_BLOCKED;
+				pWhy->vecAt = b;
+				Q_strncpy( pWhy->szWhat, pV->Label(), sizeof( pWhy->szWhat ) );
+			}
+			return false;
+		}
+	}
+	return true;
+}
+
+//-----------------------------------------------------------------------------
 // Driving
 //-----------------------------------------------------------------------------
 void CDoDSPVehicle::DriveThink( void )
@@ -2563,12 +2882,28 @@ void CDoDSPVehicle::DriveThink( void )
 		if ( RidersHold() )
 			m_flProgressTime = now;		// standing for its riders isn't stuck (the watchdog would blame the road)
 	}
-	else if ( m_bTurretJammed && !m_bHasGoal && m_pType->bTracked && m_hTarget.Get() )
+	else if ( !m_bHasGoal )
+		HullAim( vecPos, &flTargetSpeed, &flYawRate );		// V5: parked - bring a gun round to its target
+	if ( m_eHullAim != VHULL_NONE && ( m_bHasGoal || m_bImmobile || RidersHold() ) )
+		SetHullAim( VHULL_NONE );
+	// V5 watchdog - the whole class "it sees him, no gun can reach him, and nothing turns it" (the halftrack's MG42 sat
+	// out every fight beside or behind it): parked, mobile, a seen target no gun bears on, and hull aim says all is well
+	float flNoBearTurn;
+	if ( !m_bHasGoal && !m_bImmobile && !RidersHold() && m_hTarget.Get() && m_eHullAim == VHULL_NONE &&
+		 !GunsBear( m_hTarget.Get(), m_hTarget->WorldSpaceCenter(), -VEHICLE_HULLAIM_START, &flNoBearTurn ) )
 	{
-		Vector vecTo = m_hTarget->WorldSpaceCenter() - vecPos;
-		float flWantHeading = RAD2DEG( atan2f( vecTo.y, vecTo.x ) ) - ( m_flTurretYaw + m_flTurretFwdOffset ) + m_pType->flForwardYaw;
-		flYawRate = clamp( AngleDiff( flWantHeading, m_flHeading ) * 2.0f, -m_pType->flTurnRate, m_pType->flTurnRate );
+		if ( m_flNoBearSince <= 0.0f )
+			m_flNoBearSince = now;
+		else if ( now - m_flNoBearSince > VEHICLE_HULLAIM_WATCH && !m_bNoBearWarned )
+		{
+			m_bNoBearWarned = true;
+			Warning( "INVARIANT DOD-SP vehicle %s: no gun can reach %s (%.0f degrees off) for %.0f s and nothing turns it\n", Label(),
+					 VehicleWho( m_hTarget.Get() ), flNoBearTurn, now - m_flNoBearSince );
+		}
 	}
+	else
+		m_flNoBearSince = 0.0f;
+	bool bHullLeg = m_eHullAim == VHULL_BACK || m_eHullAim == VHULL_FORWARD;
 
 	// other vehicles (V2d): it brakes for any vehicle its body would reach before it could stop, and gives way
 	// by the right of way (GiveWay). Checked in the direction it WANTS to go, so it never sets off into one.
@@ -2581,7 +2916,10 @@ void CDoDSPVehicle::DriveThink( void )
 		{
 			flTargetSpeed = 0.0f;
 			flYawRate = 0.0f;
-			GiveWay( pInWay );
+			if ( bHullLeg )
+				m_bHullLegBlocked = true;		// hull aim: the other way next think (giving way is for routes)
+			else
+				GiveWay( pInWay );
 		}
 	}
 	if ( m_hWaitFor.Get() && now - m_flWaitSeen > 0.5f )
@@ -2611,6 +2949,8 @@ void CDoDSPVehicle::DriveThink( void )
 		if ( !CorridorClear( vecPos, vecAheadEnd, m_flHalfWidth, m_flBodyHeight, this, &why ) )
 		{
 			m_flSpeed = 0.0f;
+			if ( bHullLeg )
+				m_bHullLegBlocked = true;
 			if ( m_eStuck != VSTUCK_WORLD && m_bHasGoal && now - m_flProgressTime > 1.0f )
 			{
 				m_eStuck = VSTUCK_WORLD;
@@ -2618,6 +2958,27 @@ void CDoDSPVehicle::DriveThink( void )
 					Msg( "DOD-SP vehicle %s: can't go on - %s%s%s at %.0f %.0f %.0f\n", Label(), s_pszCorridorFail[why.eFail],
 						 why.szWhat[0] ? ", " : "", why.szWhat, why.vecAt.x, why.vecAt.y, why.vecAt.z );
 			}
+		}
+	}
+
+	// V5: the body's corners swing with the turn (a pivoting tank's tail went through walls and vehicles). Only turns on
+	// the spot / at a crawl: rolling, the body's own corridor (ahead, or behind when reversing) already covers where it
+	// goes, and a rolling turn's tail swing is a few units - checking those too would stop it on graded forest roads
+	if ( fabs( flYawRate ) > 0.5f && fabs( m_flSpeed ) < VEHICLE_SWING_SPEED )
+	{
+		CorridorWhy_t why;
+		float flStep = flYawRate * dt * 2.0f + ( flYawRate > 0.0f ? 1.0f : -1.0f );
+		if ( !SwingClear( flStep, &why ) )
+		{
+			if ( dodsp_vehicle_debug.GetBool() && now >= m_flNextSwingMsg )
+			{
+				m_flNextSwingMsg = now + 2.0f;
+				Msg( "DOD-SP vehicle %s: can't turn - a corner would swing into %s at %.0f %.0f %.0f\n", Label(),
+					 why.szWhat, why.vecAt.x, why.vecAt.y, why.vecAt.z );
+			}
+			flYawRate = 0.0f;
+			if ( bHullLeg )
+				m_bHullLegBlocked = true;
 		}
 	}
 
@@ -2653,22 +3014,7 @@ void CDoDSPVehicle::DriveThink( void )
 	{
 		float flAccel = ( m_flSpeed - m_flPrevSpeed ) / dt;
 		m_flPrevSpeed = m_flSpeed;
-		float flTarget = clamp( flAccel / 100.0f * m_pType->flSuspAccel, -6.0f, 6.0f );
-		float w = 2.0f * M_PI_F * MAX( m_pType->flSuspFreq, 0.1f );
-		float flSpring = w * w * ( flTarget - m_flSuspPitch ) - 2.0f * m_pType->flSuspDamp * w * m_flSuspVel;
-		m_flSuspVel += flSpring * dt;
-		m_flSuspPitch = clamp( m_flSuspPitch + m_flSuspVel * dt, -8.0f, 8.0f );
-		if ( fabs( m_flSuspPitch ) > 0.01f )
-		{
-			// about the hull's own sideways axis (model space), nose up = +
-			float flMY = DEG2RAD( m_pType->flForwardYaw );
-			Vector vecSide( -sinf( flMY ), cosf( flMY ), 0.0f );
-			matrix3x4_t matHull, matRock, matOut;
-			AngleMatrix( angWant, matHull );
-			MatrixBuildRotationAboutAxis( vecSide, -m_flSuspPitch, matRock );
-			ConcatTransforms( matHull, matRock, matOut );
-			MatrixAngles( matOut, angWant );
-		}
+		angWant = RockHull( angWant, flAccel, dt );
 	}
 	QAngle angNow = GetLocalAngles();
 	QAngle angVel( AngleDiff( angWant.x, angNow.x ), AngleDiff( angWant.y, angNow.y ), AngleDiff( angWant.z, angNow.z ) );
@@ -2846,6 +3192,10 @@ int CDoDSPVehicle::ChooseFirePosition( const Vector &vecTarget, float flMin, flo
 	CUtlVector<Cand_t> cands;
 	Vector vecMe = GetAbsOrigin();
 	float flMid = 0.5f * ( flMin + flMax );
+	// V5: prefer spots it arrives at already able to shoot: it drives in roughly along vecMe -> spot, and every degree
+	// its guns would be short there (GunsBear, asked about that spot and heading) costs a turn - a pivot for tracks,
+	// back-and-forth legs for wheels (four times dearer). A working turret is never short.
+	CBaseEntity *pQuarry = m_hQuarry.Get();
 	for ( int i = 0; i < pNav->nNodes; i++ )
 	{
 		if ( !pNav->links[i].Count() )
@@ -2864,6 +3214,15 @@ int CDoDSPVehicle::ChooseFirePosition( const Vector &vecTarget, float flMin, flo
 		if ( flToMe < m_flHalfLength * 1.5f || BadSpot( i ) || SpotTakenBy( vecNode ) )
 			continue;
 		Cand_t c = { flToMe + 0.5f * fabs( flToTarget - flMid ), i };
+		if ( flToMe > 1.0f )
+		{
+			float flArrive = RAD2DEG( atan2f( vecNode.y - vecMe.y, vecNode.x - vecMe.x ) );
+			matrix3x4_t matThere;
+			AngleMatrix( QAngle( 0.0f, flArrive - m_pType->flForwardYaw, 0.0f ), vecNode, matThere );
+			float flShort;
+			if ( !GunsBear( pQuarry, vecTarget, 0.0f, &flShort, &matThere ) )
+				c.flScore += fabs( flShort ) * ( m_pType->bTracked ? 1.0f : 4.0f );
+		}
 		cands.AddToTail( c );
 	}
 	// the best few by score get the (costlier) line-of-fire test - THE sight test the turret uses (LineOfFire),
@@ -3236,6 +3595,7 @@ bool CDoDSPVehicle::FriendlyInTheWay( const Vector &vecFrom, const Vector &vecDi
 	if ( tr.m_pEnt && !tr.m_pEnt->IsWorld() && DoDSP_FactionOf( tr.m_pEnt ) == m_eFaction )
 	{
 		*ppWho = tr.m_pEnt;
+		NoteBlockingFriend( tr.m_pEnt, vecFrom, vecDir );	// V5: on the line itself - he can step out of it
 		return true;
 	}
 	if ( flRadius > 0.0f && tr.fraction < 1.0f )
@@ -3252,6 +3612,39 @@ bool CDoDSPVehicle::FriendlyInTheWay( const Vector &vecFrom, const Vector &vecDi
 		}
 	}
 	return false;
+}
+
+// V5: THE one place a friend in a gun's line of fire is dealt with (FriendlyInTheWay calls it for a man ON the line; one
+// near the shell's impact can't step out of that). The gun holds fire as before; after VEHICLE_LOF_ASK of the same man
+// in the way he's asked to step aside (GermanSoldier_ClearLineOfFire: a short run sideways), again after
+// VEHICLE_LOF_REASK if he's still there. INVARIANT when one friend blocks a gun for VEHICLE_LOF_WATCH without a break
+// (a man who can't be moved: in a script, no room, not a German soldier) - the whole class "its own men silence its gun".
+void CDoDSPVehicle::NoteBlockingFriend( CBaseEntity *pFriend, const Vector &vecFrom, const Vector &vecDir )
+{
+	float now = gpGlobals->curtime;
+	if ( pFriend != m_hLOFFriend.Get() || now - m_flLOFLast > 1.0f )
+	{
+		m_hLOFFriend = pFriend;
+		m_flLOFFirst = now;
+		m_flLOFAskedAt = 0.0f;
+		m_bLOFWarned = false;
+	}
+	m_flLOFLast = now;
+	if ( now - m_flLOFFirst >= VEHICLE_LOF_ASK && ( m_flLOFAskedAt <= 0.0f || now - m_flLOFAskedAt >= VEHICLE_LOF_REASK ) )
+	{
+		int r = GermanSoldier_ClearLineOfFire( pFriend, vecFrom, vecDir );
+		if ( r != -1 )
+			m_flLOFAskedAt = now;
+		if ( dodsp_vehicle_debug.GetBool() )
+			Msg( "DOD-SP vehicle %s: %s is in its line of fire - %s\n", Label(), VehicleWho( pFriend ),
+				 r == 1 ? "asked him to step aside" : ( r == 0 ? "he can't move (riding / in a script / no room / not a soldier)" : "he's stepping aside" ) );
+	}
+	if ( now - m_flLOFFirst > VEHICLE_LOF_WATCH && !m_bLOFWarned )
+	{
+		m_bLOFWarned = true;
+		Warning( "INVARIANT DOD-SP vehicle %s: %s has blocked its gun for %.0f s - it can't fire past him\n", Label(),
+				 VehicleWho( pFriend ), now - m_flLOFFirst );
+	}
 }
 
 // One shell (V4): AP at vehicles, HE at everything else, each with its real numbers. A vehicle on the line is
@@ -3488,7 +3881,7 @@ void CDoDSPVehicle::SpawnPintleGuns( void )
 		pGun->KeyValue( "model", m.szModel );
 		pGun->KeyValue( "solid", "0" );		// not solid: bullets pass its gaps, as a real gun's
 		DispatchSpawn( pGun );
-		pGun->SetParent( this );
+		pGun->SetParent( this, BodyAttachment() );
 		pGun->SetLocalOrigin( m.vecPintle );
 		pGun->SetLocalAngles( QAngle( 0, m_flMGYaw[k], 0 ) );		// dodsp-lint: part placed
 		m_hMGGun[k] = pGun;
@@ -4231,7 +4624,7 @@ void CDoDSPVehicle::UpdateDamageSmoke( void )
 			return;
 		float x = m_pType->armour.iEngineAt == AFACE_FRONT ? 0.6f : m_pType->armour.iEngineAt == AFACE_REAR ? -0.6f : 0.0f;
 		pSmoke->SetLifetime( -1 );
-		pSmoke->SetParent( this );
+		pSmoke->SetParent( this, BodyAttachment() );
 		pSmoke->SetLocalOrigin( Vector( x * m_flHalfLength, 0.0f, m_flBodyHeight * 0.75f ) );
 		pSmoke->SetLocalAngles( QAngle( -90.0f, 0.0f, 0.0f ) );		// "directed" speed = straight up (dodsp-lint: part placed)
 		pSmoke->SetMoveType( MOVETYPE_NONE );
@@ -4495,7 +4888,7 @@ void CDoDSPVehicle::MakeFire( float flSize, bool bEngine )
 	pFire->SetAbsOrigin( vecAt );
 	DispatchSpawn( pFire );
 	pFire->Activate();
-	pFire->SetParent( this );
+	pFire->SetParent( this, BodyAttachment() );
 	m_hFire = pFire;
 }
 
@@ -4540,13 +4933,85 @@ void CDoDSPVehicle::BodyKick( float flPitchVel, float flRollVel )
 	m_flSuspVel += flPitchVel;
 }
 
+// Leaving the fight stops its TRAVEL; the hull's rock (m_flSuspPitch/Vel) is left alone - a knock-out's blow (BodyKick in
+// HitFeedback, a moment before) still jolts it, and SettleHull lets it settle (V5: HaltMotion zeroed the spring, so the
+// killing hit showed no jolt at all)
+// V5: the body attachment. On the server the body never tips (the client springs it), so it is the vehicle itself: every
+// seat, hatch, muzzle and landing worked out in the vehicle's frame stays exactly as it was. Any real attachment goes
+// to the model.
+COMPILE_TIME_ASSERT( DODSP_BODY_ATTACHMENT < ( 1 << NUM_PARENTATTACHMENT_BITS ) );
+bool CDoDSPVehicle::GetAttachment( int iAttachment, matrix3x4_t &attachmentToWorld )
+{
+	if ( iAttachment == DODSP_BODY_ATTACHMENT )
+	{
+		MatrixCopy( EntityToWorldTransform(), attachmentToWorld );
+		return true;
+	}
+	return BaseClass::GetAttachment( iAttachment, attachmentToWorld );
+}
+
+// for the soldier's seats (npc_german_soldier.cpp parents riders and crew with it)
+int DoDSPVehicle_BodyAttachment( CBaseEntity *pVehicle )
+{
+	CDoDSPVehicle *pV = dynamic_cast<CDoDSPVehicle *>( pVehicle );
+	return pV ? pV->BodyAttachment() : 0;
+}
+
 void CDoDSPVehicle::HaltMotion( void )
 {
 	m_flSpeed = 0.0f;
 	m_flTrackSpeed = 0.0f;
-	m_flSuspVel = 0.0f;
+	m_bHullSettling = false;
 	SetAbsVelocity( vec3_origin );
 	SetLocalAngularVelocity( vec3_angle );
+}
+
+// THE hull's rock for tanks (not sprung bodies - the client rocks those): a damped spring on the pitch driven by the
+// acceleration - nose up pulling away, nose down braking, a little overshoot - plus every kick (BodyKick: recoil, hits).
+// Returns angGround tipped by it, about the hull's own sideways axis (model space), nose up = +.
+QAngle CDoDSPVehicle::RockHull( const QAngle &angGround, float flAccel, float dt )
+{
+	float flTarget = clamp( flAccel / 100.0f * m_pType->flSuspAccel, -6.0f, 6.0f );
+	float w = 2.0f * M_PI_F * MAX( m_pType->flSuspFreq, 0.1f );
+	float flSpring = w * w * ( flTarget - m_flSuspPitch ) - 2.0f * m_pType->flSuspDamp * w * m_flSuspVel;
+	m_flSuspVel += flSpring * dt;
+	m_flSuspPitch = clamp( m_flSuspPitch + m_flSuspVel * dt, -8.0f, 8.0f );
+	QAngle angOut = angGround;
+	if ( fabs( m_flSuspPitch ) > 0.01f )
+	{
+		float flMY = DEG2RAD( m_pType->flForwardYaw );
+		Vector vecSide( -sinf( flMY ), cosf( flMY ), 0.0f );
+		matrix3x4_t matHull, matRock, matOut;
+		AngleMatrix( angGround, matHull );
+		MatrixBuildRotationAboutAxis( vecSide, -m_flSuspPitch, matRock );
+		ConcatTransforms( matHull, matRock, matOut );
+		MatrixAngles( matOut, angOut );
+	}
+	return angOut;
+}
+
+// V5: out of the fight the hull still settles on its spring (the knock-out's jolt), turning only - no travel. CheckHalted
+// allows that turning while m_bHullSettling; once settled it turns nothing.
+void CDoDSPVehicle::SettleHull( void )
+{
+	if ( m_bBodySprung || ( fabs( m_flSuspPitch ) < 0.01f && fabs( m_flSuspVel ) < 0.05f ) )
+	{
+		if ( m_bHullSettling )
+		{
+			m_bHullSettling = false;
+			m_flSuspPitch = m_flSuspVel = 0.0f;
+			SetLocalAngularVelocity( vec3_angle );
+		}
+		return;
+	}
+	float dt = VEHICLE_THINK, flZ;
+	QAngle angWant = RockHull( BuildAngles( m_flHeading, GetAbsOrigin(), &flZ ), 0.0f, dt );
+	QAngle angNow = GetLocalAngles();
+	QAngle angVel( AngleDiff( angWant.x, angNow.x ), AngleDiff( angWant.y, angNow.y ), AngleDiff( angWant.z, angNow.z ) );
+	angVel *= ( 1.0f / dt ) * 0.5f;
+	m_bHullSettling = true;
+	SetAbsVelocity( vec3_origin );
+	SetLocalAngularVelocity( angVel );
 }
 
 //-----------------------------------------------------------------------------
@@ -5219,7 +5684,7 @@ void CDoDSPVehicle::FinishWreck( void )
 // INVARIANT: a vehicle out of the fight doesn't move (it's a pusher: whatever velocity it has, it keeps)
 void CDoDSPVehicle::CheckHalted( void )
 {
-	if ( GetAbsVelocity().LengthSqr() > 1.0f || GetLocalAngularVelocity() != vec3_angle )
+	if ( GetAbsVelocity().LengthSqr() > 1.0f || ( GetLocalAngularVelocity() != vec3_angle && !m_bHullSettling ) )
 	{
 		if ( !m_bMovingWarned )
 		{
@@ -5249,6 +5714,7 @@ void CDoDSPVehicle::WreckThink( void )
 void CDoDSPVehicle::DamageStateThink( void )
 {
 	float now = gpGlobals->curtime;
+	SettleHull();				// V5: the knock-out's jolt settles (turning only)
 	CheckHalted();
 	if ( m_flWreckAt > 0.0f && now >= m_flWreckAt )
 	{
@@ -5549,6 +6015,8 @@ void CDoDSPVehicle::Report( void )
 		 s_pszTacticWhy[m_eTacticWhy][0] ? " - " : "", s_pszTacticWhy[m_eTacticWhy],
 		 m_hQuarry.Get() ? VehicleWho( m_hQuarry.Get() ) : "none", m_hQuarry.Get() ? gpGlobals->curtime - m_flQuarryTime : 0.0f,
 		 m_bReversing ? ", reversing" : "" );
+	if ( m_eHullAim != VHULL_NONE )
+		Msg( "    hull aim: %s\n", s_pszHullAim[m_eHullAim] );
 	if ( m_hWaitFor.Get() )
 		Msg( "    waiting for %s (%.0f s)\n", VehicleWho( m_hWaitFor.Get() ), gpGlobals->curtime - m_flWaitSince );
 	Msg( "    side %s, target %s%s, turret %.0f deg / barrel %.0f deg, main gun %s\n", DoDSP_FactionName( m_eFaction ),
