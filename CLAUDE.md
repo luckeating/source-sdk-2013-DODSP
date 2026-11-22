@@ -1510,6 +1510,21 @@ If you learn something like this, add it here in the same commit as the fix.
   z >= 1/sqrt(3) (the shipped head map fails: z down to 0.004). Green verdicts unchanged. Sent
   dodsp_cod3_normals_slope_fix.zip (all 4 normal maps). LESSON: when a fix by degree (strength) doesn't change a fault
   at all, the fault isn't a degree - look for values the decode can't represent.
+  SLOPE FIX: STILL STREAKED. FLAT TEST (all 4 maps flat): clean, so the files load and the fault IS the map content.
+  Real cause, finally: the RELIEF WAS INSIDE OUT. green_points_down's curl test only says whether red and green agree
+  with EACH OTHER - "red flipped" and "green flipped" score the same. I flipped green on the tunic; its RED was the
+  flipped one, so the relief came out inverted: every fold a sharp groove, the tunic buttons DENTS (integrated to a
+  height field). The gear map was inverted too (both channels; stick-grenade heads were dents), and it had passed the
+  curl test unflipped. Face and helmet were right. Fix: normal_seams.py - a baked map is continuous across a UV seam,
+  so turned into OBJECT space with each side's tangent frame, only the right red AND green signs make the two sides
+  agree. decide_signs (THE owner of a map's signs): the seams must pick the same choice at 3 sample insets, agree with
+  the curl test and hold a margin; else a by-eye verdict in cod2_package.NORMAL_SIGNS_CHECKED (a feature of known shape
+  in the height field); else it stops. Results: tunic red -1 (seams, margin 0.10), gear both -1 (0.10), face +1 +1
+  (0.02), helmet green -1 by eye (its map is a sibling helmet's, so its seams don't match - vent lug = raised ring
+  with a hole). Only the tunic and gear VTFs changed (dodsp_cod3_normals_signs_fix.zip); the mesh is identical.
+  LESSON: a test that measures only a relation between two signs can't pick either sign - check what a test can't
+  see before trusting its verdict. And integrate a normal map to a height field and look at a known shape (a button)
+  before shipping it.
 
 ## READY TO SHIP - REMIND THE OWNER (2026-11-21: "continue to remind me about the vehicle build ready to ship, we wont let it
 ## be ignored for long")

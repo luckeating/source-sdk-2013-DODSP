@@ -13,7 +13,8 @@ import os, re, sys, struct, json
 import numpy as np
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path[:0] = [HERE]
-import cod2_char as C, cod2_assets as A, mdl48, vtf
+import cod2_char as C, cod2_assets as A, normal_seams as NS, mdl48, vtf
+from scipy import ndimage as nd
 
 MATDIR = 'models/dodsp/cod3'
 # How strongly a normal map tilts the surface (its x/y scaled, then renormalised), per map - the one owner.
@@ -23,6 +24,12 @@ MATDIR = 'models/dodsp/cod3'
 # Strength 0.3 still streaked (owner's screenshot): the streaks were not strength but the decode - see
 # cod2_assets.decode_normal. Back to the map as made; the knob stays (it scales the slopes = the relief's height).
 NORMAL_STRENGTH = {}
+
+# Signs read by eye where the mesh's seams can't decide (normal_seams.decide_signs): a feature of known shape in the
+# map integrated to a height field. The helmet's normal map is a sibling helmet's (helm2 on helm1's colour), so its
+# seams don't line up (disagreement ~1.3 for every choice). Its vent lug - a raised ring with a hole - comes out right
+# only with green flipped.
+NORMAL_SIGNS_CHECKED = {'c_wrmcht2_helm1_n': ((1, -1), 'helmet vent lug = raised ring with a hole')}
 
 def check_normal_vtf(path, w, h):
     """Read a written BGR888 normal map back: every texel of the full mip a unit normal (8-bit rounding) no steeper
@@ -97,10 +104,16 @@ def write_ragdoll_pose(path, rig, S):
     out += ['end', 'triangles', 'end']
     open(path, 'w').write('\n'.join(out) + '\n')
 
-def textures(pack, mats, outdir):
+def textures(pack, tris, outdir):
     """VTF + VMT per CoD material: colour = the iwi's DXT mips as they are; normal = CoD's '-gggr' (X in alpha, Y in
-    green) rebuilt to RGB, BGR888 with box mips. CoD2 is a Direct3D game like Source - the green axis is kept as is."""
+    green) read as slopes, turned into Source's convention by MEASURED signs (normal_seams.decide_signs), BGR888 with
+    box mips. tris = the mesh (cod2_char.build's), for the seams."""
     os.makedirs(outdir, exist_ok=True); done = {}; report = {}
+    mats = [t[0] for t in tris]
+    seam_tris = {}                                      # normal map -> its triangles in normal_seams' form (v as SMD's)
+    for t in tris:
+        nm = A.material(os.path.join(pack, 'materials', t[0])).get('normalMap')
+        seam_tris.setdefault(nm, []).append((t[0], [(p, n, (uv[0], 1.0 - uv[1])) for p, n, uv, w in t[1:]]))
     for m in sorted(set(mats)):
         mm = A.material(os.path.join(pack, 'materials', m))
         col = A.iwi(os.path.join(pack, 'images', mm['colorMap'] + '.iwi'))
@@ -118,18 +131,18 @@ def textures(pack, mats, outdir):
                 x, y = t[..., 3], t[..., 1]
                 bg = A.normal_background(x, y)
                 down, ratios = A.green_points_down(x, y, ~bg & (np.maximum(np.abs(x), np.abs(y)) < 0.97))
-                if not down: y = -y                     # Source's green points image-down
+                sx, sy, how = NS.decide_signs(nname, x, y, seam_tris[nmap], A.decode_normal, ~nd.binary_dilation(bg),
+                                              down, NORMAL_SIGNS_CHECKED)
                 k = NORMAL_STRENGTH.get(nname, 1.0)     # scales the slopes = the height of the relief
-                nrm = A.pad_islands(A.decode_normal(x * k, y * k), bg)
+                nrm = A.pad_islands(A.decode_normal(sx * k * x, sy * k * y), bg)
                 rgb = np.clip((nrm + 1) * 127.5 + 0.5, 0, 255).astype(np.uint8)
                 chain = vtf.mip_chain(rgb)
                 path = os.path.join(outdir, nname + '.vtf')
                 vtf.write(path, rgb.shape[1], rgb.shape[0], 'BGR888',
                           [c[..., ::-1].tobytes() for c in reversed(chain)], flags=vtf.TEXTUREFLAGS_NORMAL)
                 steepest = check_normal_vtf(path, rgb.shape[1], rgb.shape[0])
-                done[nname] = 'strength %.2f, green %s%s (curl ratios %s), background %.1f%% padded, steepest %.1f deg' % (
-                    k, 'down' if down else 'UP', '' if down else ' -> flipped', ' '.join('%.2f' % r for r in ratios),
-                    100 * bg.mean(), steepest)
+                done[nname] = 'strength %.2f, signs red %+d green %+d by %s (curl: %s, ratios %s), background %.1f%% padded, steepest %.1f deg' % (
+                    k, sx, sy, how, 'agree' if down else 'disagree', ' '.join('%.2f' % r for r in ratios), 100 * bg.mean(), steepest)
             vmt.append('\t"$bumpmap" "%s/%s"' % (MATDIR, nname))
         vmt += ['}']
         open(os.path.join(outdir, m + '.vmt'), 'w').write('\n'.join(vmt) + '\n')
@@ -152,7 +165,7 @@ def build(pack, npz, ref, soldier, out, name, helmet, models):
     info['faces_out'] = [round(float(C.check_smd_winding(os.path.join(src, f))), 4) for f in ('body.smd', 'helmet.smd')]
     write_physics(os.path.join(src, 'physics.smd'), rig, solids)
     write_ragdoll_pose(os.path.join(src, 'ragdoll.smd'), rig, S)
-    tex = textures(pack, [t[0] for t in tris], os.path.join(out, 'materials', *MATDIR.split('/')))
+    tex = textures(pack, tris, os.path.join(out, 'materials', *MATDIR.split('/')))
     # eyes: CoD's tag_eye in OUR head bone, the soldier's eye turn
     hi = rig.idx[C.VB + 'Head1']; R, t = rig.W[hi]; eye = R.T @ (rig.tags['tag_eye'] - t)
     q = ['// %s - generated by dodsp_tools/character/cod2_package.py (CoD3-for-CoD2 pack parts: %s)' % (name, ', '.join([helmet] + models)),
