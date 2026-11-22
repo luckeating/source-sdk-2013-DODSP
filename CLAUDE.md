@@ -1614,7 +1614,7 @@ LOG:
     wrist-twist helper per arm taking a measured share of the hand's ROLL only (triggers along the roll, swing
     left out), forearm skin graded onto it; elbow helper with CoD's measured bulge slide; previewed with a Python
     copy of DoQuatInterpBone in the K98 poses before anything ships; verified by reading the owner's compile back.
-  TWIST PREVIEW 2026-11-22 (owner: "go ahead and make a preview"): character/twist_preview.py. CoD's own wrist-twist
+  TWIST PREVIEW 2026-11-22 (owner: "go ahead and make a preview"): character/twist_bones.py. CoD's own wrist-twist
   bone, twist only, over 500 CoD2 animations: 76% down the forearm (7.30 / 9.65), taking 0.84 (left) / 0.91 (right) of
   the hand's ROLL. Design: one helper per arm `dodsp_<L|R>_ForeTwist` (our name - not Valve's Ulna) under the
   forearm at TWIST_AT 0.76, TWIST_SHARE 0.87; 12 triggers = the hand rolled every 30 deg round the forearm axis (bind
@@ -1623,11 +1623,25 @@ LOG:
   engine_quat_interp = DoQuatInterpBone line for line: on DoD's K98 aims the helper comes out within 1-2 deg of the
   wanted roll (left hand -78 -> -69 vs -68; -104 -> -90.8 vs -90.5). Wrist cross-section kept (5th percentile of the
   vertices' distance from the forearm axis, posed / rest): standing 0.74 -> 0.86, crouched 0.65 -> 0.77; the cuff
-  notch where the hand enters is gone in the renders (twist_preview_left_arm.png). The minimum (0.42-0.63, both arms,
+  notch where the hand enters is gone in the renders (twist_preview_left_arm.png (scratchpad)). The minimum (0.42-0.63, both arms,
   even at 5-9 deg of roll) is the wrist BEND, not the roll - not this fix. NEXT (on the owner's go): cod2_package writes
   the helpers into the skeleton, the weights, a .vrd ($proceduralbones) from rig_twist's triggers; after his Crowbar
   compile, read the helpers' procedural data back from the .mdl (mstudioquatinterpbone_t: control, numtriggers,
   triggerindex; per trigger inv_tolerance, trigger q, target q, pos) and compare with the design.
+  TWIST BUILT INTO THE PACKAGE 2026-11-22 (owner: "perfect, build it all"): twist_bones.py (renamed from twist_preview.py)
+  = THE owner of the helpers - add_to_rig (helper node + weights in cod2_char's rig, so body/helmet/physics/ragdoll SMDs
+  all carry it), write_vrd + check_vrd (the package re-reads its own .vrd: names, driver, every trigger), check_compiled
+  (reads mstudioquatinterpbone_t back from the owner's .mdl - studio.h: {int control, numtriggers, triggerindex},
+  triggers 48 bytes {float inv_tolerance; Quaternion trigger; Vector pos; Quaternion quat}; pTrigger is relative to the
+  procbone struct). ENGINE FACT: DoQuatInterpBone uses the blended trigger pos AS the helper's local position, so a
+  compiled trigger pos must be basepos + the .vrd offset - check_compiled demands that (if studiomdl stored the offset
+  alone the helpers would sit on the elbow; the read-back will show it). QC: `$proceduralbones "<model>.vrd"`. Open
+  questions only the owner's compile answers (check_compiled settles each): whether studiomdl wants the full
+  "ValveBiped." names in <helper> (written full - a wrong name is a compile error, not a silent fault) and its euler
+  order for <trigger> angles (written in the SMD's own RadianEuler). End-to-end on the shipped files (the .vrd read back
+  like studiomdl, the engine's code, the shipped weights): K98 aims left hand -78 / -104 -> helper -69 / -90.8, wrist
+  kept 0.86 / 0.77 = the preview. Delivered dodsp_cod3_rifleman_twist.zip (model source only: body/helmet/physics/
+  ragdoll SMD + QC + .vrd; textures unchanged since the relief fix).
 
 
 ## READY TO SHIP - REMIND THE OWNER (2026-11-21: "continue to remind me about the vehicle build ready to ship, we wont let it

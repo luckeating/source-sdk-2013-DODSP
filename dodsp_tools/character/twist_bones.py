@@ -1,4 +1,4 @@
-"""Procedural wrist-twist bones for a converted character - designed from CoD's own rig, previewed with the ENGINE's
+"""THE owner of the procedural wrist-twist bones (design, preview, the .vrd, the read-back check) for a converted character - designed from CoD's own rig, previewed with the ENGINE's
 own procedural-bone code before anything is compiled.
 
 Why: DoD's poses roll the hand 70-130 deg about the forearm (K98 aim: left 91-104). Our skeleton has no twist bone, so
@@ -17,7 +17,8 @@ Design (one owner each, used by the preview AND the .vrd writer later):
   weights      each vertex's FOREARM weight moves onto the helper by how far down the forearm it lies:
                0 at the elbow, all of it at the helper (linear) - the hand's weights don't change
 
-    python3 -I twist_preview.py <body.smd> <textures dir> <out.png> <anim.smd>[:frame] ...
+    python3 -I twist_bones.py <body.smd> <textures dir> <out.png> <anim.smd>[:frame] ...   (the preview)
+cod2_package calls add_to_rig / write_vrd; check_compiled reads the helpers back from the owner's compiled .mdl.
 prints, per pose and side: the hand's roll, the roll the engine code gives the helper, and the wanted share."""
 import os, sys
 import numpy as np
@@ -59,7 +60,8 @@ def engine_quat_interp(src, triggers):
 
 def twist_angle(q, axis):
     """the roll part of rotation q about axis (degrees, -180..180)"""
-    return float(np.degrees(2 * np.arctan2(np.dot(q[:3], axis), q[3])))
+    a = float(np.degrees(2 * np.arctan2(np.dot(q[:3], axis), q[3])))
+    return (a + 180.0) % 360.0 - 180.0
 
 def rig_twist(ref):
     """the helpers on our skeleton: (side, forearm index, hand index, axis in forearm space, hand bind local q,
@@ -73,7 +75,7 @@ def rig_twist(ref):
         for a in np.arange(-180.0, 180.0, TRIGGER_STEP):
             roll = Rot.from_rotvec(np.radians(a) * axis).as_quat()
             trig.append((1.0 / np.radians(TRIGGER_TOL), qmul(roll, q0),
-                         Rot.from_rotvec(np.radians(a * TWIST_SHARE) * axis).as_quat(), np.zeros(3)))
+                         Rot.from_rotvec(np.radians(a * TWIST_SHARE) * axis).as_quat(), hp * TWIST_AT))
         out.append((side, f, h, axis, q0, hp * TWIST_AT, trig))
     return out
 
@@ -103,8 +105,8 @@ def posed(ref2, ref, anim, frame, rig, procedural=True):
     for side, f, h, axis, q0, base, trig in rig:
         t = [i for i, (n, _) in enumerate(ref2.nodes) if n == TWIST_NAME % side][0]
         src = Rot.from_matrix(rotm(fr[h][3:])).as_quat()
-        q, pos = engine_quat_interp(src, trig) if procedural else (np.array([0, 0, 0, 1.0]), np.zeros(3))
-        fr[t] = (*(base + pos), *euler(Rot.from_quat(q).as_matrix()))
+        q, pos = engine_quat_interp(src, trig) if procedural else (np.array([0, 0, 0, 1.0]), base)
+        fr[t] = (*pos, *euler(Rot.from_quat(q).as_matrix()))
         hand_roll = twist_angle(qmul(src, Rot.from_quat(q0).inv().as_quat()), axis)
         rows.append((side, hand_roll, twist_angle(q, axis)))
     p2 = type(ref2)(); p2.nodes = ref2.nodes; p2.frames = [(0, fr)]
@@ -120,7 +122,7 @@ def closeups(ref, pose, P, N, UV, mats, tex, Wb):
             CP.render(cam, Pp, Np, UV, mats, tex, Z, C); out.append(C.astype(np.uint8))
     return np.concatenate(out, 1)
 
-if __name__ == '__main__':
+if __name__ == '__main__' and len(sys.argv) > 1 and not sys.argv[1].endswith('.mdl'):
     body, texdir, out = sys.argv[1:4]
     ref, mats, P, N, UV, Wb = CP.read_mesh(body)
     tex = {m: np.array(Image.open(os.path.join(texdir, m + '.png')).convert('RGB')) for m in set(mats)}
@@ -192,3 +194,130 @@ def report(body, texdir, out, specs):
                 rows.append(np.concatenate([arm_views(ref, p1, P, N, UV, mats, tex, Wflat, side),
                                             arm_views(ref2, p2, P, N, UV, mats, tex, Wb2, side)], 0))
     Image.fromarray(np.concatenate(rows, 0)).save(out); print('wrote', out)
+
+
+def rig_triggers(L, f, h):
+    """one side's triggers from a skeleton's local frames L (node -> pos + euler): (axis, q0, base, triggers)"""
+    hp = np.array(L[h][:3]); axis = hp / np.linalg.norm(hp); q0 = Rot.from_matrix(rotm(L[h][3:])).as_quat()
+    trig = []
+    for a in np.arange(-180.0, 180.0, TRIGGER_STEP):
+        roll = Rot.from_rotvec(np.radians(a) * axis).as_quat()
+        trig.append((1.0 / np.radians(TRIGGER_TOL), qmul(roll, q0),
+                     Rot.from_rotvec(np.radians(a * TWIST_SHARE) * axis).as_quat(), hp * TWIST_AT))
+    return axis, q0, hp * TWIST_AT, trig
+
+def add_to_rig(rig, tris):
+    """cod2_char's rig + mesh get one helper per arm (a child of the forearm, aligned with it, at TWIST_AT) and every
+    corner's forearm weight moved onto it by how far down the forearm the corner lies. -> (tris, [(side, helper
+    index, forearm index, hand index, triggers)]) - the rig is changed in place"""
+    VB_ = VB; L = rig.local(); out = []
+    rig.nodes = list(rig.nodes); rig.idx = dict(rig.idx)
+    for side in 'LR':
+        f, h = rig.idx[VB_ + side + '_Forearm'], rig.idx[VB_ + side + '_Hand']
+        axis, q0, base, trig = rig_triggers(L, f, h)
+        t = len(rig.nodes); rig.nodes.append((TWIST_NAME % side, f)); rig.idx[TWIST_NAME % side] = t
+        Rf, tf = rig.W[f]; rig.W[t] = (Rf, tf + Rf @ base)
+        out.append((side, t, f, h, axis, trig))
+    new = []
+    for m, *corners in tris:
+        cs = []
+        for p, n, uv, w in corners:
+            for side, t, f, h, axis, trig in out:
+                fw = sum(x for b, x in w if b == f)
+                if not fw: continue
+                Rf, tf = rig.W[f]; L_h = np.linalg.norm(trig[0][3]) / TWIST_AT
+                share = float(np.clip(np.dot(Rf.T @ (p - tf), axis) / L_h / TWIST_AT, 0.0, 1.0))
+                if share <= 0: continue
+                w2 = [(b, x * (1 - share) if b == f else x) for b, x in w] + [(t, fw * share)]
+                w2 = sorted([(b, x) for b, x in w2 if x > 1e-4], key=lambda bx: -bx[1])[:3]
+                s_ = sum(x for _, x in w2); w = [(b, x / s_) for b, x in w2]
+            cs.append((p, n, uv, w))
+        new.append((m, *cs))
+    return new, out
+
+def _deg_euler(q):
+    return tuple(np.degrees(euler(Rot.from_quat(q).as_matrix())))
+
+def write_vrd(path, rig, helpers):
+    """$proceduralbones file (VDC $proceduralbones): <helper> bone parent driverParent driver, <basepos> (local pos in
+    the parent), <trigger> tolerance(deg) driver-local XYZ(deg) helper-local XYZ(deg) helper pos offset from basepos.
+    Angles in the SMD's own euler order (studiomdl reads both with the same RadianEuler)."""
+    out = ['// generated by dodsp_tools/character/twist_bones.py - wrist-twist helpers (CoD rig: %.2f down the forearm,'
+           ' %.2f of the hand roll)' % (TWIST_AT, TWIST_SHARE)]
+    for side, t, f, h, axis, trig in helpers:
+        name = rig.nodes[t][0]; base = trig[0][3]
+        out += ['', '<helper> %s %s %s %s' % (name, rig.nodes[f][0], rig.nodes[f][0], rig.nodes[h][0]),
+                '<basepos> %.6f %.6f %.6f' % tuple(base)]
+        for inv_tol, tq, q, pos in trig:
+            out.append('<trigger> %.3f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f' % (
+                np.degrees(1.0 / inv_tol), *_deg_euler(tq), *_deg_euler(q), *(pos - base)))
+    open(path, 'w').write('\n'.join(out) + '\n')
+
+def check_compiled(mdl_path, helpers_expected=None, tol_deg=0.5):
+    """read the helpers back from a COMPILED .mdl (studio.h: mstudiobone_t proctype 2 = STUDIO_PROC_QUATINTERP;
+    mstudioquatinterpbone_t {int control, numtriggers, triggerindex}; mstudioquatinterpinfo_t {float inv_tolerance;
+    Quaternion trigger; Vector pos; Quaternion quat} = 48 bytes) and compare them with the design: names, control =
+    the hand, trigger count, each trigger's hand / helper rotations and position. -> report lines; raises on a mismatch"""
+    import struct
+    d = open(mdl_path, 'rb').read(); nb, bi = struct.unpack_from('<ii', d, 156)
+    cstr = lambda o: d[o:d.index(b'\0', o)].decode()
+    names = [cstr(bi + i * 216 + struct.unpack_from('<i', d, bi + i * 216)[0]) for i in range(nb)]
+    lines = []; found = {}
+    for i in range(nb):
+        o = bi + i * 216; parent = struct.unpack_from('<i', d, o + 4)[0]
+        flags, pt, pi = struct.unpack_from('<iii', d, o + 160)
+        if pt != 2: continue
+        q = o + pi; ctrl, ntr, ti = struct.unpack_from('<iii', d, q)
+        trig = []
+        for k in range(ntr):
+            t = q + ti + k * 48
+            inv, = struct.unpack_from('<f', d, t); tq = struct.unpack_from('<4f', d, t + 4)
+            pos = struct.unpack_from('<3f', d, t + 20); qq = struct.unpack_from('<4f', d, t + 32)
+            trig.append((inv, np.array(tq), np.array(qq), np.array(pos)))
+        found[names[i]] = (names[parent], names[ctrl], trig)
+        lines.append('%s (parent %s) driven by %s, %d triggers' % (names[i], names[parent], names[ctrl], ntr))
+    if helpers_expected is not None:
+        for name, parent, ctrl, trig in helpers_expected:
+            if name not in found: raise SystemExit('compiled model has no procedural %s - the .vrd did not take' % name)
+            fp, fc, ft = found[name]
+            if (fp, fc) != (parent, ctrl): raise SystemExit('%s: parent/driver %s/%s, designed %s/%s' % (name, fp, fc, parent, ctrl))
+            if len(ft) != len(trig): raise SystemExit('%s: %d triggers, designed %d' % (name, len(ft), len(trig)))
+            worst = 0.0
+            for (i1, tq1, q1, p1), (i2, tq2, q2, p2) in zip(ft, trig):
+                for a, b in ((tq1, tq2), (q1, q2)):
+                    worst = max(worst, np.degrees(2 * np.arccos(min(1.0, abs(float(np.dot(a, b)))))))
+                if abs(i1 - i2) > 1e-3 * i2 or np.linalg.norm(p1 - p2) > 0.01:
+                    raise SystemExit('%s: tolerance / position differ (%s %s vs %s %s)' % (name, i1, p1, i2, p2))
+            if worst > tol_deg: raise SystemExit('%s: a trigger rotation is %.2f deg off the design' % (name, worst))
+            lines.append('%s matches the design (worst rotation %.3f deg)' % (name, worst))
+    return lines
+
+def read_vrd(path):
+    """a .vrd read back the way studiomdl reads it: [(helper, parent, driver, triggers as (inv_tol, q, q, pos))]"""
+    out = []; cur = None
+    for line in open(path):
+        t = line.split()
+        if not t or t[0].startswith('//'): continue
+        if t[0] == '<helper>': cur = [t[1], t[2], t[4], [], None]; out.append(cur)
+        elif t[0] == '<basepos>': cur[4] = np.array(t[1:4], float)
+        elif t[0] == '<trigger>':
+            v = list(map(float, t[1:]))
+            cur[3].append((1 / np.radians(v[0]), Rot.from_matrix(rotm(np.radians(v[1:4]))).as_quat(),
+                           Rot.from_matrix(rotm(np.radians(v[4:7]))).as_quat(), cur[4] + np.array(v[7:10])))
+    return [(a, b, c, d) for a, b, c, d, _ in out]
+
+def check_vrd(path, rig, helpers, tol_deg=0.05):
+    """the written .vrd read back must give the designed helpers (names, driver, every trigger) - the same comparison
+    check_compiled makes on the owner's compile"""
+    got = {h[0]: h for h in read_vrd(path)}
+    for side, t, f, h, axis, trig in helpers:
+        n = rig.nodes[t][0]
+        if n not in got: raise SystemExit('%s: %s missing' % (path, n))
+        _, parent, driver, tr = got[n]
+        if (parent, driver) != (rig.nodes[f][0], rig.nodes[h][0]) or len(tr) != len(trig):
+            raise SystemExit('%s: %s reads back wrong' % (path, n))
+        for (i1, a1, b1, p1), (i2, a2, b2, p2) in zip(tr, trig):
+            for a, b in ((a1, a2), (b1, b2)):
+                if np.degrees(2 * np.arccos(min(1.0, abs(float(np.dot(a, b)))))) > tol_deg or np.linalg.norm(p1 - p2) > 1e-3:
+                    raise SystemExit('%s: %s trigger reads back off the design' % (path, n))
+    return len(helpers)

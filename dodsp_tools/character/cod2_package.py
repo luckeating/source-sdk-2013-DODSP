@@ -13,7 +13,7 @@ import os, re, sys, struct, json
 import numpy as np
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path[:0] = [HERE]
-import cod2_char as C, cod2_assets as A, normal_seams as NS, mdl48, vtf
+import cod2_char as C, cod2_assets as A, normal_seams as NS, twist_bones as TW, mdl48, vtf
 from scipy import ndimage as nd
 
 MATDIR = 'models/dodsp/cod3'
@@ -107,7 +107,7 @@ def write_ragdoll_pose(path, rig, S):
     sb = {b['name']: b for b in S['bones']}; L = rig.local(); f0 = rig.ref.frames[0][1]
     out = ['version 1', 'nodes'] + ['%d "%s" %d' % (i, n, p) for i, (n, p) in enumerate(rig.nodes)] + ['end', 'skeleton', 'time 0']
     for i, (n, p) in enumerate(rig.nodes):
-        v = tuple(sb[n]['pos']) + tuple(sb[n]['rot']) if n in sb else tuple(f0[i])
+        v = tuple(sb[n]['pos']) + tuple(sb[n]['rot']) if n in sb else (tuple(f0[i]) if i in f0 else L[i])   # helpers: ours
         out.append('%d %.6f %.6f %.6f %.6f %.6f %.6f' % ((i,) + v))
     out += ['end', 'triangles', 'end']
     open(path, 'w').write('\n'.join(out) + '\n')
@@ -162,6 +162,7 @@ def build(pack, npz, ref, soldier, out, name, helmet, models):
     z = np.load(npz, allow_pickle=False)
     mapping = dict(Rg=z['Rg'], off=dict(zip(z['off_names'], z['off'])))
     rig, tris, info = C.build(pack, mapping, ref, [helmet] + models)
+    tris, twist = TW.add_to_rig(rig, tris)      # wrist-twist helpers: the hand's roll spread down the forearm
     S = mdl48.read(soldier); bn = [b['name'] for b in S['bones']]
     assert set(bn) <= set(n for n, p in rig.nodes), set(bn) - set(n for n, p in rig.nodes)
     base = os.path.basename(name); src = os.path.join(out, 'modelsrc', base); os.makedirs(src, exist_ok=True)
@@ -195,6 +196,9 @@ def build(pack, npz, ref, soldier, out, name, helmet, models):
         q.append('$hboxset "%s"' % s['name'])
         for b in s['boxes']:
             q.append('$hbox %d "%s" %.3f %.3f %.3f %.3f %.3f %.3f' % (b['group'], bn[b['bone']], *b['mn'], *b['mx']))
+    TW.write_vrd(os.path.join(src, base + '.vrd'), rig, twist); TW.check_vrd(os.path.join(src, base + '.vrd'), rig, twist)
+    q += ['', '// wrist-twist helpers (twist_bones.py): the engine turns them with the hand (bone_setup.cpp DoQuatInterpBone)',
+          '$proceduralbones "%s.vrd"' % base]
     q += ['', '$sequence "ragdoll" "ragdoll.smd" ACT_DIERAGDOLL 1 fps 30', '']
     sol = [kv for k, kv in pinfo if k == 'solid']; total = sum(float(s['mass']) for s in sol)
     q += ['$collisionjoints "physics.smd"', '{', '\t$mass %.3f' % total, '\t$inertia %s' % sol[0].get('inertia', '10'),
@@ -212,6 +216,7 @@ def build(pack, npz, ref, soldier, out, name, helmet, models):
     q += ['}', '']
     open(os.path.join(src, base + '.qc'), 'w').write('\n'.join(q))
     info.update(eye=[round(float(v), 2) for v in eye], soldier_eye=[round(float(v), 2) for v in S['attachments'][[a['name'] for a in S['attachments']].index('eyes')]['m'][:, 3]],
+                twist=[dict(helper=rig.nodes[t][0], forearm=rig.nodes[f][0], hand=rig.nodes[h][0], triggers=len(tr)) for _, t, f, h, _, tr in twist],
                 textures=tex, ragdoll_solids=len(solids), ragdoll_mass=round(total, 2), body_tris=len(body), helmet_tris=len(helm))
     json.dump(info, open(os.path.join(src, 'report.json'), 'w'), indent=1, default=str)
     return info
