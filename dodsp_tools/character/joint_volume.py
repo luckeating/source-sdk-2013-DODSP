@@ -393,11 +393,11 @@ def split_weights(P, W, specs, wpos, wrot=None):
             x = np.where(sv < 0, 0.5 + sv / (2 * bpv), 0.5 + sv / (2 * bcv)); x = np.clip(x, 0, 1); cc = x * x * (3 - 2 * x)
         # ...and never onto a bone CoD kept it off: a corner with no weight on the child (the coat's skirt beside the
         # thigh, a strap over the shoulder) blends parent -> helpers up to the joint and back to the parent past it
-        # (mirrored, so its neighbours stay continuous); one with none on the parent the same way round. Without this
-        # the tunic skirt took 0.6 of the thigh and moved 8.8 units in the crouched aim (the egg grenade's belt loop
-        # stretched), a gear strap took 0.4 of the left upper arm (2026-11-22).
-        onp = np.array([any(b == p and x > 0.05 for b, x in w) for w in W])
-        cc = np.where(~onc, toward_child(-np.abs(sv), bp, bc), np.where(~onp, toward_child(np.abs(sv), bp, bc), cc))
+        # (mirrored, so its neighbours stay continuous). Without this the tunic skirt took 0.6 of the thigh and moved
+        # 8.8 units in the crouched aim, a gear strap took 0.4 of the left upper arm (2026-11-22). NOT the same rule the
+        # other way round (no parent weight -> no parent share): the heel of the hand is hand-only on the forearm's side
+        # of the wrist and needs the forearm's share - mirrored, the MG crouch-walk support wrist went 0.56 -> 0.30.
+        cc = np.where(~onc, toward_child(-np.abs(sv), bp, bc), cc)
         for v in np.where(inband & (onc | (rad <= JV_LIMB_REACH * limb_r)))[0]:
             W[v] = split_levels(W[v], chain, at, cc[v])
     for (s, j), sps in groups.items():
