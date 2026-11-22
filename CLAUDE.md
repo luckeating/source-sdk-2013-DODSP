@@ -1337,7 +1337,7 @@ If you learn something like this, add it here in the same commit as the fix.
   wall at the far right), legs IK. Costs: muzzle depression -6 (not -15), a 32-degree lean at -30, more rider clipping.
   OWNER 2026-11-21: "use the original for now, we can mess with better looking versions later" - so V2b ships the first
   version; the shouldered tools are in c5ef467 (git show c5ef467:dodsp_tools/vehicle_preview/mg_gunner_compose.py).
-  **V2b PREPARED 2026-11-21 (code in, NOT built - waiting for the owner's go).** Mount "pintle" (dodsp_vehicle.cpp): a gun you
+  **V2b BUILT 2026-11-21: build 44975332307** (owner: "go ahead and build"; not yet tested in game). Mount "pintle" (dodsp_vehicle.cpp): a gun you
   can SEE - prop dodsp_mg42_pintle parented on "pintle" (= CoD2 tag_turret 9.6 0 89.3; lint compares), its muzzle and
   elevation are the MODEL's (attachment "muzzle", pose "mg_pitch"; MeasurePintleGun, once, load line + INVARIANTs for a
   missing model / muzzle / a pose range short of the script's). AimPintleGuns = THE owner of where it points (m_flMGYaw /
