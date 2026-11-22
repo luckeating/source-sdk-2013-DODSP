@@ -1444,6 +1444,17 @@ If you learn something like this, add it here in the same commit as the fix.
   (incl. panzerschreck, panzerfaust, mg42 portable, injured), CoD3 weapon + German cry sounds. NO animations: its scripts
   name none; every body = CoD2's skeleton (limbs within 0.1 of the CoD2 officer). Same names as the first pack's
   Germans but newer files (none identical).
+  ONE SOLDIER PORTED 2026-11-21 (preview only, owner: "lets do one soldier and see what it turns out as"):
+  german_infantry_normandy = body_1 + head_0 + gear_0 + gear_kar98 + helm1 (7261 verts, 10179 tris, 4 materials).
+  dodsp_tools/character/cod2_assets.py reads xmodel (LOD names, then i32 -1, i32 0, per LOD u16 count + one material per
+  surface), CoD2 materials (images at 0x44) and iwi v5 (DXT1/3/5, mips smallest first). cod2_char.py puts the parts on the
+  DoD reference skeleton: a part's bones = the BODY's bones of the same name (each part file has them at its own origin);
+  turns from xanim_map.npz (the animation converter's); OUR lengths/offsets in CoD's bind orientation, so nothing is
+  re-posed; limbs stretched along the bone (forearm 9.65 -> 11.48, shin 15.1 -> 16.5); the TRUNK kept in CoD's shape
+  and rebound (CoD's j_spine4 sits 3.5 units lower than our Spine4 - a per-bone stretch squashed the chest to 0.4).
+  Limb joints move 1-3 units against the trunk (joint_report). char_preview.py skins it with any DoD SMD (Source's
+  linear blend): idle / run / crouch / aim look right. Not done: QC, VTFs, normal maps, hitboxes/ragdoll/attachments
+  (want the owner's compiled npc_german_rifleman to copy them), eyes are plain head mesh.
 
 ## REQUIRED FIXES (owner said "mark it as a required fix" - do before calling the vehicles done)
 - **Carrier open top** (owner 2026-11-21): carrier.mdl / carrier_desert.mdl collision is one closed convex shell over the

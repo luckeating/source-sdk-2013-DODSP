@@ -1,0 +1,97 @@
+"""CoD2 (v20) character assets: xmodel (LODs + the material of each surface), material (its images), iwi (textures).
+Layouts read from the files themselves (the owner's CoD3-for-CoD2 packs, 2026-11-21):
+  xmodel:   u16 version 20, u8 flags, 6 floats (bounds), 4 x (float distance, NUL name of the LOD's parts/surfs),
+            i32 (-1), i32 (0), then per LOD: u16 count + that many NUL material names - one per surface, in the
+            surfs' order. The LOD names are the xmodelparts / xmodelsurfs file names as they are on disk.
+  material: u32 name offset, ...; at 0x34 u32 count; at 0x44 count x (u32 map-name offset, u32 semantic, u32
+            image-name offset): "colorMap" / "normalMap" / "specularMap" -> the images.
+  iwi:      'IWi', u8 version 5, u8 format (0x0B DXT1, 0x0C DXT3, 0x0D DXT5, 0x01 ARGB8888, 0x02 RGB888), u8 usage,
+            u16 width, u16 height, u16 depth, 4 x u32 (sizes at the picmip levels), then the mips SMALLEST FIRST - the
+            full mip at the end of the file."""
+import os, struct, numpy as np
+
+def _cstr(d, o):
+    e = d.index(b'\0', o); return d[o:e].decode('latin-1'), e + 1
+
+def xmodel(path):
+    d = open(path, 'rb').read()
+    ver, = struct.unpack_from('<H', d, 0); assert ver == 20, (path, ver)
+    o = 3 + 24; lods = []
+    for i in range(4):
+        dist, = struct.unpack_from('<f', d, o); o += 4
+        name, o = _cstr(d, o); lods.append((dist, name))
+    o += 8
+    mats = []
+    for i in range(4):
+        if not lods[i][1]: break
+        n, = struct.unpack_from('<H', d, o); o += 2; m = []
+        for k in range(n):
+            s, o = _cstr(d, o); m.append(s)
+        mats.append(m)
+    return dict(lods=lods, materials=mats)
+
+def material(path):
+    d = open(path, 'rb').read()
+    n, = struct.unpack_from('<I', d, 0x34)
+    out = {}
+    for k in range(n):
+        a, sem, b = struct.unpack_from('<3I', d, 0x44 + 12 * k)
+        out[_cstr(d, a)[0]] = _cstr(d, b)[0]
+    return out
+
+def _dxt_colours(c0, c1, four):
+    def rgb(c):
+        return np.stack([((c >> 11) & 31) * 255 // 31, ((c >> 5) & 63) * 255 // 63, (c & 31) * 255 // 31], -1).astype(np.float32)
+    a, b = rgb(c0), rgb(c1)
+    m = four[..., None]
+    c2 = np.where(m, (2 * a + b) / 3, (a + b) / 2); c3 = np.where(m, (a + 2 * b) / 3, 0)
+    return np.stack([a, b, c2, c3], -2)          # blocks x 4 x 3
+
+def _decode_dxt(data, w, h, fmt):
+    bw, bh = max(1, w // 4), max(1, h // 4)
+    bs = 8 if fmt == 0x0B else 16
+    blk = np.frombuffer(data, np.uint8, bw * bh * bs).reshape(bh * bw, bs)
+    col = blk[:, -8:]
+    c0 = col[:, 0].astype(np.uint32) | (col[:, 1].astype(np.uint32) << 8)
+    c1 = col[:, 2].astype(np.uint32) | (col[:, 3].astype(np.uint32) << 8)
+    pal = _dxt_colours(c0, c1, (c0 > c1) if fmt == 0x0B else np.ones_like(c0, bool))
+    bits = col[:, 4:8].astype(np.uint32); idx = bits[:, 0] | (bits[:, 1] << 8) | (bits[:, 2] << 16) | (bits[:, 3] << 24)
+    sel = np.stack([(idx >> (2 * i)) & 3 for i in range(16)], -1)          # blocks x 16
+    rgb = np.take_along_axis(pal, sel[..., None].repeat(3, -1), 1)         # blocks x 16 x 3
+    a = np.full(sel.shape, 255.0, np.float32)
+    if fmt == 0x0B:
+        a = np.where((c0 <= c1)[:, None] & (sel == 3), 0.0, 255.0)
+    elif fmt == 0x0C:
+        ab = blk[:, :8]; a = np.stack([((ab[:, i // 2] >> (4 * (i % 2))) & 15) * 17 for i in range(16)], -1).astype(np.float32)
+    elif fmt == 0x0D:
+        a0 = blk[:, 0].astype(np.float32); a1 = blk[:, 1].astype(np.float32)
+        ab = blk[:, 2:8].astype(np.uint64); bits = np.zeros(len(blk), np.uint64)
+        for i in range(6): bits |= ab[:, i] << np.uint64(8 * i)
+        ai = np.stack([((bits >> np.uint64(3 * i)) & np.uint64(7)).astype(int) for i in range(16)], -1)
+        tab = np.zeros((len(blk), 8), np.float32); tab[:, 0] = a0; tab[:, 1] = a1
+        big = a0 > a1
+        for k in range(2, 8):
+            tab[:, k] = np.where(big, ((8 - k) * a0 + (k - 1) * a1) / 7, ((6 - k) * a0 + (k - 1) * a1) / 5 if k < 6 else (0 if k == 6 else 255))
+        a = np.take_along_axis(tab, ai, 1)
+    px = np.concatenate([rgb, a[..., None]], -1).reshape(bh, bw, 4, 4, 4).transpose(0, 2, 1, 3, 4).reshape(bh * 4, bw * 4, 4)
+    return px[:h, :w].astype(np.uint8)
+
+def iwi(path):
+    """-> dict(fmt, w, h, rgba (h x w x 4 uint8, the full mip), mips [(w, h, bytes)] largest first)"""
+    d = open(path, 'rb').read()
+    assert d[:3] == b'IWi' and d[3] == 5, path
+    fmt = d[4]; w, h, depth = struct.unpack_from('<HHH', d, 6)
+    def size(w, h):
+        if fmt in (0x0B, 0x0C, 0x0D): return max(1, (w + 3) // 4) * max(1, (h + 3) // 4) * (8 if fmt == 0x0B else 16)
+        return w * h * {0x01: 4, 0x02: 3, 0x03: 2, 0x04: 1}[fmt]
+    mips = []; end = len(d); mw, mh = w, h
+    while True:
+        s = size(mw, mh); mips.append((mw, mh, d[end - s:end])); end -= s
+        if mw == 1 and mh == 1: break
+        mw, mh = max(1, mw // 2), max(1, mh // 2)
+    full = mips[0][2]
+    if fmt in (0x0B, 0x0C, 0x0D): rgba = _decode_dxt(full, w, h, fmt)
+    elif fmt == 0x01: rgba = np.frombuffer(full, np.uint8).reshape(h, w, 4)[..., [2, 1, 0, 3]]      # BGRA
+    elif fmt == 0x02: rgba = np.concatenate([np.frombuffer(full, np.uint8).reshape(h, w, 3)[..., ::-1], np.full((h, w, 1), 255, np.uint8)], -1)
+    else: raise ValueError('iwi format %d' % fmt)
+    return dict(fmt=fmt, w=w, h=h, rgba=rgba, mips=mips, header_end=28, data_start=end)
