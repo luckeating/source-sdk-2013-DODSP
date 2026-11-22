@@ -1493,6 +1493,12 @@ If you learn something like this, add it here in the same commit as the fix.
   HDR-like 60:1 sun:shade), and the compiled tangents (character/vvd_tangents.py on the owner's .mdl/.vvd/.vtx: median
   0.2 deg from dP/du, w agrees with the UVs 99.5%). Next: in-game isolation (mat_fullbright / dodsp_sun_baked 1 /
   mat_bumpmap 0) to find which term draws them.
+  ISOLATION RESULT (owner's 5 screenshots, same spot): fullbright clean; dodsp_sun_baked 1 STILL streaked (not our
+  per-pixel sun); mat_bumpmap 0 CLEAN; back on, streaked. So it is the tunic normal map itself under Source's lighting
+  (engine ambient cube + lights) - CoD3's map is strong (tilt median 0.37, 10% past 0.83). My bump preview (hemisphere
+  ambient) did NOT reproduce it - a preview's lighting model is not the engine's; the in-game A/B settled it in one
+  round. Fix: cod2_package NORMAL_STRENGTH (one owner, per map: x/y scaled, renormalised) - tunic 0.5; 0.3 sent as
+  the alternative (dodsp_cod3_tunic_normals_0.5.zip / _0.3.zip, one VTF each); the owner picks, the default follows.
 
 ## READY TO SHIP - REMIND THE OWNER (2026-11-21: "continue to remind me about the vehicle build ready to ship, we wont let it
 ## be ignored for long")
