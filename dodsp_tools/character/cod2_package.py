@@ -13,11 +13,16 @@ import os, re, sys, struct, json
 import numpy as np
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path[:0] = [HERE]
-import cod2_char as C, cod2_assets as A, normal_seams as NS, joint_volume as JV, mdl48, vtf
+import cod2_char as C, cod2_assets as A, normal_seams as NS, joint_volume as JV, layered_poses as LP, mdl48, vtf
 from scipy import ndimage as nd
 
 MATDIR = 'models/dodsp/cod3'
 JV_WORSE_TOL = 0.02     # a joint helper may not leave any joint thinner than without it (median or worst 10% of poses)
+JV_POSE_WORSE = 0.05    # a HELD pose (stance(): his weapons' stance files + every aim-layer extreme) that ends thinner by more
+                        # than this AND under JV_BAR is listed in the report and printed - the first joint build passed the
+                        # pooled check and made the crouched knee worse (0.22 -> 0.06), and nothing said so
+JV_POSE_DROP_MAX = 0.2  # ...and none may lose more than this: the build stops (every design tried leaves the elbow's few
+                        # already-collapsed extreme poses 0.1-0.16 lower - measured, listed, not hidden)
 # How strongly a normal map tilts the surface (its x/y scaled, then renormalised), per map - the one owner.
 # The owner's in-game isolation 2026-11-21: black streaks on the tunic folds with the normal maps on (same with our
 # per-pixel sun off), gone with mat_bumpmap 0; the colour map and the compiled tangents are clean. CoD3's tunic map is
@@ -159,7 +164,19 @@ def textures(pack, tris, outdir):
                          green=done.get(nmap.lstrip('~').split('-')[0]) if nmap else None)
     return report
 
-def build(pack, npz, ref, soldier, out, name, helmet, models, pose_dirs):
+# the DoD animation sets a German soldier's weapons use (npc_german_soldier.txt "anims": k98 BOLT, mp40, mp44, mg42 MG,
+# p38 PISTOL, c96, stick grenade, spade, Panzerschreck; RIFLE is the script's default). Allied sets (TOMMY, BAR, 30CAL,
+# BAZOOKA, GREN_FRAG ...) are never in his hands, so their stances don't bind the design. A US soldier's package
+# passes its own list.
+HELD_SETS = ('BOLT', 'RIFLE', 'MP40', 'MP44', 'MG', 'PISTOL', 'C96', 'GREN_STICK', 'SPADE', 'KNIFE', 'PSCHRECK')
+
+def stance(label, sets=HELD_SETS):
+    """a pose the soldier HOLDS with one of his weapons (not a one-off): DoD's stance files and the aim-layer poses
+    built from them (layered_poses: 'Stance_SET+layer')"""
+    m = re.match(r'@?(?:a_)?(?:pose_)?(?:blend_)?(?:Stand|Crouch|Prone|walk|run|crouch|sprint)[A-Za-z]*?_?[A-Za-z]*_(%s)(?:_Deploy)?(?:[:+]|$)' % '|'.join(sets), label)
+    return bool(m)
+
+def build(pack, npz, ref, soldier, out, name, helmet, models, pose_dirs, layered_qc=None):
     z = np.load(npz, allow_pickle=False)
     mapping = dict(Rg=z['Rg'], off=dict(zip(z['off_names'], z['off'])))
     rig, tris, info = C.build(pack, mapping, ref, [helmet] + models)
@@ -167,7 +184,11 @@ def build(pack, npz, ref, soldier, out, name, helmet, models, pose_dirs):
     # each joint turning half as far keeps it. Triggers fitted to every full-pose animation we play (pose_dirs).
     poses = JV.load_poses(pose_dirs)
     base_rig_nodes, base_local, base_tris = list(rig.nodes), rig.local(), tris
-    tris, helpers = JV.add_to_rig(rig, tris, poses)
+    if layered_qc:      # + the poses as the engine draws them: stance + aim layer + the left hand's touch IK
+        sk_ = JV.Skeleton(base_rig_nodes, base_local); qdir = os.path.dirname(layered_qc)
+        LP.check_order(layered_qc, qdir, sk_)
+        poses = poses + LP.layered(layered_qc, qdir, sk_)
+    tris, helpers = JV.add_to_rig(rig, tris, poses, stance=stance)
     S = mdl48.read(soldier); bn = [b['name'] for b in S['bones']]
     assert set(bn) <= set(n for n, p in rig.nodes), set(bn) - set(n for n, p in rig.nodes)
     base = os.path.basename(name); src = os.path.join(out, 'modelsrc', base); os.makedirs(src, exist_ok=True)
@@ -209,6 +230,7 @@ def build(pack, npz, ref, soldier, out, name, helmet, models, pose_dirs):
     r0, _, _ = JV.measure(sk0, m0, poses)
     sk1 = JV.engine_skeleton(rig, helpers, vrd); m1 = JV.Mesh(tris, len(sk1.nodes))
     r1, w1, _ = JV.measure(sk1, m1, poses)
+    labels = [l for l, fr in poses if JV.pose_valid(sk0, fr)]      # measure() keeps the valid poses, in order
     joints = {}
     for k in r0:
         a, b = r0[k], r1[k]
@@ -218,7 +240,13 @@ def build(pack, npz, ref, soldier, out, name, helmet, models, pose_dirs):
         if np.percentile(b, 10) < np.percentile(a, 10) - JV_WORSE_TOL or np.median(b) < np.median(a) - JV_WORSE_TOL:
             raise SystemExit('joint helpers make the %s %s thinner (median / worst 10%%: %.2f / %.2f -> %.2f / %.2f) - not shipping'
                              % (k + (np.median(a), np.percentile(a, 10), np.median(b), np.percentile(b, 10))))
-    q += ['', '// half-angle joint helpers (joint_volume.py): the engine turns them half as far as the joint\'s child bone (bone_setup.cpp DoQuatInterpBone)',
+        bad = sorted([(round(float(x), 2), round(float(y), 2), l) for x, y, l in zip(a, b, labels)
+                      if stance(l) and y < x - JV_POSE_WORSE and y < JV.JV_BAR], key=lambda t: t[1] - t[0])
+        joints['%s %s' % k]['held_poses_worse'] = bad
+        if bad: print('NOTE: the %s %s ends thinner in %d held pose(s): %s' % (k + (len(bad), bad[:5])))
+        if bad and bad[0][0] - bad[0][1] > JV_POSE_DROP_MAX:
+            raise SystemExit('joint helpers make the %s %s thinner by %.2f in a held pose (%s) - not shipping' % (k + (bad[0][0] - bad[0][1], bad[0])))
+    q += ['', '// joint helpers (joint_volume.py JOINT_DESIGN): part of a joint\'s turn or roll each, run by the engine (bone_setup.cpp DoQuatInterpBone)',
           '$proceduralbones "%s.vrd"' % base]
     q += ['', '$sequence "ragdoll" "ragdoll.smd" ACT_DIERAGDOLL 1 fps 30', '']
     sol = [kv for k, kv in pinfo if k == 'solid']; total = sum(float(s['mass']) for s in sol)
@@ -237,7 +265,7 @@ def build(pack, npz, ref, soldier, out, name, helmet, models, pose_dirs):
     q += ['}', '']
     open(os.path.join(src, base + '.qc'), 'w').write('\n'.join(q))
     info.update(eye=[round(float(v), 2) for v in eye], soldier_eye=[round(float(v), 2) for v in S['attachments'][[a['name'] for a in S['attachments']].index('eyes')]['m'][:, 3]],
-                joint_helpers=[dict(helper=rig.nodes[h['helper']][0], band=h['band'], triggers=len(h['triggers']), tol=h['tol'], error_deg=h['error'], poses=h['samples']) for h in helpers],
+                joint_helpers=[dict(helper=h['name'], kind=h['kind'], share=round(h['frac'], 3), band=h['band'], cut=round(h['cut'], 1), poses_near_cut=h.get('near_cut'), triggers=len(h['triggers']), tol=h['tol'], error_deg=h['error'], poses=h['samples']) for h in helpers],
                 joints=joints, poses=len(poses),
                 textures=tex, ragdoll_solids=len(solids), ragdoll_mass=round(total, 2), body_tris=len(body), helmet_tris=len(helm))
     json.dump(info, open(os.path.join(src, 'report.json'), 'w'), indent=1, default=str)
@@ -246,5 +274,7 @@ def build(pack, npz, ref, soldier, out, name, helmet, models, pose_dirs):
 if __name__ == '__main__':
     a = sys.argv[1:]
     k = a.index('--poses'); pose_dirs = a[k + 1].split(','); a = a[:k] + a[k + 2:]
-    info = build(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7:], pose_dirs)
+    lq = None
+    if '--layered' in a: k = a.index('--layered'); lq = a[k + 1]; a = a[:k] + a[k + 2:]
+    info = build(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7:], pose_dirs, lq)
     print(json.dumps({k: info[k] for k in ('faces_out', 'eye', 'soldier_eye', 'ragdoll_solids', 'ragdoll_mass', 'body_tris', 'helmet_tris', 'height', 'joints', 'joint_helpers')}, indent=1))

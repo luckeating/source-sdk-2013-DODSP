@@ -1485,11 +1485,14 @@ RULES (each learned the hard way on the first CoD3 soldier, 2026-11-21 - details
    half-angle helper (joint_volume.py) and the package refuses to ship if any joint measures thinner than without them.
 12. Measure deformation per SLICE across each joint over EVERY full-pose animation we play (joint_volume.measure), not
     in a window around the expected fault and not pooled - twist2 passed its window and changed nothing in game.
+13. The pose set is what the ENGINE draws, not what the files hold: stance + aim layer (body_pitch / body_yaw) + the left
+    hand's touch IK (layered_poses.py, `--layered <qc>`). The crouched support wrist rolls ~150 deg only there. Judge
+    every HELD pose on its own (cod2_package stance(): his weapons' stances + aim extremes), never only the pooled stats.
 10. CoD2 xanim bone translations are OFFSETS from the rest position: cod2_xanim.world(..., offsets=True) in new code.
 11. Every test step for a character says exactly which zip to unzip into DOD-SP, whether Crowbar must recompile, and
     to restart the game fully.
 Files: dodsp_tools/character/ (cod2_assets.py, cod2_char.py, cod2_package.py, normal_seams.py, helper_shares.py,
-char_preview.py, mdl48.py, vtf.py, vvd_tangents.py, joint_volume.py, joint_preview.py; twist_bones.py now only lends
+char_preview.py, mdl48.py, vtf.py, vvd_tangents.py, joint_volume.py, joint_preview.py, layered_poses.py; twist_bones.py now only lends
 engine_quat_interp / read_vrd / check_compiled), vehicle_preview/cod2_xmodel.py + cod2_xanim.py, generated/.
 Model: german/npc_german_cod3_rifleman.mdl, materials models/dodsp/cod3/. Test: the Hammer "model" key on one
 npc_german_soldier.
@@ -1709,6 +1712,38 @@ LOG:
   every BONE_ALWAYS_PROCEDURAL bone again (parents first), so the helpers follow the hit kick and SupportHandIK
   (it turns upper arm, forearm and hand AFTER the engine computed the helpers). Lint check_procedural_last (tested by
   moving the call up). After the owner's compile: check_compiled against the .vrd (read_vrd) as for twist2.
+  FIRST LOOK 2026-11-22 (joints zip + build 45002581625): standing "perfect", ragdoll fine; CROUCHED: the support wrist
+  (screen right = the soldier's LEFT) wrung into a flat fin seen from below, the kneeling knee (soldier's RIGHT) a lumpy
+  bulb. Two causes, both outside what had been measured:
+  - THE WRIST ROLLS. The soldier aims with DoD's aim layers; aimed down from a crouch his support hand turns ~150 deg
+    about the forearm (roll; the bend is only ~50). None of those poses were in the set (files only). New
+    character/layered_poses.py = THE owner of "poses as the engine draws them": every stance sequence with an
+    `addlayer "aimmatrix_*"` at each layer animation (full weight) + `ikrule "lhand" touch R_Hand`. COMPOSITION FACT
+    (checked, check_order): local = base x delta (the delta in the bone's own frame); with it the left hand stays on the
+    gun within 0.7 units / 2 deg before any IK. delta x base (my first try) misses by 20 units / 95 deg and reported
+    180-degree rolls that don't exist - LESSON: test a composition rule against something the data must satisfy (the
+    hands stay on the gun) before reading results from it.
+    Fix: roll helpers. joint_volume.JOINT_DESIGN (one table) + target() (ONE rule, three kinds): 'turn' (k of the turn),
+    'swing' (the whole roll about the parent bone + k of the bend - the wrist helper), 'roll' (k of the roll, placed
+    along the forearm: 0.2/0.4/0.6/0.8 of it at 0.45/0.6/0.75/0.9 of the length). A half-roll has two answers: each roll
+    helper has a branch cut (place_cuts: where no HELD pose rolls within JV_ROLL_CLEAR 20 deg; L at +126, R at +133).
+    Over all of DoD's weapons the roll covers the whole circle - only his weapons' stances (cod2_package.HELD_SETS)
+    bind it; a US soldier passes his own list.
+  - THE KNEE FOLDS 146 deg. One helper leaves 73 deg between neighbours. Now two (1/3, 2/3), band 8; the elbow two as
+    well (band 4). MEASURE FIX: past JV_DEEP_BEND (90) the whole inside half of a joint is the crease (squeezed against
+    the other bone) and is left out - with only a 60-degree cone left out, the crouched knee read 0.06..0.2 for ANY
+    design and hid the outside's real collapse (original 0.21 -> 0.80 now).
+  - BUG found on the way (split_weights roll pass): split_levels returns shares of 1, so 0.05 of forearm on upper-arm
+    skin became half its weight (MG idle's upper arm 0.96 -> 0.60). Scaled back.
+  GUARD: cod2_package measures every held pose before/after (engine triggers from the .vrd); a held pose ending
+  > JV_POSE_WORSE thinner and under JV_BAR is printed and listed in report.json (held_poses_worse); > JV_POSE_DROP_MAX
+  (0.2) stops the build. Trigger fit keeps every held pose (JV_FIT_SAMPLES 2500). This build: 5 held poses listed, all
+  already collapsed before (L elbow prone Panzerschreck / MG crouch-walk 0.39-0.49 -> 0.33-0.35, R shoulder MG sprint
+  0.19 -> 0.13, R wrist deployed prone MG 0.50 -> 0.42). Result (median / worst 10%, all 6157 poses, before -> after):
+  L wrist 0.75/0.54 -> 0.94/0.89, R wrist 0.95/0.79 -> 0.94/0.90, elbows 0.5/0.33 -> 0.97/0.90 and 0.98/0.92, knees
+  0.89/0.18, 0.85/0.21 -> 0.92/0.81, 0.91/0.80, hips -> 0.88/0.48, 0.92/0.79, shoulders -> 0.86/0.65, 0.89/0.74. 24
+  helpers (80 bones). The swing helper's trigger fit is the loosest (95% 13-15 deg, worst 45-57). Delivered
+  dodsp_cod3_rifleman_joints2.zip (model source only; client unchanged).
 
 
 ## READY TO SHIP - REMIND THE OWNER (2026-11-21: "continue to remind me about the vehicle build ready to ship, we wont let it

@@ -37,6 +37,7 @@ JV_BIN = 1.0           # slice width across the joint (units)
 JV_SLICE_MIN = 4       # a slice needs this many vertices to count
 JV_INNER_BEND = 25.0    # degrees: past this bend the inside of the joint is left out of the measure
 JV_INNER_DOT = 0.5      # a vertex is 'inside' when its direction from the bone line is within 60 deg of the bend's inside
+JV_DEEP_BEND = 90.0     # past this bend the whole inside half is squeezed against the other bone (a crouched knee's crease) - left out too
 JV_LEN_TOL = 0.2        # a pose whose limb bone lengths are off the skeleton's by more is a delta / layer, not a pose
 HELPER_NAME = 'dodsp_%s_%s_half'      # side, joint - ours, nothing of Valve's is called that
 
@@ -95,13 +96,14 @@ def load_poses(paths, frames=JV_FRAMES, limit=None, seed=1):
 
 class Mesh:
     """unique corners of a converted character: position, up to 3 (bone, weight)"""
-    def __init__(self, tris, nb):
+    def __init__(self, tris, nb, dedup=True):
+        """dedup=False keeps every triangle corner in order (two meshes of the same triangles then line up)"""
         P, B, W = [], [], []
         seen = {}
         for m, *corners in tris:
             for p, n, uv, w in corners:
                 key = (tuple(np.round(p, 4)), tuple(sorted((b, round(x, 4)) for b, x in w)))
-                if key in seen: continue
+                if dedup and key in seen: continue
                 seen[key] = len(P); P.append(p)
                 w = sorted(w, key=lambda bx: -bx[1])[:3] + [(0, 0.0)] * (3 - len(w[:3]))
                 B.append([b for b, _ in w]); W.append([x for _, x in w])
@@ -127,7 +129,7 @@ class JointProbe:
             self.p = None
         Wb = skel.world(skel.bind)
         mine = {self.c} | ({self.p} if self.p is not None else {skel.idx[VB + 'Pelvis']})
-        mine |= {i for i, (n, p) in enumerate(skel.nodes) if n.startswith('dodsp_%s_%s' % (side, joint))}
+        mine |= {i for i, (n, p) in enumerate(skel.nodes) if n.startswith('dodsp_%s_' % side) and (p in mine or n.startswith('dodsp_%s_%s' % (side, joint)))}
         own = sum(np.where(np.isin(mesh.B[:, k], list(mine)), mesh.W[:, k], 0) for k in range(3))
         J, E = Wb[self.c][1], Wb[self.e][1]
         A = Wb[self.p][1] if self.p is not None else 2 * J - E
@@ -152,7 +154,7 @@ class JointProbe:
         if bend > JV_INNER_BEND:
             b = u1 + u2; b /= max(np.linalg.norm(b), 1e-9)
             foot = np.where((d1 < d2)[:, None], A + t1[:, None] * (J - A), J + t2[:, None] * (E - J))
-            rv = X - foot; inner = (rv @ b) > JV_INNER_DOT * np.linalg.norm(rv, axis=1)
+            rv = X - foot; inner = (rv @ b) > (JV_INNER_DOT if bend <= JV_DEEP_BEND else 0.0) * np.linalg.norm(rv, axis=1)
         return np.minimum(d1, d2), s, inner
 
 def pose_valid(skel, fr):
@@ -193,84 +195,209 @@ def summary(res, counts=None):
                      '' if p10 >= JV_BAR else ' < %.2f' % JV_BAR, '  (%d verts)' % counts[(s, j)] if counts else ''))
     return lines
 
-# ---------------------------------------------------------------- half-angle helpers
-def half_target(q_child, q_bind, k=0.5):
-    """the helper's local rotation (parent space): k of the child's turn away from its bind, then the bind"""
-    rel = Rot.from_quat(q_child) * Rot.from_quat(q_bind).inv()
-    rv = rel.as_rotvec()
-    return (Rot.from_rotvec(rv * k) * Rot.from_quat(q_bind)).as_quat()
+# ---------------------------------------------------------------- the helpers (one design table, one target rule)
+# Per joint: the blend band (units each side of the joint across which the skin goes parent -> helpers -> child), the
+# helpers' shares of the child's turn, and roll helpers along the PARENT bone. Chosen by measurement (2026-11-22):
+#  - knee: two helpers (1/3, 2/3) - a crouched knee folds 146 deg; one half-way helper leaves 73 deg between
+#    neighbours (cos 36 = 0.81 of the leg kept between them, a pointed bulb in game); two leave 49 deg (0.91). Band 8:
+#    deep-crouch knees median 0.33 / 0.46 (R / L) vs 0.21 / 0.29 with one helper at 6, no other pose thinner.
+#  - elbow: two helpers, band 4 - held poses' worst 10% 0.83 / 0.90 (L / R) -> 0.89 / 0.95 against one at 5; a few
+#    extreme held poses already collapsed before (prone Panzerschreck / pistol, MG crouch-walk: 0.39-0.49) end 0.1-0.16
+#    lower with any design tried - cod2_package lists them (JV_POSE_DROP_MAX bounds them).
+#  - wrist: the hand ROLLS about the forearm - the K98 support hand -100 deg in the aims, -150 aimed down crouched (the
+#    owner's screenshot: forearm wrung flat). A roll can't be taken at the wrist: four roll helpers along the forearm's
+#    far half (0.2 / 0.4 / 0.6 / 0.8 of the roll at 0.45 / 0.6 / 0.75 / 0.9 of its length - CoD's own wrist twist bone
+#    takes 0.84 of it at 0.76) and the wrist helper takes the WHOLE roll and half the bend ('swing'). Measured over
+#    the files + the aim-layer poses (layered_poses.py): support wrist worst 10% 0.83 -> 0.90, stance poses 0.78 -> 0.89;
+#    three evenly spread (0.25 .. 0.75) gave 0.86.
+JOINT_DESIGN = {
+    'shoulder': dict(band=6.0, fracs=(0.5,)),
+    'elbow': dict(band=4.0, fracs=(1.0 / 3, 2.0 / 3)),
+    'wrist': dict(band=1.5, fracs=(0.5,), roll=((0.45, 0.2), (0.6, 0.4), (0.75, 0.6), (0.9, 0.8))),
+    'hip': dict(band=6.0, fracs=(0.5,)),
+    'knee': dict(band=8.0, fracs=(1.0 / 3, 2.0 / 3)),
+    'ankle': dict(band=3.0, fracs=(0.5,)),
+}
+JV_ROLL_CLEAR = 20.0    # degrees: no held pose may roll this close to a roll helper's branch cut (place_cuts)
 
-def add_half_helpers(skel, joints, sides='LR', exact=True, triggers=None, k=0.5):
-    """a helper per (side, joint): child of the joint's parent bone, at the joint, oriented like the child at bind,
-    turning k of the child's turn. exact=True computes it directly; else from `triggers[(side, joint)]` through the
-    engine's DoQuatInterpBone (twist_bones.engine_quat_interp)"""
-    import twist_bones as TW
-    out = {}
+def half_target(q_child, q_bind, k=0.5):
+    """k of the child's turn away from its bind, then the bind (parent space)"""
+    rel = Rot.from_quat(q_child) * Rot.from_quat(q_bind).inv()
+    return (Rot.from_rotvec(rel.as_rotvec() * k) * Rot.from_quat(q_bind)).as_quat()
+
+def roll_angle(q_child, q_bind, axis):
+    """the child's roll about `axis` (parent space, unit) away from its bind, degrees in (-180, 180]"""
+    v = (Rot.from_quat(q_child) * Rot.from_quat(q_bind).inv()).as_quat()
+    p = (v[:3] @ axis) * axis; tw = np.array([*p, v[3]])
+    if np.linalg.norm(tw) < 1e-9: return 180.0
+    a = np.degrees(Rot.from_quat(tw / np.linalg.norm(tw)).as_rotvec() @ axis)
+    return a if a > -180 else a + 360
+
+def target(sp, q_child):
+    """THE helper rule: (local rotation, local position) of helper `sp` for its driver's local rotation.
+    turn: frac of the whole turn. swing: the whole roll about the parent bone and frac of the rest (the bend).
+    roll: frac of the roll, unwrapped at the helper's branch cut sp['cut'] (a half-roll has two answers; the cut is
+    put where no pose goes)."""
+    qb, kind, k = sp['qb'], sp['kind'], sp['frac']
+    if kind == 'turn': return half_target(q_child, qb, k), sp['pos']
+    ax = sp['axis']; a = roll_angle(q_child, qb, ax)
+    if kind == 'swing':
+        rel = Rot.from_quat(q_child) * Rot.from_quat(qb).inv(); tw = Rot.from_rotvec(np.radians(a) * ax)
+        sw = rel * tw.inv()
+        return (Rot.from_rotvec(sw.as_rotvec() * k) * tw * Rot.from_quat(qb)).as_quat(), sp['pos']
+    if a > sp['cut']: a -= 360.0
+    return (Rot.from_rotvec(np.radians(k * a) * ax) * Rot.from_quat(qb)).as_quat(), sp['pos']
+
+def design_helpers(nodes, local, design=None, sides='LR'):
+    """the helper specs (no triggers yet): per side and joint, its turn / swing helpers (under the joint's parent, at
+    the joint) and roll helpers (under the parent, along it). Order = node order once added."""
+    design = design or JOINT_DESIGN; idx = {n: i for i, (n, p) in enumerate(nodes)}; out = []
     for s in sides:
-        for j in joints:
-            Pn, Cn, _ = JOINTS[j]
-            p, c = skel.idx[side_name(s, Pn)], skel.idx[side_name(s, Cn)]
-            pos, Rb = skel.bind[c]; qb = qrel(Rb)
-            if exact:
-                f = (lambda c=c, qb=qb, pos=pos: lambda loc: (pos, Rot.from_quat(half_target(qrel(loc[c][1]), qb, k)).as_matrix()))()
-            else:
-                tr = triggers[(s, j)]
-                def f(loc, c=c, tr=tr, pos=pos):
-                    q, pp = TW.engine_quat_interp(qrel(loc[c][1]), tr)
-                    return (np.array(pp, float), Rot.from_quat(q).as_matrix())
-            out[(s, j)] = (skel.add_helper(HELPER_NAME % (s, j), p, pos, Rb, f), p, c)
+        for j, dz in design.items():
+            Pn, Cn, En = JOINTS[j]
+            p, c, e = (idx[side_name(s, x)] for x in (Pn, Cn, En))
+            pos = np.array(local[c][:3], float); qb = qrel(rotm(local[c][3:]))
+            axis = pos / max(np.linalg.norm(pos), 1e-9)
+            fr = dz['fracs']; kind = 'swing' if dz.get('roll') else 'turn'
+            for i, k in enumerate(fr):
+                name = HELPER_NAME % (s, j) if len(fr) == 1 else 'dodsp_%s_%s_%d' % (s, j, i + 1)
+                out.append(dict(side=s, joint=j, name=name, kind=kind, frac=k, level=(i + 1) / (len(fr) + 1), parent=p,
+                                child=c, end=e, band=dz['band'], pos=pos, qb=qb, axis=axis, cut=180.0))
+            for i, r in enumerate(dz.get('roll', ())):
+                t, k = r if isinstance(r, tuple) else (r, r)          # (place along the bone, share of the roll)
+                out.append(dict(side=s, joint=j, name='dodsp_%s_%s_roll%d' % (s, j, i + 1), kind='roll', frac=k, at=t, **{'from': dz.get('roll_from', 0.0)},
+                                parent=p, grand=nodes[p][1], child=c, end=e, band=dz['band'], pos=pos * t, qb=qb, axis=axis, cut=180.0))
     return out
+
+def place_cuts(specs, samples_of, stance=None):
+    """each roll helper's branch cut (a half-roll has two answers; poses either side of the cut get the far one, a
+    motion across it pops): where the fewest poses come within JV_ROLL_CLEAR of it, stance poses (held poses: the
+    stances and aim extremes, `stance` = a mask over the samples) counting a thousand times - and none may be that
+    close. Measured 2026-11-22: the K98 support hand's roll leaves no empty 40-degree gap over every animation (deaths
+    and prone transitions are scattered round the circle), but a cut at ~+127 has no held pose within 20 degrees."""
+    for sp in specs:
+        if sp['kind'] != 'roll': continue
+        a = np.array([roll_angle(q, sp['qb'], sp['axis']) for q in samples_of(sp)])
+        wt = np.ones(len(a)) if stance is None else np.where(stance, 1000.0, 1.0)
+        best = None
+        for c in np.arange(-180.0, 180.0, 1.0):
+            near = np.abs((a - c + 180) % 360 - 180) < JV_ROLL_CLEAR
+            score = float(wt[near].sum())
+            if best is None or score < best[0]: best = (score, c, int(near.sum()))
+        sp['cut'] = best[1]; sp['near_cut'] = best[2]
+        if best[0] >= 1000:
+            raise SystemExit('joint_volume: %s - every place for the roll\'s branch cut has a held pose within %d deg'
+                             % (sp['name'], JV_ROLL_CLEAR))
+    return specs
+
+def helper_skeleton(nodes, local, specs, engine=False):
+    """the skeleton with the helpers: exact (target) or as the ENGINE runs them (sp['triggers'] through
+    DoQuatInterpBone)"""
+    import twist_bones as TW
+    sk = Skeleton(nodes, local)
+    for sp in specs:
+        c = sp['child']
+        if engine:
+            def f(loc, c=c, tr=sp['triggers']):
+                q, pp = TW.engine_quat_interp(qrel(loc[c][1]), tr); return (np.array(pp, float), Rot.from_quat(q).as_matrix())
+        else:
+            def f(loc, c=c, sp=sp):
+                q, pp = target(sp, qrel(loc[c][1])); return (np.array(pp, float), Rot.from_quat(q).as_matrix())
+        sp['helper'] = sk.add_helper(sp['name'], sp['parent'], sp['pos'], Rot.from_quat(sp['qb']).as_matrix(), f)
+    return sk
 
 def joint_sides(A, J, E, band, joint):
     """the band each side of the joint: never past half the bone it lies on (the shoulder's parent, the clavicle, is
     6 units - a 6-unit band would reach the chest), except the hip's parent side (the pelvis: buttock and belly follow
     the thigh part way, as in any hip rig)"""
-    bp = band if joint == 'hip' else min(band, 0.5 * np.linalg.norm(J - A))
-    return bp, min(band, 0.5 * np.linalg.norm(E - J))
+    bp_, bc_ = band if isinstance(band, tuple) else (band, band)        # (parent side, child side) or one for both
+    bp = bp_ if joint == 'hip' else min(bp_, 0.5 * np.linalg.norm(J - A))
+    return bp, min(bc_, 0.5 * np.linalg.norm(E - J))
 
 def toward_child(sv, bp, bc):
     """0 at the parent end of the band, 1/2 on the joint, 1 at the child end (smoothstep each side)"""
     x = np.where(sv < 0, 0.5 + sv / (2 * bp), 0.5 + sv / (2 * bc)); x = np.clip(x, 0, 1)
     return x * x * (3 - 2 * x)
 
-def split_weight(w, p, c, h, ci):
-    """a corner's parent + child weight shared out parent -> helper -> child by ci (toward_child); <= 3 bones kept"""
-    t = sum(x for b, x in w if b in (p, c))
+def split_levels(w, bones, at, x):
+    """a corner's weight on the chain `bones` (first and last are real bones, those between helpers at `at`, all in
+    0..1) shared out by its place x on the chain: between the two levels around it, linearly; <= 3 bones kept"""
+    t = sum(v for b, v in w if b in (bones[0], bones[-1]))
     if t <= 1e-4: return w
-    rest = [(b, x) for b, x in w if b not in (p, c)]
-    parts = [(p, (1 - 2 * ci) * t), (h, 2 * ci * t)] if ci <= 0.5 else [(h, (2 - 2 * ci) * t), (c, (2 * ci - 1) * t)]
-    w2 = sorted([(b, x) for b, x in rest + parts if x > 1e-4], key=lambda bx: -bx[1])[:3]
-    sm = sum(x for _, x in w2); return [(b, x / sm) for b, x in w2]
+    rest = [(b, v) for b, v in w if b not in (bones[0], bones[-1])]
+    i = int(np.clip(np.searchsorted(at, x, side='right') - 1, 0, len(at) - 2))
+    f = float(np.clip((x - at[i]) / max(at[i + 1] - at[i], 1e-9), 0, 1))
+    w2 = sorted([(b, v) for b, v in rest + [(bones[i], (1 - f) * t), (bones[i + 1], f * t)] if v > 1e-4], key=lambda bv: -bv[1])[:3]
+    sm = sum(v for _, v in w2); return [(b, v / sm) for b, v in w2]
 
-def reweight(mesh, helpers, skel, bands):
-    """the measuring copy of add_to_rig's re-weighting (same functions)"""
-    B, W = mesh.B.copy(), mesh.W.copy(); Wb = skel.world(skel.bind)
-    for (s, j), (h, p, c) in helpers.items():
-        pr = JointProbe(skel, mesh, s, j); A, J, E = pr.line(Wb)
-        _, sv = JointProbe.radius(mesh.P, A, J, E); bp, bc = joint_sides(A, J, E, bands[j], j); cc = toward_child(sv, bp, bc)
+def split_weights(P, W, specs, wpos):
+    """THE re-weighting: P corners (bind, model space), W [[(bone, weight)]] (changed in place), wpos(bone) -> its bind
+    position. Joint by joint: corners within the band go parent -> turn/swing helpers -> child (toward_child); then
+    along a parent bone with roll helpers, what is still on it goes bone -> roll helpers -> the joint's swing helper
+    by the corner's place along the bone."""
+    groups = {}
+    for sp in specs: groups.setdefault((sp['side'], sp['joint']), []).append(sp)
+    # every joint's band first, then the roll passes (a roll pass takes what the bands left on the bone)
+    for (s, j), sps in groups.items():
+        sp0 = sps[0]; p, c, e = sp0['parent'], sp0['child'], sp0['end']
+        J, E = wpos(c), wpos(e); A = wpos(p) if j != 'hip' else J + (J - E)
+        _, sv = JointProbe.radius(P, A, J, E); bp, bc = joint_sides(A, J, E, sp0['band'], j); cc = toward_child(sv, bp, bc)
+        turn = [sp for sp in sps if sp['kind'] != 'roll']
+        chain = [p] + [sp['helper'] for sp in turn] + [c]; at = [0.0] + [sp['level'] for sp in turn] + [1.0]
         for v in np.where((sv > -bp) & (sv < bc))[0]:
-            w = split_weight([(b, x) for b, x in zip(B[v], W[v]) if x > 0], p, c, h, cc[v]) + [(0, 0.0)] * 3
-            B[v] = [b for b, _ in w[:3]]; W[v] = [x for _, x in w[:3]]
-    m2 = Mesh.__new__(Mesh); m2.P, m2.B, m2.W = mesh.P, B, W
+            W[v] = split_levels(W[v], chain, at, cc[v])
+    for (s, j), sps in groups.items():
+        roll = [sp for sp in sps if sp['kind'] == 'roll']
+        if not roll: continue
+        turn = [sp for sp in sps if sp['kind'] != 'roll']; p, c = roll[0]['parent'], roll[0]['child']
+        # the place along the bone, measured on the bone LINE grandparent -> bone -> joint (the probe's rule): skin on the
+        # grandparent's side of the bone's root is 0 - a straight projection onto the bone gave upper-arm skin a share
+        # of the forearm's roll when the bind elbow is bent (the MG idle's upper arm 0.96 -> 0.60, 2026-11-22)
+        A2, J = wpos(p), wpos(c); L = np.linalg.norm(J - A2)
+        _, sv = JointProbe.radius(P, wpos(roll[0]['grand']), A2, J); x = np.clip(sv / max(L, 1e-9), 0, 1)
+        chain = [p, p] + [sp['helper'] for sp in roll] + [turn[0]['helper']]
+        at = [0.0, roll[0]['from']] + [sp['at'] for sp in roll] + [1.0]
+        for v in range(len(P)):
+            f = sum(x_ for b, x_ in W[v] if b == p)
+            if f <= 1e-4: continue
+            part = [(b, x_ * f) for b, x_ in split_levels([(p, 1.0)], chain, at, x[v])]     # only what is still on the bone
+            # moves (split_levels returns shares of 1 - scaled back to f: unscaled, 0.05 of forearm on upper-arm skin
+            # became half its weight, the MG idle's upper arm 0.96 -> 0.60, 2026-11-22)
+            acc = {}
+            for b, x_ in [(b, x_) for b, x_ in W[v] if b != p] + part: acc[b] = acc.get(b, 0.0) + x_
+            w2 = sorted(acc.items(), key=lambda bv: -bv[1])[:3]; sm = sum(x_ for _, x_ in w2)
+            W[v] = [(b, x_ / sm) for b, x_ in w2]
+    return W
+
+def reweight(mesh, specs, skel):
+    """the measuring copy: a Mesh re-weighted by split_weights"""
+    Wb = skel.world(skel.bind)
+    W = [[(b, x) for b, x in zip(bb, ww) if x > 0] for bb, ww in zip(mesh.B, mesh.W)]
+    W = split_weights(mesh.P, W, specs, lambda i: Wb[i][1])
+    m2 = Mesh.__new__(Mesh); m2.P = mesh.P
+    m2.B = np.array([[b for b, _ in w] + [0] * (3 - len(w)) for w in W], int)
+    m2.W = np.array([[x for _, x in w] + [0.0] * (3 - len(w)) for w in W])
     return m2
 
 # ---------------------------------------------------------------- the engine's version: triggers
-JV_FIT_SAMPLES = 1500   # poses the trigger fit and its error are judged on (a seeded sample of all)
+JV_FIT_SAMPLES = 2500   # poses the trigger fit and its error are judged on: every held pose + a seeded sample of the rest
 JV_TRIGGERS = 32        # the engine's DoQuatInterpBone keeps weight[32] - never more
 JV_TOLS = (30.0, 40.0, 50.0, 60.0, 75.0, 90.0)   # trigger tolerances tried (degrees); the best 95th-percentile error wins
 
 def ang(a, b):
     return np.degrees(2 * np.arccos(np.clip(np.abs(np.sum(a * b, -1)), 0, 1)))
 
-def fit_triggers(samples, qb, pos, k=0.5, n=JV_TRIGGERS, seed=1):
-    """samples: the child's local quaternions over every pose. Triggers = the bind first, then farthest-point picks
-    refined by k-means (angle distance), each with the exact half target; the tolerance that gives the smallest 95th
+def fit_triggers(samples, sp, n=JV_TRIGGERS, seed=1, keep=0):
+    """samples: the driver's local quaternions over every pose. Triggers = the bind first, then farthest-point picks
+    refined by k-means (angle distance), each with target(sp, it); the tolerance that gives the smallest 95th
     percentile error under the ENGINE's blend (twist_bones.engine_quat_interp) is kept.
     -> (triggers [(inv_tol, q_driver, q_target, pos)], tol, (median, 95%, worst) error in degrees)"""
     import twist_bones as TW
+    qb = sp['qb']
     X = np.array(samples, float); X *= np.sign(X @ qb)[:, None]
     rng = np.random.default_rng(seed)
-    if len(X) > JV_FIT_SAMPLES: X = X[rng.choice(len(X), JV_FIT_SAMPLES, replace=False)]
+    if len(X) > max(JV_FIT_SAMPLES, keep):      # the first `keep` samples (the held poses) always stay in
+        X = np.concatenate([X[:keep], X[keep:][rng.choice(len(X) - keep, max(JV_FIT_SAMPLES - keep, 0), replace=False)]]) if keep < len(X) else X
     C = [qb]
     d = ang(X, qb[None])
     while len(C) < n and d.max() > 1.0:
@@ -281,55 +408,46 @@ def fit_triggers(samples, qb, pos, k=0.5, n=JV_TRIGGERS, seed=1):
         for c in range(1, len(C)):
             m = X[lab == c]
             if len(m): v = (m * np.sign(m @ C[c])[:, None]).mean(0); C[c] = v / np.linalg.norm(v)
-    tgt = np.array([half_target(c, qb, k) for c in C]); want = np.array([half_target(x, qb, k) for x in X])
+    T = [target(sp, c) for c in C]
+    want = np.array([target(sp, x)[0] for x in X])
     best = None
     for tol in JV_TOLS:
-        tr = [(1.0 / np.radians(tol), c, t, np.array(pos, float)) for c, t in zip(C, tgt)]
+        tr = [(1.0 / np.radians(tol), c, q, np.array(pp, float)) for c, (q, pp) in zip(C, T)]
         got = np.array([TW.engine_quat_interp(x, tr)[0] for x in X])
         e = ang(got, want); score = (float(np.median(e)), float(np.percentile(e, 95)), float(e.max()))
         if best is None or score[1] < best[2][1]: best = (tr, tol, score)
     return best
 
 # ---------------------------------------------------------------- into the package (cod2_package calls these)
-# blend band per joint (units each side of the joint across which the skin goes parent -> helper -> child), chosen by
-# measurement (band_search in the log): the band that gives the joint's worst 10% of poses the most thickness
-JOINT_BAND = {'shoulder': 6.0, 'elbow': 5.0, 'wrist': 1.5, 'hip': 6.0, 'knee': 6.0, 'ankle': 3.0}
-
-def add_to_rig(rig, tris, poses, bands=None):
-    """cod2_char's rig + mesh get a half-angle helper per (side, joint) in `bands`: a node under the joint's parent
-    bone, at the joint, oriented like the child at bind; triggers fitted to the poses; corners within the band
-    re-weighted parent -> helper -> child. -> (tris, spec [dict]) - the rig is changed in place"""
-    bands = bands or JOINT_BAND
-    sk = Skeleton(rig.nodes, rig.local())
-    valid = [fr for _, fr in poses if pose_valid(sk, fr)]
-    rig.nodes = list(rig.nodes); rig.idx = dict(rig.idx); spec = []
-    for s in 'LR':
-        for j, band in bands.items():
-            Pn, Cn, En = JOINTS[j]
-            p, c, e = (rig.idx[side_name(s, x)] for x in (Pn, Cn, En))
-            pos, Rb = sk.bind[c]; qb = qrel(Rb)
-            samples = [qrel(sk.pose(fr)[c][1]) for fr in valid]
-            tr, tol, err = fit_triggers(samples, qb, pos)
-            h = len(rig.nodes); name = HELPER_NAME % (s, j)
-            rig.nodes.append((name, p)); rig.idx[name] = h; rig.W[h] = rig.W[c]
-            spec.append(dict(side=s, joint=j, helper=h, parent=p, child=c, end=e, band=band, triggers=tr, tol=tol,
-                             error=[round(x, 2) for x in err], samples=len(samples)))
-    # re-weight: every corner, joint by joint
+def add_to_rig(rig, tris, poses, design=None, stance=None):
+    """cod2_char's rig + mesh get the helpers of `design` (JOINT_DESIGN): nodes appended, triggers fitted to the poses,
+    corners re-weighted (split_weights). -> (tris, spec [dict]) - the rig is changed in place"""
+    loc = rig.local(); sk = Skeleton(rig.nodes, loc)
+    keep = [(l, fr) for l, fr in poses if pose_valid(sk, fr)]
+    if stance is not None: keep.sort(key=lambda lf: not stance(lf[0]))      # held poses first: the fit keeps them all
+    held = sum(1 for l, _ in keep if stance is not None and stance(l)); valid = [fr for _, fr in keep]
+    specs = design_helpers(rig.nodes, loc, design)
+    drv = {}
+    def samples_of(sp):
+        c = sp['child']
+        if c not in drv: drv[c] = [qrel(sk.pose(fr)[c][1]) for fr in valid]
+        return drv[c]
+    place_cuts(specs, samples_of, None if stance is None else np.array([stance(l) for l, _ in keep]))
+    rig.nodes = list(rig.nodes); rig.idx = dict(rig.idx)
+    for sp in specs:
+        tr, tol, err = fit_triggers(samples_of(sp), sp, keep=held)
+        h = len(rig.nodes); rig.nodes.append((sp['name'], sp['parent'])); rig.idx[sp['name']] = h; sp['helper'] = h
+        PR, Pt = rig.W[sp['parent']]
+        rig.W[h] = (PR @ Rot.from_quat(sp['qb']).as_matrix(), PR @ sp['pos'] + Pt)
+        sp.update(triggers=tr, tol=tol, error=[round(x, 2) for x in err], samples=len(valid))
     flat = [(ti, k) for ti, (m, *cs) in enumerate(tris) for k in range(3)]
     P = np.array([tris[ti][1 + k][0] for ti, k in flat])
-    W = [list(tris[ti][1 + k][3]) for ti, k in flat]
-    for sp in spec:
-        p, c, h, band = sp['parent'], sp['child'], sp['helper'], sp['band']
-        J, E = rig.W[c][1], rig.W[sp['end']][1]
-        A = rig.W[p][1] if sp['joint'] != 'hip' else J + (J - E)
-        _, sv = JointProbe.radius(P, A, J, E); bp, bc = joint_sides(A, J, E, band, sp['joint']); cc = toward_child(sv, bp, bc)
-        sp['band_sides'] = (round(float(bp), 2), round(float(bc), 2))
-        for v in np.where((sv > -bp) & (sv < bc))[0]:
-            W[v] = split_weight(W[v], p, c, h, cc[v])
+    W = split_weights(P, [list(tris[ti][1 + k][3]) for ti, k in flat], specs, lambda i: rig.W[i][1])
     new = [list(t) for t in tris]
     for (ti, k), w in zip(flat, W):
         pp, nn, uv, _ = new[ti][1 + k]; new[ti][1 + k] = (pp, nn, uv, w)
-    return [tuple(t) for t in new], spec
+    return [tuple(t) for t in new], specs
+
 
 def _deg_euler(q):
     return tuple(np.degrees(euler(Rot.from_quat(q).as_matrix())))
@@ -373,11 +491,7 @@ def engine_skeleton(rig, spec, vrd=None):
     DoQuatInterpBone"""
     import twist_bones as TW
     n0 = min(sp['helper'] for sp in spec) if spec else len(rig.nodes)
-    loc = rig.local(); sk = Skeleton(rig.nodes[:n0], {i: loc[i] for i in range(n0)})
+    loc = rig.local()
     trig = {vrd_name(h[0]): h[3] for h in TW.read_vrd(vrd)} if vrd else {}
-    for sp in spec:
-        name = rig.nodes[sp['helper']][0]; tr = trig.get(vrd_name(name), sp['triggers']); c = sp['child']
-        def f(lc, c=c, tr=tr):
-            q, pp = TW.engine_quat_interp(qrel(lc[c][1]), tr); return (np.array(pp, float), Rot.from_quat(q).as_matrix())
-        pos, Rb = sk.bind[c]; sk.add_helper(name, sp['parent'], pos, Rb, f)
-    return sk
+    sps = [dict(sp, triggers=trig.get(vrd_name(sp['name']), sp['triggers'])) for sp in spec]
+    return helper_skeleton(rig.nodes[:n0], {i: loc[i] for i in range(n0)}, sps, engine=True)
