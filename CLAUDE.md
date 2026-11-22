@@ -1525,6 +1525,14 @@ If you learn something like this, add it here in the same commit as the fix.
   LESSON: a test that measures only a relation between two signs can't pick either sign - check what a test can't
   see before trusting its verdict. And integrate a normal map to a height field and look at a known shape (a button)
   before shipping it.
+  SIGNS FIX: better but "still not quite there". Owner asked whether HL2 handles red at all ("always a blue colour"):
+  it does - Valve's wiki (Bump map): red = X (0 left, 255 right), green = Y (255 down), blue = Z out; maps look blue
+  because most texels point out. Ours were blue too (mean RGB 136 131 241 vs citizen 123 122 246). The difference was
+  STRENGTH: tilt median / 90% / past 45 deg - DoD german_body_normal 1.1 / 3.5 / 0%, HL2 citizen_sheet_normal 4.2 /
+  23.2 / 1.3%, CoD3 tunic 20.6 / 44 / 9% (5x the citizen). Fix: cod2_package.relief_scale - every map's slopes scaled
+  so its 90% tilt = NORMAL_TILT90_TARGET (23.2, the citizen's) - one rule, no per-file values (NORMAL_STRENGTH gone):
+  tunic x0.52, gear x0.50, face x0.59, helmet x0.35. Sent dodsp_cod3_normals_relief_fix.zip (4 VTFs, mesh unchanged).
+  LESSON: before porting texture data, put its numbers next to the same kind of file from the target game.
 
 ## READY TO SHIP - REMIND THE OWNER (2026-11-21: "continue to remind me about the vehicle build ready to ship, we wont let it
 ## be ignored for long")

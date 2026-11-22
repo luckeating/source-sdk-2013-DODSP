@@ -21,9 +21,17 @@ MATDIR = 'models/dodsp/cod3'
 # The owner's in-game isolation 2026-11-21: black streaks on the tunic folds with the normal maps on (same with our
 # per-pixel sun off), gone with mat_bumpmap 0; the colour map and the compiled tangents are clean. CoD3's tunic map is
 # strong (tilt median 0.37, 10% of texels past 0.83) and Source's ambient cube + sun turn its creases near black.
-# Strength 0.3 still streaked (owner's screenshot): the streaks were not strength but the decode - see
-# cod2_assets.decode_normal. Back to the map as made; the knob stays (it scales the slopes = the relief's height).
-NORMAL_STRENGTH = {}
+# How strong a map's relief is, matched to a Source character map that draws well (2026-11-21): the tilt that 90% of
+# island texels stay under. HL2's citizen_sheet_normal: 23.2 deg (median 4.2). DoD's german_body_normal is far flatter
+# (3.5). CoD3's maps, read right, were 43-51 (tunic median 20.6, 9% past 45 deg - 5x the citizen's): under Source's
+# ambient cube + sun that drew every fold as a dark band (owner's screenshots after the sign fix). Each map's slopes are
+# scaled so its 90% tilt lands here - one rule for every map, not a hand value per file.
+NORMAL_TILT90_TARGET = 23.2
+
+def relief_scale(x, y, island):
+    """the slope scale that puts the map's 90th-percentile tilt (slope reading: tilt = atan |(x, y)|) on the target"""
+    r90 = float(np.percentile(np.hypot(x, y)[island], 90))
+    return min(1.0, np.tan(np.radians(NORMAL_TILT90_TARGET)) / max(r90, 1e-6)), np.degrees(np.arctan(r90))
 
 # Signs read by eye where the mesh's seams can't decide (normal_seams.decide_signs): a feature of known shape in the
 # map integrated to a height field. The helmet's normal map is a sibling helmet's (helm2 on helm1's colour), so its
@@ -133,7 +141,7 @@ def textures(pack, tris, outdir):
                 down, ratios = A.green_points_down(x, y, ~bg & (np.maximum(np.abs(x), np.abs(y)) < 0.97))
                 sx, sy, how = NS.decide_signs(nname, x, y, seam_tris[nmap], A.decode_normal, ~nd.binary_dilation(bg),
                                               down, NORMAL_SIGNS_CHECKED)
-                k = NORMAL_STRENGTH.get(nname, 1.0)     # scales the slopes = the height of the relief
+                k, tilt90 = relief_scale(x, y, ~bg)     # scales the slopes = the height of the relief
                 nrm = A.pad_islands(A.decode_normal(sx * k * x, sy * k * y), bg)
                 rgb = np.clip((nrm + 1) * 127.5 + 0.5, 0, 255).astype(np.uint8)
                 chain = vtf.mip_chain(rgb)
@@ -141,8 +149,8 @@ def textures(pack, tris, outdir):
                 vtf.write(path, rgb.shape[1], rgb.shape[0], 'BGR888',
                           [c[..., ::-1].tobytes() for c in reversed(chain)], flags=vtf.TEXTUREFLAGS_NORMAL)
                 steepest = check_normal_vtf(path, rgb.shape[1], rgb.shape[0])
-                done[nname] = 'strength %.2f, signs red %+d green %+d by %s (curl: %s, ratios %s), background %.1f%% padded, steepest %.1f deg' % (
-                    k, sx, sy, how, 'agree' if down else 'disagree', ' '.join('%.2f' % r for r in ratios), 100 * bg.mean(), steepest)
+                done[nname] = 'relief x %.2f (90%% tilt %.1f -> %.1f deg), signs red %+d green %+d by %s (curl: %s, ratios %s), background %.1f%% padded, steepest %.1f deg' % (
+                    k, tilt90, NORMAL_TILT90_TARGET, sx, sy, how, 'agree' if down else 'disagree', ' '.join('%.2f' % r for r in ratios), 100 * bg.mean(), steepest)
             vmt.append('\t"$bumpmap" "%s/%s"' % (MATDIR, nname))
         vmt += ['}']
         open(os.path.join(outdir, m + '.vmt'), 'w').write('\n'.join(vmt) + '\n')
