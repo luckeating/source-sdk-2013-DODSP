@@ -1642,6 +1642,14 @@ LOG:
   like studiomdl, the engine's code, the shipped weights): K98 aims left hand -78 / -104 -> helper -69 / -90.8, wrist
   kept 0.86 / 0.77 = the preview. Delivered dodsp_cod3_rifleman_twist.zip (model source only: body/helmet/physics/
   ragdoll SMD + QC + .vrd; textures unchanged since the relief fix).
+  FIRST COMPILE 2026-11-22: `ERROR: Missing control bone "dodsp_L_ForeTwist" for procedural bone "ValveBiped.Bip01_L_Hand"`.
+  Cause: a PERIOD in a .vrd bone name - studiomdl misreads it (VDC VRD: strip everything up to and including the
+  period; HL2's own .vrd files write Bip01_L_Hand), so the <helper> line's names came apart. Fix: vrd_name() is THE
+  spelling of a bone in a .vrd; check_vrd fails on any period. Also the REST pose is now trigger 0 (VDC's example puts
+  the reference first; the engine falls back to trigger 0 when nothing is in reach - it was a 180-degree roll), then
+  +-30 outward (trigger_rolls). Same results (K98 aims -69 / -90.8, rest -> 0). Only the .vrd changed:
+  dodsp_cod3_rifleman_twist2.zip. LESSON: a text format's tokenizer rules (which characters it splits on) are part
+  of the format - look them up with the syntax.
 
 
 ## READY TO SHIP - REMIND THE OWNER (2026-11-21: "continue to remind me about the vehicle build ready to ship, we wont let it

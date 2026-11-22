@@ -38,6 +38,22 @@ TRIGGER_STEP = 30.0           # degrees of hand roll between triggers (-180..150
 TRIGGER_TOL = 90.0            # degrees: the "angle of influence" of every trigger
 TWIST_NAME = 'dodsp_%s_ForeTwist'   # ours - nothing of ours shares a name with Valve's
 
+def trigger_rolls():
+    """the hand rolls the triggers sit at: the REST pose first (VDC VRD: the reference trigger comes first, and the
+    engine falls back to trigger 0 when no trigger is in reach), then +-TRIGGER_STEP outward to 180"""
+    out = [0.0]; k = 1
+    while k * TRIGGER_STEP <= 180.0:
+        out.append(k * TRIGGER_STEP)
+        if k * TRIGGER_STEP < 180.0: out.append(-k * TRIGGER_STEP)
+        k += 1
+    return out
+
+def vrd_name(n):
+    """a bone name as a .vrd must spell it: studiomdl misreads a period, so everything up to and including it goes
+    (VDC VRD; HL2's own .vrd files say Bip01_L_Hand for ValveBiped.Bip01_L_Hand). First compile with full names,
+    2026-11-22: 'Missing control bone "dodsp_L_ForeTwist" for procedural bone "ValveBiped.Bip01_L_Hand"'."""
+    return n.split('.')[-1]
+
 def qmul(a, b): return (Rot.from_quat(a) * Rot.from_quat(b)).as_quat()
 
 def engine_quat_interp(src, triggers):
@@ -72,7 +88,7 @@ def rig_twist(ref):
         hp = np.array(fr0[h][:3]); axis = hp / np.linalg.norm(hp)
         q0 = Rot.from_matrix(rotm(fr0[h][3:])).as_quat()
         trig = []
-        for a in np.arange(-180.0, 180.0, TRIGGER_STEP):
+        for a in trigger_rolls():
             roll = Rot.from_rotvec(np.radians(a) * axis).as_quat()
             trig.append((1.0 / np.radians(TRIGGER_TOL), qmul(roll, q0),
                          Rot.from_rotvec(np.radians(a * TWIST_SHARE) * axis).as_quat(), hp * TWIST_AT))
@@ -200,7 +216,7 @@ def rig_triggers(L, f, h):
     """one side's triggers from a skeleton's local frames L (node -> pos + euler): (axis, q0, base, triggers)"""
     hp = np.array(L[h][:3]); axis = hp / np.linalg.norm(hp); q0 = Rot.from_matrix(rotm(L[h][3:])).as_quat()
     trig = []
-    for a in np.arange(-180.0, 180.0, TRIGGER_STEP):
+    for a in trigger_rolls():
         roll = Rot.from_rotvec(np.radians(a) * axis).as_quat()
         trig.append((1.0 / np.radians(TRIGGER_TOL), qmul(roll, q0),
                      Rot.from_rotvec(np.radians(a * TWIST_SHARE) * axis).as_quat(), hp * TWIST_AT))
@@ -246,7 +262,7 @@ def write_vrd(path, rig, helpers):
            ' %.2f of the hand roll)' % (TWIST_AT, TWIST_SHARE)]
     for side, t, f, h, axis, trig in helpers:
         name = rig.nodes[t][0]; base = trig[0][3]
-        out += ['', '<helper> %s %s %s %s' % (name, rig.nodes[f][0], rig.nodes[f][0], rig.nodes[h][0]),
+        out += ['', '<helper> %s %s %s %s' % tuple(vrd_name(x) for x in (name, rig.nodes[f][0], rig.nodes[f][0], rig.nodes[h][0])),
                 '<basepos> %.6f %.6f %.6f' % tuple(base)]
         for inv_tol, tq, q, pos in trig:
             out.append('<trigger> %.3f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f' % (
@@ -280,7 +296,7 @@ def check_compiled(mdl_path, helpers_expected=None, tol_deg=0.5):
         for name, parent, ctrl, trig in helpers_expected:
             if name not in found: raise SystemExit('compiled model has no procedural %s - the .vrd did not take' % name)
             fp, fc, ft = found[name]
-            if (fp, fc) != (parent, ctrl): raise SystemExit('%s: parent/driver %s/%s, designed %s/%s' % (name, fp, fc, parent, ctrl))
+            if (vrd_name(fp), vrd_name(fc)) != (vrd_name(parent), vrd_name(ctrl)): raise SystemExit('%s: parent/driver %s/%s, designed %s/%s' % (name, fp, fc, parent, ctrl))
             if len(ft) != len(trig): raise SystemExit('%s: %d triggers, designed %d' % (name, len(ft), len(trig)))
             worst = 0.0
             for (i1, tq1, q1, p1), (i2, tq2, q2, p2) in zip(ft, trig):
@@ -311,10 +327,11 @@ def check_vrd(path, rig, helpers, tol_deg=0.05):
     check_compiled makes on the owner's compile"""
     got = {h[0]: h for h in read_vrd(path)}
     for side, t, f, h, axis, trig in helpers:
-        n = rig.nodes[t][0]
+        n = vrd_name(rig.nodes[t][0])
         if n not in got: raise SystemExit('%s: %s missing' % (path, n))
         _, parent, driver, tr = got[n]
-        if (parent, driver) != (rig.nodes[f][0], rig.nodes[h][0]) or len(tr) != len(trig):
+        if any('.' in x for x in got[n][:3]): raise SystemExit('%s: a bone name with a period (studiomdl misreads it)' % path)
+        if (parent, driver) != (vrd_name(rig.nodes[f][0]), vrd_name(rig.nodes[h][0])) or len(tr) != len(trig):
             raise SystemExit('%s: %s reads back wrong' % (path, n))
         for (i1, a1, b1, p1), (i2, a2, b2, p2) in zip(tr, trig):
             for a, b in ((a1, a2), (b1, b2)):
