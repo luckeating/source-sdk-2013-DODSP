@@ -1395,6 +1395,8 @@ If you learn something like this, add it here in the same commit as the fix.
   V2b2: no still frames, hands on the grips. LESSON: a value the server sets on ANOTHER entity reaches the screen at that
   entity's clock - stamp it, or it's drawn at the wrong time (V3e taught it for NPCs moved by code; V2b broke it for
   props and poses driven by the vehicle). Undo: the V2b server.dll (build 44975332307).
+  **V2b2 + V5 BUILT 2026-11-22: build 44997189549** (one game artifact: bin\client.dll + server.dll + scripts\ + the FGD,
+  checked in the CI log; no shader / model / script change). Not yet tested in game.
   OWNER 2026-11-21 (same build): "yes it works" - the gun aims and fires at him; the stutter (V2b2) is the one fault.
 - **V5 PREPARED 2026-11-21 (a vehicle fix build, owner: "lets add 2 and 3 ... and the smaller fixes from 4 as well. all
   of them are visible in game") - with V2b2, NOT built.** One server.dll + client.dll, no models, no script change.
@@ -1654,9 +1656,7 @@ LOG:
 
 ## READY TO SHIP - REMIND THE OWNER (2026-11-21: "continue to remind me about the vehicle build ready to ship, we wont let it
 ## be ignored for long")
-- **V2b2 + V5 vehicle build** (both PREPARED, committed, NOT built): the gunner's stutter (parts driven + stamped every
-  tick), hull aim, own men clearing the line of fire, knock-out jolt, pivot swing check, riders tilting with the sprung
-  body. One server.dll + client.dll, no models/script. Mention it at the end of each session's work until he says go.
+- (empty) V2b2 + V5 SHIPPED 2026-11-22: build 44997189549 (owner: "build it all"). Next reminder goes here.
 
 ## REQUIRED FIXES (owner said "mark it as a required fix" - do before calling the vehicles done)
 - **Carrier open top** (owner 2026-11-21): carrier.mdl / carrier_desert.mdl collision is one closed convex shell over the
