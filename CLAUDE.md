@@ -1436,6 +1436,14 @@ If you learn something like this, add it here in the same commit as the fix.
   must re-fit it. Of CoD2's 3669 xanims ~280 are in our packs; unconverted families useful to NPCs: corner (284),
   pistol (111), stand / crouch aim-alert-look sets, wounded (46, 8 packed), prone (20), balcony falls (16), mortar (21) /
   flak88 (62) crews, panzerfaust corners (32); pb_ / pt_ / viewmodel (676) are player animations, not for NPCs.
+- **The owner's CoD3 German pack (cod3_germans_cod2_6c158_1.rar, a CoD2 mod, 2026-11-21: "much better looking germans")**:
+  RAR5 - no unrar here and the package registries are closed, but the system's libarchive.so.13 reads RAR5: scratchpad
+  la_extract.py (ctypes, refuses unsafe paths). 4 iwd: 168 xmodels (26 bodies: Wehrmacht / Panzergrenadier /
+  Fallschirmjager (2 each) / Waffen / Ost / Afrika; 17 heads; helmets; gear sets per weapon kar98 / mp40 / mp44 /
+  officer), 546 meshes (all parse with cod2_xmodel.py), 131 textures (.iwi v5 = CoD2's, DXT), 22 characters + 16 AI types
+  (incl. panzerschreck, panzerfaust, mg42 portable, injured), CoD3 weapon + German cry sounds. NO animations: its scripts
+  name none; every body = CoD2's skeleton (limbs within 0.1 of the CoD2 officer). Same names as the first pack's
+  Germans but newer files (none identical).
 
 ## REQUIRED FIXES (owner said "mark it as a required fix" - do before calling the vehicles done)
 - **Carrier open top** (owner 2026-11-21): carrier.mdl / carrier_desert.mdl collision is one closed convex shell over the
