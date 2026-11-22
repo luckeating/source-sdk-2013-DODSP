@@ -1487,6 +1487,12 @@ If you learn something like this, add it here in the same commit as the fix.
   grooves. cod2_package now measures every map and flips green where it's UP; each written map is read back DOWN.
   Owner: copy dodsp_cod3_rifleman_normals_fix.zip (2 VTFs) into DOD-SP. LESSON: a texture convention can differ per
   FILE inside one pack - measure each, and check it against a known-good file of the target engine.
+  THIRD LOOK (normals fix copied): "no difference" - the black streaks on tunic folds stayed, so the green axis was not
+  their cause (body/helmet were inverted all the same; the fix stays). Ruled out by measurement: the colour map (a
+  colour-only render has no streaks), a Source-style bump render of our maps (soft folds at any strength / green / an
+  HDR-like 60:1 sun:shade), and the compiled tangents (character/vvd_tangents.py on the owner's .mdl/.vvd/.vtx: median
+  0.2 deg from dP/du, w agrees with the UVs 99.5%). Next: in-game isolation (mat_fullbright / dodsp_sun_baked 1 /
+  mat_bumpmap 0) to find which term draws them.
 
 ## READY TO SHIP - REMIND THE OWNER (2026-11-21: "continue to remind me about the vehicle build ready to ship, we wont let it
 ## be ignored for long")
