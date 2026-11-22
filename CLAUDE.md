@@ -1768,6 +1768,13 @@ LOG:
   or lies within JV_LIMB_REACH x the limb's own skin radius, and never gains weight on a bone CoD kept it off (no child
   weight -> parent -> helpers up to the joint and back to the parent past it, mirrored so neighbours stay continuous).
   Measured: 0 corners gain child weight at any joint (was 34 / 22 / 14 / 4 at the L shoulder / L hip / R shoulder / R hip).
+  What the owner saw: the EGG GRENADE on the belt (tunic corners near it on the hip band) was pulled toward the thigh and
+  sat as a brown wedge beside the trigger hand's thumb in the crouched aim - rendered from his angle, joints3 matches
+  the original there. Tried and dropped: the same rule the other way (no parent weight -> no parent share) - the heel of
+  the hand is hand-only on the forearm's side and needs the forearm's share (MG crouch-walk support wrist 0.56 -> 0.30).
+  KNEE (same day): the joints2 bulb was the calf side of an 8-unit band. Scored two-sided over held poses through the
+  engine's triggers: calf band 5 -> swell p90 1.37 / 1.33 -> 1.17 / 1.18 (original 1.06 / 1.09), thinning kept; calf 4
+  thins the left knee, calf 6 the kneeling right. Delivered dodsp_cod3_rifleman_joints3.zip (model source only).
   LESSON: a weight band needs a reach across the limb as well as along it - test what a re-weight ADDS, bone by bone.
 
 

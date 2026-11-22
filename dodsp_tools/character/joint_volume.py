@@ -203,9 +203,11 @@ def summary(res, counts=None):
 #    deep-crouch knees median 0.33 / 0.46 (R / L) vs 0.21 / 0.29 with one helper at 6, no other pose thinner.
 #    BUT the calf side of that band SWELLED the knee (joints2 in game, owner 2026-11-22: "nothing changed", a bulb under
 #    the kneeling knee): calf skin turned by the helpers' 49/97 deg instead of 146 sticks out below the joint. Scored
-#    both ways (thinner AND fatter: 95th percentile radius ratio), the band is 8 on the thigh, 6 on the calf - swell
-#    p90 1.33 / 1.27 (L / R, 8 / 8) -> 1.23 / 1.17 (none 1.06 / 1.08) with NO held pose thinner than the original;
-#    calf side 4-5 swells less (1.12-1.16) but pinches the prone crawl's knees (0.34 -> 0.19). Tried and NOT used: a
+#    both ways (thinner AND fatter: 95th percentile radius ratio) over the held poses through the ENGINE's triggers,
+#    the band is 8 on the thigh, 5 on the calf: swell p90 (L / R) 1.37 / 1.33 at 8 -> 1.17 / 1.18 (original 1.06 /
+#    1.09), thinning p10 kept (0.77 / 0.21). Calf 4 thins the left knee again (0.31), calf 6 the kneeling right
+#    (0.07). The prone crawl's left knee ends 0.33 -> 0.15 at one frame (listed by the guard; looked at: no visible
+#    pinch). Tried and NOT used: a
 #    1-2 unit band on the inside of the bend only ('inside_band', place_folds) - it pinches the back of the knee at
 #    moderate bends (0.81 -> 0.19).
 #  - elbow: two helpers, band 4 - held poses' worst 10% 0.83 / 0.90 (L / R) -> 0.89 / 0.95 against one at 5; a few
@@ -222,7 +224,7 @@ JOINT_DESIGN = {
     'elbow': dict(band=4.0, fracs=(1.0 / 3, 2.0 / 3)),
     'wrist': dict(band=1.5, fracs=(0.5,), roll=((0.45, 0.2), (0.6, 0.4), (0.75, 0.6), (0.9, 0.8))),
     'hip': dict(band=6.0, fracs=(0.5,)),
-    'knee': dict(band=(8.0, 6.0), fracs=(1.0 / 3, 2.0 / 3)),
+    'knee': dict(band=(8.0, 5.0), fracs=(1.0 / 3, 2.0 / 3)),
     'ankle': dict(band=3.0, fracs=(0.5,)),
 }
 JV_FOLD_FULL = 0.6      # a corner this far toward the fold direction (cos) takes the inside band in full
