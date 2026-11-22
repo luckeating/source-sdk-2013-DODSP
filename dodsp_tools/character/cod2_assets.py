@@ -97,6 +97,37 @@ def iwi(path):
     return dict(fmt=fmt, w=w, h=h, rgba=rgba, mips=mips, header_end=28, data_start=end)
 
 
+SLOPE_MIN_Z = 1 / np.sqrt(3)      # the steepest normal the slope reading can give: (1, 1, 1) normalised, 54.7 degrees
+
+def decode_normal(x, y):
+    """A CoD '-gggr' texel (x from alpha, y from green, each -1..1) -> unit normal (h x w x 3). CoD3's maps are clipped
+    PER AXIS: on all four maps of the first soldier the steep texels pile on the box edge |x| or |y| = 1 (body 20739,
+    of them 9356 clearly outside the unit circle) rather than on the circle r = 1 (11177) - a unit-vector encoder never
+    writes (1, 0.5). So x, y are SLOPES: n = normalize(x, y, 1). The first port read them as a unit vector's x, y with
+    z = sqrt(1 - r^2): 2-4% of island texels (r >= 1) came out lying flat in the surface (z = 0) and drew as black
+    streaks along every fold and finger crease - and no strength setting could lift them (z stayed 0)."""
+    n = np.stack([x, y, np.ones_like(x)], -1)
+    return n / np.linalg.norm(n, axis=-1, keepdims=True)
+
+def normal_background(x, y, min_size=64):
+    """The unused texels between UV islands: CoD's converter fills them with a constant corner value ((-1, 1) on the
+    body, (-1, -1) on the head). Read as slopes they are 54.7-degree normals, and the mips and bilinear filtering pull
+    them into the islands' edges (dark seams). -> mask of corner-valued regions of at least min_size texels."""
+    from scipy import ndimage as nd
+    corner = (np.abs(x) > 0.98) & (np.abs(y) > 0.98)
+    lab, n = nd.label(corner)
+    if not n: return corner
+    sizes = nd.sum(corner, lab, range(1, n + 1))
+    return np.isin(lab, 1 + np.where(sizes >= min_size)[0])
+
+def pad_islands(n, background):
+    """Each background texel takes the nearest island texel's normal (edge padding), so no mip level mixes in a
+    normal that belongs to no surface."""
+    from scipy import ndimage as nd
+    if not background.any(): return n
+    idx = nd.distance_transform_edt(background, return_distances=False, return_indices=True)
+    return n[idx[0], idx[1]]
+
 def green_points_down(x, y, valid):
     """Which way a normal map's green (Y) axis points, read from the map itself: a normal map baked from a height field
     has no curl, so d(x)/d(row) == d(y)/d(col) when +y tilts toward image-DOWN (Direct3D) and == -d(y)/d(col) when it

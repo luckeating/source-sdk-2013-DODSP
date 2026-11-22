@@ -1499,6 +1499,17 @@ If you learn something like this, add it here in the same commit as the fix.
   ambient) did NOT reproduce it - a preview's lighting model is not the engine's; the in-game A/B settled it in one
   round. Fix: cod2_package NORMAL_STRENGTH (one owner, per map: x/y scaled, renormalised) - tunic 0.5; 0.3 sent as
   the alternative (dodsp_cod3_tunic_normals_0.5.zip / _0.3.zip, one VTF each); the owner picks, the default follows.
+  0.3 STILL STREAKED (owner), and a close-up showed jagged dark blotches on the HANDS too (they're on the head map). Real
+  cause: the DECODE. CoD3's x, y are clipped PER AXIS - steep texels pile on the box edge |x| or |y| = 1 (body 20739,
+  9356 of them clearly outside the unit circle), not on the circle r = 1 (11177); a unit-vector encoder never writes
+  (1, 0.5). Read as x, y of a unit vector with z = sqrt(1 - r^2), 2-4% of island texels (every fold / finger crease)
+  got z = 0 = lying flat in the surface = black, and scaling x, y can't lift z = 0 (why 0.3 did nothing); the corner-
+  valued background between islands (10-17%) bled the same into seams through mips. Fix (cod2_assets): decode_normal =
+  SLOPES, normalize(x, y, 1) (steepest 54.7 deg); normal_background + pad_islands (nearest island texel); strength back
+  to 1.0 (it scales the slopes). Guard: cod2_package.check_normal_vtf reads every written map back - unit length and
+  z >= 1/sqrt(3) (the shipped head map fails: z down to 0.004). Green verdicts unchanged. Sent
+  dodsp_cod3_normals_slope_fix.zip (all 4 normal maps). LESSON: when a fix by degree (strength) doesn't change a fault
+  at all, the fault isn't a degree - look for values the decode can't represent.
 
 ## READY TO SHIP - REMIND THE OWNER (2026-11-21: "continue to remind me about the vehicle build ready to ship, we wont let it
 ## be ignored for long")

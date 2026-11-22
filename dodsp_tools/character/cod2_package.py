@@ -20,7 +20,21 @@ MATDIR = 'models/dodsp/cod3'
 # The owner's in-game isolation 2026-11-21: black streaks on the tunic folds with the normal maps on (same with our
 # per-pixel sun off), gone with mat_bumpmap 0; the colour map and the compiled tangents are clean. CoD3's tunic map is
 # strong (tilt median 0.37, 10% of texels past 0.83) and Source's ambient cube + sun turn its creases near black.
-NORMAL_STRENGTH = {'c_wrmcht_body_n': 0.5}
+# Strength 0.3 still streaked (owner's screenshot): the streaks were not strength but the decode - see
+# cod2_assets.decode_normal. Back to the map as made; the knob stays (it scales the slopes = the relief's height).
+NORMAL_STRENGTH = {}
+
+def check_normal_vtf(path, w, h):
+    """Read a written BGR888 normal map back: every texel of the full mip a unit normal (8-bit rounding) no steeper
+    than the slope reading allows. A z = sqrt(1 - r^2) decode puts z = 0 texels in (black creases) and fails here.
+    -> the steepest tilt in degrees."""
+    d = open(path, 'rb').read()
+    top = np.frombuffer(d[len(d) - w * h * 3:], np.uint8).reshape(h, w, 3)[..., ::-1].astype(np.float32) / 127.5 - 1
+    L = np.linalg.norm(top, axis=-1)
+    if np.abs(L - 1).max() > 0.02 or top[..., 2].min() < A.SLOPE_MIN_Z - 0.01:
+        raise SystemExit('%s: normals not unit (%.3f..%.3f) or too steep (min z %.3f, slope reading >= %.3f)'
+                         % (path, L.min(), L.max(), top[..., 2].min(), A.SLOPE_MIN_Z))
+    return float(np.degrees(np.arccos(np.clip(top[..., 2] / L, -1, 1)).max()))
 
 def mat_angles(m):
     """Source MatrixAngles: (pitch, yaw, roll) degrees of a 3x4 whose columns are forward, left, up"""
@@ -102,18 +116,20 @@ def textures(pack, mats, outdir):
             if nname not in done:
                 t = A.iwi(os.path.join(pack, 'images', nmap + '.iwi'))['rgba'].astype(np.float32) / 127.5 - 1
                 x, y = t[..., 3], t[..., 1]
-                down, ratios = A.green_points_down(x, y, (x * x + y * y) < 0.95)
+                bg = A.normal_background(x, y)
+                down, ratios = A.green_points_down(x, y, ~bg & (np.maximum(np.abs(x), np.abs(y)) < 0.97))
                 if not down: y = -y                     # Source's green points image-down
-                z = np.sqrt(np.clip(1 - x * x - y * y, 0, 1))
-                k = NORMAL_STRENGTH.get(nname, 1.0)
-                if k != 1.0:
-                    x, y = x * k, y * k; L = np.sqrt(x * x + y * y + z * z) + 1e-9; x, y, z = x / L, y / L, z / L
-                rgb = np.clip((np.stack([x, y, z], -1) + 1) * 127.5 + 0.5, 0, 255).astype(np.uint8)
+                k = NORMAL_STRENGTH.get(nname, 1.0)     # scales the slopes = the height of the relief
+                nrm = A.pad_islands(A.decode_normal(x * k, y * k), bg)
+                rgb = np.clip((nrm + 1) * 127.5 + 0.5, 0, 255).astype(np.uint8)
                 chain = vtf.mip_chain(rgb)
-                vtf.write(os.path.join(outdir, nname + '.vtf'), rgb.shape[1], rgb.shape[0], 'BGR888',
+                path = os.path.join(outdir, nname + '.vtf')
+                vtf.write(path, rgb.shape[1], rgb.shape[0], 'BGR888',
                           [c[..., ::-1].tobytes() for c in reversed(chain)], flags=vtf.TEXTUREFLAGS_NORMAL)
-                done[nname] = 'strength %.2f, green %s%s (curl ratios %s)' % (k, 'down' if down else 'UP', '' if down else ' -> flipped',
-                                                               ' '.join('%.2f' % r for r in ratios))
+                steepest = check_normal_vtf(path, rgb.shape[1], rgb.shape[0])
+                done[nname] = 'strength %.2f, green %s%s (curl ratios %s), background %.1f%% padded, steepest %.1f deg' % (
+                    k, 'down' if down else 'UP', '' if down else ' -> flipped', ' '.join('%.2f' % r for r in ratios),
+                    100 * bg.mean(), steepest)
             vmt.append('\t"$bumpmap" "%s/%s"' % (MATDIR, nname))
         vmt += ['}']
         open(os.path.join(outdir, m + '.vmt'), 'w').write('\n'.join(vmt) + '\n')
