@@ -382,6 +382,15 @@ If you learn something like this, add it here in the same commit as the fix.
   soldier's ordinary animations once off the vehicle) - a rifle-hold problem in the soldier's animation set / weapon
   placement (weapon_bone_left = the K98 grip in the retarget, GRIP_K98 in build_ww2_pack.py). To look into after the
   vehicle work: compare a K98 man's weapon bone against DoD's own StandAim_BOLT pose, animation by animation.
+  MEASURED 2026-11-22 (audit doc "DOD-SP NPC animation audit", https://claude.ai/artifact/EE5T8ejXqwBQUcMEzaK3i2): the
+  support hand misses DoD's grip (weapon_bone_left . s_GripLeftHung) by a MEDIAN 11.1 units over 332 holding animations
+  (<3: 55, 3-8: 88, >8: 189); DoD's own BOLT set median 0, CoD2 pack ~10, CoD1 ~13. The miss is along the barrel,
+  ~(-1.2, 0.4, +10.6) in the K98 frame: CoD's hand holds the fore-end ~10 units further back. SupportHandIK is full only
+  within 8 and off by 15, so most CoD animations float the hand. ONE class, not per animation. Plan (N1): bake the arm
+  IK onto DoD's grip in the pack builders (miss measured per animation, build stops over 1 unit) + hang the K98 off
+  the right hand (weapon_bone) so blends stop swinging it. Engine facts for later stages: client ground IK (CIKContext,
+  IK_GROUND) runs for models with ikchains but plants only where a sequence has ikrules (4 do); $jigglebone, sequence
+  autolayers and the transition graph are all supported and unused.
 
 ## Open known issues (lighting)
 - The door entity doesn't cast into the sun cascades.
