@@ -1337,6 +1337,23 @@ If you learn something like this, add it here in the same commit as the fix.
   wall at the far right), legs IK. Costs: muzzle depression -6 (not -15), a 32-degree lean at -30, more rider clipping.
   OWNER 2026-11-21: "use the original for now, we can mess with better looking versions later" - so V2b ships the first
   version; the shouldered tools are in c5ef467 (git show c5ef467:dodsp_tools/vehicle_preview/mg_gunner_compose.py).
+  **V2b PREPARED 2026-11-21 (code in, NOT built - waiting for the owner's go).** Mount "pintle" (dodsp_vehicle.cpp): a gun you
+  can SEE - prop dodsp_mg42_pintle parented on "pintle" (= CoD2 tag_turret 9.6 0 89.3; lint compares), its muzzle and
+  elevation are the MODEL's (attachment "muzzle", pose "mg_pitch"; MeasurePintleGun, once, load line + INVARIANTs for a
+  missing model / muzzle / a pose range short of the script's). AimPintleGuns = THE owner of where it points (m_flMGYaw /
+  m_flMGPitch, saved): the gunner ("crew") traverses at "traverse" deg/s toward the target (seen point) or its last known
+  spot, else the front, inside PintleArc = "arc" (30) or "arc_riders" (20) while RidersAboard() (an arc that narrows
+  brings the gun in at its rate, never a jump); no gunner = it stays put. FirePintleGuns: along MGDir from the model's
+  muzzle, infantry only, burst rules as every MG. PoseGunners (same think as the gun): the crew seat that "mans" it gets
+  mg_yaw = gun yaw - seat yaw, mg_pitch = gun pitch (INVARIANT if his model lacks them or their range is short of the
+  gun's). Crew seat keys "mans" (a pintle MG crewed by that role) and "weapon" "none" (no MP40 - hands on the gun).
+  VEHICLE_MAX_CREW_SEATS 3. Halftrack (script_version V2b): crew "driver commander gunner", gunner hatch hull -20 0 70,
+  mgs { mg42 pintle }, crew seat gunner at tag_mgguy -19.4 0.2 31.0, idle ww2_halftrack_mg, death ww2_halftrack_mg_death.
+  Lint: pintle needs pintle/model/arc/pitch/crew/traverse and NO muzzle, pintle on CoD2's tag_turret, arc_riders <= arc,
+  "mans" names a pintle gun of that role, "weapon" only "none" (each tested with broken data); ride_pack_sequences.txt
+  regenerated (+2). Owner side: compile dodsp_npc_ww2_anims_ride_v2b.zip (the h2b2 pack + 65 SMDs + their QC blocks; every
+  existing file byte-identical) and dodsp_mg42_pintle_v2b.zip (needs CoD2's MG42 texture as materials/models/cod2/
+  mtl_weapon_mg42.vmt). Undo: the H3b script (script_version H3) + server.dll (build 44909170762).
 
 ## REQUIRED FIXES (owner said "mark it as a required fix" - do before calling the vehicles done)
 - **Carrier open top** (owner 2026-11-21): carrier.mdl / carrier_desert.mdl collision is one closed convex shell over the

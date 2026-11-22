@@ -245,5 +245,17 @@ appended to the officer QC as cod2_vi_halftrack_bay_death1/2 and cod2_vi_halftra
 the --want list + those three (every existing SMD within 1e-4 except driver_death, re-anchored; ride paths unchanged).
 Checked with vehicle_preview/seat_death_preview.py (jump <= 3 units at every seat).
 
+V2b (2026-11-21): the halftrack's MG42 gunner. CoD2 xanims converted (xanim_to_smd.py convert, into the SCRATCH decompile):
+halftrack_mggunner_idle (no anchor) -> cod2_vi_halftrack_mggunner_idle, death_stand_dropinplace --start-at that idle ->
+cod2_vi_halftrack_mg_deathdrop; a scratch pack built with the --want list + cod2_mg42_aim (the ground grid, a cross-check
+only) + those two. Then
+
+    python3 vehicle_preview/mg_gunner_compose.py <scratch pack> <CoD2 pack> generated/cod2_vehicle_tags.txt <delivered pack dir> <delivered pack dir>/npc_ww2_anims_ride.qc
+
+writes the 52 aim poses + 13 death columns straight into the delivered pack and adds (once) $poseparameter mg_yaw /
+mg_pitch, ww2_halftrack_mg and ww2_halftrack_mg_death (every existing file byte-identical). Previewed with
+vehicle_preview/mg_preview.py; the gun is vehicle_preview/mg42_model.py (dodsp_mg42_pintle, the owner compiles it too).
+V2b's delivered pack: dodsp_npc_ww2_anims_ride_v2b.zip.
+
 After delivering a ride pack: regenerate dodsp_tools/generated/ride_pack_sequences.txt from its .qc (every $sequence name;
-the lint checks the vehicle script's seats against it). H2b's delivered pack: dodsp_npc_ww2_anims_ride_h2b2.zip.
+the lint checks the vehicle script's seats against it). Latest delivered pack: dodsp_npc_ww2_anims_ride_v2b.zip (H2b's was _h2b2).

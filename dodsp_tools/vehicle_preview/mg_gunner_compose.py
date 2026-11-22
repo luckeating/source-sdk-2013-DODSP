@@ -297,14 +297,16 @@ def main(pack, cod2, tags_file, out, qc=None):
     if qc:
         text = open(qc).read()
         if '"ww2_halftrack_mg"' not in text:
+            # like every animation in the pack: the hands are never pulled onto a weapon (ikrule release, whole length)
+            ik = lambda n: '\tikrule "rhand" release range 0 0 %d %d\n\tikrule "lhand" release range 0 0 %d %d\n' % ((n - 1,) * 4)
             add = '\n$poseparameter "mg_yaw" %d %d\n$poseparameter "mg_pitch" %g %g\n' % (YAWS[0], YAWS[-1], rows[0], rows[-1])
             for (y, p), n in poses.items():
-                add += '$animation "a_%s" "ww2_a_%s.smd" {\n\tfps 30\n}\n' % (n, n)
+                add += '$animation "a_%s" "ww2_a_%s.smd" {\n\tfps 30\n\tloop\n%s}\n' % (n, n, ik(1))
             add += '$sequence "ww2_halftrack_mg" {\n' + ''.join('\t"a_%s"\n' % poses[(y, p)] for p in rows for y in YAWS)
-            add += '\tblend "mg_yaw" %d %d\n\tblend "mg_pitch" %g %g\n\tblendwidth %d\n\tfadein 0.2\n\tfadeout 0.2\n}\n' % (
+            add += '\tblend "mg_yaw" %d %d\n\tblend "mg_pitch" %g %g\n\tblendwidth %d\n\tloop\n\tfadein 0.2\n\tfadeout 0.2\n}\n' % (
                 YAWS[0], YAWS[-1], rows[0], rows[-1], len(YAWS))
             for y in YAWS:
-                add += '$animation "a_%s" "ww2_a_%s.smd" {\n\tfps 30\n}\n' % (deaths[y], deaths[y])
+                add += '$animation "a_%s" "ww2_a_%s.smd" {\n\tfps 30\n%s}\n' % (deaths[y], deaths[y], ik(len(ds.frames)))
             add += '$sequence "ww2_halftrack_mg_death" {\n' + ''.join('\t"a_%s"\n' % deaths[y] for y in YAWS)
             add += '\tblend "mg_yaw" %d %d\n\tblendwidth %d\n\tfadein 0.2\n\tfadeout 0.2\n}\n' % (YAWS[0], YAWS[-1], len(YAWS))
             open(qc, 'a').write(add); print('added ww2_halftrack_mg to', qc)

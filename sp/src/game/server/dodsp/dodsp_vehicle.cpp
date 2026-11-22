@@ -59,7 +59,7 @@
 // this; the lint checks the repo copy against it, the loader checks the owner's copy (V4e's first run: the old script
 // had no hatches, every crewman got out beside the tank and nothing at bail time said why). Bump both together
 // whenever the code starts needing a new key in the script.
-#define DODSP_VEHICLE_SCRIPT_VERSION	"H3"
+#define DODSP_VEHICLE_SCRIPT_VERSION	"V2b"
 static char s_szVehicleScriptVersion[32] = "not loaded";
 
 // V4h: how a shell's strike on the armour went - what HitFeedback shows and plays (name table guarded below)
@@ -244,7 +244,7 @@ extern void GermanSoldier_RideAbort( CBaseEntity *pEnt );
 extern int GermanSoldier_RideState( CBaseEntity *pEnt );		// 0 off, 1 seated, 2 getting off
 #define VEHICLE_MAX_SEATS		8
 #define VEHICLE_DOOR_KEYS		32			// H3: keys in a "doors" curve
-#define VEHICLE_MAX_CREW_SEATS	2			// H2: crew members you can see in their seats (the halftrack's driver)
+#define VEHICLE_MAX_CREW_SEATS	3			// H2: crew members you can see in their seats (the halftrack's driver, commander, V2b MG gunner)
 #define VEHICLE_RIDERS_CONTACT	1200.0f		// riders get off when an enemy it knows of is this close (dismount "contact")
 #define VEHICLE_RIDERS_SPAWN	0.2f		// riders are put aboard this long after the vehicle activates
 #define VEHICLE_RIDER_WAIT		0.25f		// a rider whose landing spot is taken tries again this often ...
@@ -273,7 +273,7 @@ struct VehicleHit_t
 // Vehicle types (scripts/dodsp_vehicles.txt)
 //-----------------------------------------------------------------------------
 #define VEHICLE_MAX_MGS		4
-static const char *s_pszMGMount[] = { "turret", "barrel", "hull" };
+static const char *s_pszMGMount[] = { "turret", "barrel", "hull", "pintle" };
 
 struct VehicleType_t
 {
@@ -301,9 +301,14 @@ struct VehicleType_t
 	// (turret model space, turns with it), barrel (also rises with the gun about vecPivot), hull (hull model space: a
 	// ball mount aiming on its own within flArc degrees each side and flPitchMin..Max, manned by iCrew). Bursts at
 	// infantry. (Before V3e one "coax" fired from the main gun's muzzle - the Tiger's 3.7 m out, nowhere near its MG.)
-	enum { MG_TURRET, MG_BARREL, MG_HULL, NUM_MG_MOUNTS };
+	// V2b: pintle (the halftrack's front MG42): a gun you can SEE ("model", its origin = its elevation pivot, placed on
+	// "pintle" in hull space), traversed by its gunner ("crew") at "traverse" degrees/s within "arc" each side - "arc_riders"
+	// while riders are aboard (at the full arc its gunner steps into them) - and "pitch"; its muzzle and elevation are
+	// the MODEL's facts (attachment "muzzle", pose parameter "mg_pitch", + = up), not the script's
+	enum { MG_TURRET, MG_BARREL, MG_HULL, MG_PINTLE, NUM_MG_MOUNTS };
 	struct MG_t { char szName[16]; int eMount; Vector vecMuzzle, vecPivot; float flArc, flPitchMin, flPitchMax; int iCrew;
-				  float flDamage, flRate, flBurst, flPause, flRange, flSpread; char szSound[64]; };
+				  float flDamage, flRate, flBurst, flPause, flRange, flSpread; char szSound[64];
+				  Vector vecPintle; char szModel[MAX_PATH]; float flArcRiders, flTraverse; };
 	MG_t	mgs[VEHICLE_MAX_MGS];
 	int		nMGs;
 	float	flMGRange;				// the longest of them
@@ -328,7 +333,9 @@ struct VehicleType_t
 	// shot in his seat = the role is dead; the role killed inside = so is he; abandoned = a crewman climbs out of the
 	// role's hatch and he leaves the seat. steer 1 = the idle is a blend on the pose parameter "steer" (-1 full right ..
 	// 1 full left) and follows the steering angle.
-	struct CrewSeat_t { int eRole; Vector vecOrigin; float flYaw; char szIdle[64], szDeath[64]; bool bSteer; };	// H2b: death = played in the seat, he stays there
+	// V2b: "mans" = the machine gun he works (a pintle gun: his idle blends on the pose parameters "mg_yaw" / "mg_pitch" and
+	// follows the gun); "weapon" "none" = he comes without a rifle of his own (his hands are on the gun)
+	struct CrewSeat_t { int eRole; Vector vecOrigin; float flYaw; char szIdle[64], szDeath[64]; bool bSteer; int iMans; bool bUnarmed; };	// H2b: death = played in the seat, he stays there
 	CUtlVector<CrewSeat_t> crewSeats;
 	// V4e: where each crew role gets out ("hatches": role -> "turret x y z" in the turret model's space, or "hull x y z"
 	// in the hull's) = the roof his feet end up on, measured from the meshes. Roles at the same spot share a hatch
@@ -486,13 +493,19 @@ static void LoadVehicleTypes( bool bForce )
 			for ( int k = 0; k < ARRAYSIZE( s_pszMGMount ); k++ )
 				if ( !Q_stricmp( pMG->GetString( "mount", "" ), s_pszMGMount[k] ) )
 					m.eMount = k;
-			if ( m.eMount < 0 || !pMG->FindKey( "muzzle" ) || ( m.eMount != VehicleType_t::MG_HULL && !t->szTurretModel[0] ) )
+			bool bPintle = ( m.eMount == VehicleType_t::MG_PINTLE );
+			if ( m.eMount < 0 || ( !bPintle && !pMG->FindKey( "muzzle" ) ) || ( bPintle && ( !pMG->FindKey( "pintle" ) || !pMG->FindKey( "model" ) || !pMG->FindKey( "crew" ) ) )
+				 || ( ( m.eMount == VehicleType_t::MG_TURRET || m.eMount == VehicleType_t::MG_BARREL ) && !t->szTurretModel[0] ) )
 			{
-				Warning( "INVARIANT DOD-SP vehicles: type '%s' machine gun '%s' needs \"mount\" turret / barrel / hull and a \"muzzle\"%s - ignored\n",
-						 t->szName, m.szName, t->szTurretModel[0] ? "" : " (no turret: hull only)" );
+				Warning( "INVARIANT DOD-SP vehicles: type '%s' machine gun '%s' needs \"mount\" turret / barrel / hull + a \"muzzle\", or pintle + "
+						 "\"pintle\", \"model\" and \"crew\"%s - ignored\n", t->szName, m.szName, t->szTurretModel[0] ? "" : " (no turret: hull or pintle only)" );
 				continue;
 			}
-			ParseVector( pMG->GetString( "muzzle" ), m.vecMuzzle );
+			ParseVector( pMG->GetString( "muzzle", "0 0 0" ), m.vecMuzzle );
+			ParseVector( pMG->GetString( "pintle", "0 0 0" ), m.vecPintle );
+			Q_strncpy( m.szModel, pMG->GetString( "model", "" ), sizeof( m.szModel ) );
+			m.flArcRiders = pMG->GetFloat( "arc_riders", pMG->GetFloat( "arc", 15.0f ) );
+			m.flTraverse = pMG->GetFloat( "traverse", 60.0f );
 			ParseVector( pMG->GetString( "pivot", "0 0 0" ), m.vecPivot );
 			m.flArc = pMG->GetFloat( "arc", 15.0f );
 			float flLo = -10.0f, flHi = 20.0f;
@@ -625,10 +638,18 @@ static void LoadVehicleTypes( bool bForce )
 			Q_strncpy( cs.szIdle, pSeat->GetString( "idle" ), sizeof( cs.szIdle ) );
 			Q_strncpy( cs.szDeath, pSeat->GetString( "death", "" ), sizeof( cs.szDeath ) );
 			cs.bSteer = pSeat->GetBool( "steer" );
-			if ( !bInCrew || !cs.szIdle[0] || t->crewSeats.Count() >= VEHICLE_MAX_CREW_SEATS )
+			cs.bUnarmed = !Q_stricmp( pSeat->GetString( "weapon", "" ), "none" );
+			cs.iMans = -1;
+			const char *pszMans = pSeat->GetString( "mans", "" );
+			for ( int k = 0; k < t->nMGs; k++ )
+				if ( pszMans[0] && !Q_stricmp( t->mgs[k].szName, pszMans ) )
+					cs.iMans = k;
+			bool bMansOk = !pszMans[0] || ( cs.iMans >= 0 && t->mgs[cs.iMans].eMount == VehicleType_t::MG_PINTLE && t->mgs[cs.iMans].iCrew == cs.eRole );
+			if ( !bInCrew || !cs.szIdle[0] || !bMansOk || t->crewSeats.Count() >= VEHICLE_MAX_CREW_SEATS )
 			{
 				Warning( "INVARIANT DOD-SP vehicles: type '%s' crew seat \"%s\" skipped - %s\n", t->szName, pSeat->GetName(),
-						 !bInCrew ? "not a crew role this vehicle has" : !cs.szIdle[0] ? "no \"idle\"" : "too many crew seats" );
+						 !bInCrew ? "not a crew role this vehicle has" : !cs.szIdle[0] ? "no \"idle\"" :
+						 !bMansOk ? "\"mans\" isn't one of its pintle machine guns crewed by this role" : "too many crew seats" );
 				continue;
 			}
 			t->crewSeats.AddToTail( cs );
@@ -1285,6 +1306,21 @@ private:
 	float			m_flTurretPitch;			// degrees up
 	float			m_flNextGun;
 	float			m_flNextMGShot[VEHICLE_MAX_MGS], m_flMGBurstEnd[VEHICLE_MAX_MGS], m_flMGPauseUntil[VEHICLE_MAX_MGS];
+	// V2b: pintle guns you can see (one prop each), traversed by their gunner: yaw (the prop's) and pitch (its "mg_pitch"),
+	// degrees in the hull's frame - THE one owner of where such a gun points (its muzzle, its fire and its gunner's pose
+	// all read these two)
+	EHANDLE			m_hMGGun[VEHICLE_MAX_MGS];
+	float			m_flMGYaw[VEHICLE_MAX_MGS], m_flMGPitch[VEHICLE_MAX_MGS];
+	int				m_iMGMuzzle[VEHICLE_MAX_MGS], m_iMGPitchPose[VEHICLE_MAX_MGS];	// the gun model's (-2 = not looked up yet)
+	float			m_flMGPoseLo[VEHICLE_MAX_MGS], m_flMGPoseHi[VEHICLE_MAX_MGS];	// its mg_pitch range (the model's)
+	void			PoseGunners( void );
+	int				m_iSeatYawPose[VEHICLE_MAX_CREW_SEATS], m_iSeatPitchPose[VEHICLE_MAX_CREW_SEATS];	// a gunner's mg_yaw / mg_pitch
+	void			SpawnPintleGuns( void );
+	void			MeasurePintleGun( int iMG );
+	void			AimPintleGuns( const Vector &vecAimPoint, bool bAim, float dt );
+	void			FirePintleGuns( CBaseEntity *pTarget, const Vector &vecAimPoint );
+	Vector			MGDir( int iMG );
+	float			PintleArc( int iMG );
 	bool			m_bReloadSoundDone;
 	// measured from the turret model (CalibrateTurret), not saved
 	bool			m_bTurretCalibrated;
@@ -1379,6 +1415,9 @@ BEGIN_DATADESC( CDoDSPVehicle )
 	DEFINE_FIELD( m_bHoldFire, FIELD_BOOLEAN ),
 	DEFINE_FIELD( m_flTurretYaw, FIELD_FLOAT ),
 	DEFINE_FIELD( m_flTurretPitch, FIELD_FLOAT ),
+	DEFINE_AUTO_ARRAY( m_hMGGun, FIELD_EHANDLE ),
+	DEFINE_AUTO_ARRAY( m_flMGYaw, FIELD_FLOAT ),
+	DEFINE_AUTO_ARRAY( m_flMGPitch, FIELD_FLOAT ),
 	DEFINE_FIELD( m_flNextGun, FIELD_TIME ),
 	DEFINE_INPUTFUNC( FIELD_STRING, "SetTarget", InputSetTarget ),
 	DEFINE_INPUTFUNC( FIELD_VOID, "ClearTarget", InputClearTarget ),
@@ -1484,7 +1523,14 @@ CDoDSPVehicle::CDoDSPVehicle()
 	m_flTurretYaw = m_flTurretPitch = 0.0f;
 	m_flNextGun = 0.0f;
 	for ( int k = 0; k < VEHICLE_MAX_MGS; k++ )
+	{
 		m_flNextMGShot[k] = m_flMGBurstEnd[k] = m_flMGPauseUntil[k] = 0.0f;
+		m_flMGYaw[k] = m_flMGPitch[k] = 0.0f;
+		m_iMGMuzzle[k] = m_iMGPitchPose[k] = -2;
+		m_flMGPoseLo[k] = m_flMGPoseHi[k] = 0.0f;
+	}
+	for ( int i = 0; i < VEHICLE_MAX_CREW_SEATS; i++ )
+		m_iSeatYawPose[i] = m_iSeatPitchPose[i] = -2;
 	m_bReloadSoundDone = true;
 	m_bTurretCalibrated = false;
 	m_flTurretFwdOffset = 0.0f;
@@ -1554,6 +1600,9 @@ void CDoDSPVehicle::UpdateOnRemove( void )
 	StopSounds();
 	if ( m_hTurret.Get() )
 		UTIL_Remove( m_hTurret.Get() );
+	for ( int k = 0; k < VEHICLE_MAX_MGS; k++ )
+		if ( m_hMGGun[k].Get() )
+			UTIL_Remove( m_hMGGun[k].Get() );
 	if ( m_hFire.Get() )
 		UTIL_Remove( m_hFire.Get() );
 	BaseClass::UpdateOnRemove();
@@ -1577,6 +1626,15 @@ void CDoDSPVehicle::Precache( void )
 		PrecacheModel( m_pType->szModel );
 		if ( m_pType->szTurretModel[0] )
 			PrecacheModel( m_pType->szTurretModel );
+		for ( int k = 0; k < m_pType->nMGs; k++ )
+			if ( m_pType->mgs[k].eMount == VehicleType_t::MG_PINTLE )
+			{
+				if ( filesystem->FileExists( m_pType->mgs[k].szModel, "GAME" ) )
+					PrecacheModel( m_pType->mgs[k].szModel );
+				else
+					Warning( "INVARIANT DOD-SP vehicles: type '%s' machine gun '%s' model %s not found - the gun isn't there and can't fire "
+							 "(compile the V2b MG42 pack)\n", m_pType->szName, m_pType->mgs[k].szName, m_pType->mgs[k].szModel );
+			}
 		if ( m_pType->szDeadModel[0] )
 		{
 			if ( filesystem->FileExists( m_pType->szDeadModel, "GAME" ) )
@@ -1691,6 +1749,7 @@ void CDoDSPVehicle::Spawn( void )
 			m_hTurret = pTurret;
 		}
 	}
+	SpawnPintleGuns();
 	m_vecProgressPos = GetAbsOrigin();
 	m_flProgressTime = gpGlobals->curtime;
 	SetThink( &CDoDSPVehicle::DriveThink );
@@ -2991,6 +3050,8 @@ bool CDoDSPVehicle::CalibrateTurret( void )
 	for ( int k = 0; k < m_pType->nMGs; k++ )
 	{
 		const VehicleType_t::MG_t &m = m_pType->mgs[k];
+		if ( m.eMount == VehicleType_t::MG_PINTLE )
+			continue;		// V2b: MeasurePintleGun prints its own line
 		Msg( "DOD-SP vehicle %s: machine gun '%s' on the %s at %.1f %.1f %.1f%s\n", Label(), m.szName, s_pszMGMount[m.eMount],
 			 m.vecMuzzle.x, m.vecMuzzle.y, m.vecMuzzle.z, m.eMount == VehicleType_t::MG_HULL ? CFmtStr( " (+-%.0f deg, %.0f..%.0f up, %s)",
 			 m.flArc, m.flPitchMin, m.flPitchMax, m.iCrew >= 0 ? g_pszCrewRole[m.iCrew] : "any crew" ).Access() : "" );
@@ -3274,6 +3335,16 @@ Vector CDoDSPVehicle::MGMuzzle( int iMG )
 {
 	const VehicleType_t::MG_t &m = m_pType->mgs[iMG];
 	Vector p = m.vecMuzzle, vecWorld;
+	if ( m.eMount == VehicleType_t::MG_PINTLE )
+	{
+		// V2b: the gun model's own "muzzle" attachment, as the gun points now (AimPintleGuns set its yaw and mg_pitch)
+		CBaseAnimating *pGun = m_hMGGun[iMG].Get() ? m_hMGGun[iMG]->GetBaseAnimating() : NULL;
+		QAngle ang;
+		if ( pGun && m_iMGMuzzle[iMG] > 0 && pGun->GetAttachment( m_iMGMuzzle[iMG], vecWorld, ang ) )
+			return vecWorld;
+		VectorTransform( m.vecPintle, EntityToWorldTransform(), vecWorld );	// no gun model: its pivot (it doesn't fire - MeasurePintleGun said why)
+		return vecWorld;
+	}
 	if ( m.eMount == VehicleType_t::MG_HULL || !m_hTurret.Get() )
 	{
 		VectorTransform( p, EntityToWorldTransform(), vecWorld );
@@ -3296,9 +3367,9 @@ bool CDoDSPVehicle::MGManned( int iMG ) const
 	const VehicleType_t::MG_t &m = m_pType->mgs[iMG];
 	if ( !m_pType->armour.bValid )
 		return true;
-	if ( m.eMount != VehicleType_t::MG_HULL )
+	if ( m.eMount == VehicleType_t::MG_TURRET || m.eMount == VehicleType_t::MG_BARREL )
 		return CanAim();
-	return m.iCrew >= 0 ? CrewHas( m.iCrew ) : m_iCrewAlive != 0;
+	return m.iCrew >= 0 ? CrewHas( m.iCrew ) : m_iCrewAlive != 0;		// hull / pintle: its own gunner
 }
 
 bool CDoDSPVehicle::AnyMGUsable( void ) const
@@ -3353,7 +3424,7 @@ void CDoDSPVehicle::FireTurretMGs( CBaseEntity *pTarget, const Vector &vecAimPoi
 	for ( int k = 0; k < m_pType->nMGs; k++ )
 	{
 		const VehicleType_t::MG_t &m = m_pType->mgs[k];
-		if ( m.eMount == VehicleType_t::MG_HULL || !MGManned( k ) )
+		if ( ( m.eMount != VehicleType_t::MG_TURRET && m.eMount != VehicleType_t::MG_BARREL ) || !MGManned( k ) )
 			continue;
 		Vector vecMuzzle = MGMuzzle( k ), vecTo = vecAimPoint - vecMuzzle;
 		float flDist = VectorNormalize( vecTo );
@@ -3363,6 +3434,169 @@ void CDoDSPVehicle::FireTurretMGs( CBaseEntity *pTarget, const Vector &vecAimPoi
 		CBaseEntity *pFriend = NULL;
 		if ( LineOfFire( vecMuzzle, vecAimPoint, pTarget, 0.0f ) && !FriendlyInTheWay( vecMuzzle, vecBarrel, flDist + 64.0f, 0.0f, &pFriend ) )
 			FireMG( k, vecMuzzle, vecBarrel );
+	}
+}
+
+// V2b: where a pintle gun points now (world) - from THE yaw / pitch AimPintleGuns keeps
+Vector CDoDSPVehicle::MGDir( int iMG )
+{
+	float y = DEG2RAD( m_flMGYaw[iMG] ), p = DEG2RAD( m_flMGPitch[iMG] );
+	Vector vecLocal( cosf( y ) * cosf( p ), sinf( y ) * cosf( p ), sinf( p ) ), vecWorld;
+	VectorRotate( vecLocal, EntityToWorldTransform(), vecWorld );
+	return vecWorld;
+}
+
+// V2b: how far a pintle gun may swing each side now - narrower while riders are aboard (owner: at the full arc the
+// gunner steps into the seated riders - mg_preview.py measured it; +-20 with riders, +-30 with the bay empty)
+float CDoDSPVehicle::PintleArc( int iMG )
+{
+	const VehicleType_t::MG_t &m = m_pType->mgs[iMG];
+	return RidersAboard() > 0 ? MIN( m.flArcRiders, m.flArc ) : m.flArc;
+}
+
+void CDoDSPVehicle::SpawnPintleGuns( void )
+{
+	for ( int k = 0; k < m_pType->nMGs; k++ )
+	{
+		const VehicleType_t::MG_t &m = m_pType->mgs[k];
+		if ( m.eMount != VehicleType_t::MG_PINTLE || m_hMGGun[k].Get() || !filesystem->FileExists( m.szModel, "GAME" ) )
+			continue;		// (no model: Precache said so)
+		CBaseAnimating *pGun = static_cast<CBaseAnimating *>( CreateEntityByName( "prop_dynamic_override" ) );
+		if ( !pGun )
+			continue;
+		pGun->KeyValue( "model", m.szModel );
+		pGun->KeyValue( "solid", "0" );		// not solid: bullets pass its gaps, as a real gun's
+		DispatchSpawn( pGun );
+		pGun->SetParent( this );
+		pGun->SetLocalOrigin( m.vecPintle );
+		pGun->SetLocalAngles( QAngle( 0, m_flMGYaw[k], 0 ) );
+		m_hMGGun[k] = pGun;
+	}
+}
+
+// V2b: the gun model's facts, once: its muzzle and its elevation (+ = up) - INVARIANT for what's missing
+void CDoDSPVehicle::MeasurePintleGun( int iMG )
+{
+	const VehicleType_t::MG_t &m = m_pType->mgs[iMG];
+	CBaseAnimating *pGun = m_hMGGun[iMG].Get() ? m_hMGGun[iMG]->GetBaseAnimating() : NULL;
+	m_iMGMuzzle[iMG] = pGun ? pGun->LookupAttachment( "muzzle" ) : -1;
+	m_iMGPitchPose[iMG] = pGun ? pGun->LookupPoseParameter( "mg_pitch" ) : -1;
+	m_flMGPoseLo[iMG] = m_flMGPoseHi[iMG] = 0.0f;
+	if ( m_iMGPitchPose[iMG] >= 0 )
+		pGun->GetPoseParameterRange( m_iMGPitchPose[iMG], m_flMGPoseLo[iMG], m_flMGPoseHi[iMG] );
+	Msg( "DOD-SP vehicle %s: machine gun '%s' on its pintle at %.1f %.1f %.1f (%s): +-%.0f deg (+-%.0f with riders aboard), %.0f..%.0f up, "
+		 "%.0f deg/s; model %s, muzzle %s, mg_pitch %.0f..%.0f\n", Label(), m.szName, m.vecPintle.x, m.vecPintle.y, m.vecPintle.z,
+		 m.iCrew >= 0 ? g_pszCrewRole[m.iCrew] : "any crew", m.flArc, MIN( m.flArcRiders, m.flArc ), m.flPitchMin, m.flPitchMax, m.flTraverse,
+		 pGun ? "found" : "MISSING", m_iMGMuzzle[iMG] > 0 ? "found" : "MISSING", m_flMGPoseLo[iMG], m_flMGPoseHi[iMG] );
+	if ( !pGun )
+		Warning( "INVARIANT DOD-SP vehicle %s: machine gun '%s' has no gun on its pintle (%s) - it can't fire\n", Label(), m.szName, m.szModel );
+	else if ( m_iMGMuzzle[iMG] <= 0 )
+		Warning( "INVARIANT DOD-SP vehicle %s: machine gun '%s' model %s has no \"muzzle\" attachment - it can't fire\n", Label(), m.szName, m.szModel );
+	if ( pGun && ( m_iMGPitchPose[iMG] < 0 || m_flMGPoseLo[iMG] > m.flPitchMin + 0.01f || m_flMGPoseHi[iMG] < m.flPitchMax - 0.01f ) )
+		Warning( "INVARIANT DOD-SP vehicle %s: machine gun '%s' model %s elevates only %.0f..%.0f (\"mg_pitch\"), the script wants %.0f..%.0f - "
+				 "it aims within what the model has\n", Label(), m.szName, m.szModel, m_flMGPoseLo[iMG], m_flMGPoseHi[iMG], m.flPitchMin, m.flPitchMax );
+}
+
+// V2b: THE one owner of where a pintle gun points: its gunner traverses it toward the aim point (inside the arc and its
+// elevation), at its traverse rate; with no gunner it stays where he left it. The gun prop and the gunner's pose follow.
+void CDoDSPVehicle::AimPintleGuns( const Vector &vecAimPoint, bool bAim, float dt )
+{
+	for ( int k = 0; k < m_pType->nMGs; k++ )
+	{
+		const VehicleType_t::MG_t &m = m_pType->mgs[k];
+		if ( m.eMount != VehicleType_t::MG_PINTLE )
+			continue;
+		if ( m_iMGMuzzle[k] == -2 )
+			MeasurePintleGun( k );
+		float flLo = m.flPitchMin, flHi = m.flPitchMax;
+		if ( m_iMGPitchPose[k] >= 0 )
+		{
+			flLo = MAX( flLo, m_flMGPoseLo[k] );
+			flHi = MIN( flHi, m_flMGPoseHi[k] );
+		}
+		else
+			flLo = flHi = 0.0f;
+		float flArc = PintleArc( k ), flWantYaw = 0.0f, flWantPitch = 0.0f;
+		if ( bAim )
+		{
+			Vector vecPivot, vecLocal;
+			VectorTransform( m.vecPintle, EntityToWorldTransform(), vecPivot );
+			VectorIRotate( vecAimPoint - vecPivot, EntityToWorldTransform(), vecLocal );
+			flWantYaw = RAD2DEG( atan2f( vecLocal.y, vecLocal.x ) );
+			flWantPitch = RAD2DEG( atan2f( vecLocal.z, vecLocal.Length2D() ) );
+		}
+		flWantYaw = clamp( flWantYaw, -flArc, flArc );
+		flWantPitch = clamp( flWantPitch, flLo, flHi );
+		// a narrowed arc (riders aboard) brings the gun in at its traverse rate, never in one jump
+		float flRate = MGManned( k ) ? m.flTraverse * dt : 0.0f;
+		m_flMGYaw[k] = Approach( flWantYaw, m_flMGYaw[k], flRate );
+		m_flMGPitch[k] = Approach( flWantPitch, m_flMGPitch[k], flRate );
+		CBaseAnimating *pGun = m_hMGGun[k].Get() ? m_hMGGun[k]->GetBaseAnimating() : NULL;
+		if ( pGun )
+		{
+			pGun->SetLocalAngles( QAngle( 0, m_flMGYaw[k], 0 ) );
+			if ( m_iMGPitchPose[k] >= 0 )
+				pGun->SetPoseParameter( m_iMGPitchPose[k], m_flMGPitch[k] );
+			pGun->InvalidateBoneCache();
+		}
+	}
+	PoseGunners();
+}
+
+// V2b: each gunner's mg_yaw / mg_pitch = his gun's, on the same think the gun moved (his hands stay on its grips).
+// One owner; the gun's aim is AimPintleGuns'.
+void CDoDSPVehicle::PoseGunners( void )
+{
+	for ( int i = 0; i < m_pType->crewSeats.Count() && i < VEHICLE_MAX_CREW_SEATS; i++ )
+	{
+		const VehicleType_t::CrewSeat_t &cs = m_pType->crewSeats[i];
+		CBaseAnimating *pMan = m_hCrewSeat[i].Get() ? m_hCrewSeat[i]->GetBaseAnimating() : NULL;
+		if ( cs.iMans < 0 || !pMan )
+			continue;
+		const VehicleType_t::MG_t &m = m_pType->mgs[cs.iMans];
+		if ( m_iSeatYawPose[i] == -2 )
+		{
+			m_iSeatYawPose[i] = pMan->LookupPoseParameter( "mg_yaw" );
+			m_iSeatPitchPose[i] = pMan->LookupPoseParameter( "mg_pitch" );
+			float yLo = 0, yHi = 0, pLo = 0, pHi = 0;
+			if ( m_iSeatYawPose[i] >= 0 )
+				pMan->GetPoseParameterRange( m_iSeatYawPose[i], yLo, yHi );
+			if ( m_iSeatPitchPose[i] >= 0 )
+				pMan->GetPoseParameterRange( m_iSeatPitchPose[i], pLo, pHi );
+			if ( m_iSeatYawPose[i] < 0 || m_iSeatPitchPose[i] < 0 )
+				Warning( "INVARIANT DOD-SP vehicle %s: its %s's model has no \"mg_yaw\" / \"mg_pitch\" pose parameter - he won't follow the gun "
+						 "(recompile npc_ww2_anims_ride from the V2b pack)\n", Label(), g_pszCrewRole[cs.eRole] );
+			else if ( yLo > -m.flArc + cs.flYaw + 0.01f || yHi < m.flArc + cs.flYaw - 0.01f || pLo > m.flPitchMin + 0.01f || pHi < m.flPitchMax - 0.01f )
+				Warning( "INVARIANT DOD-SP vehicle %s: its %s's poses cover mg_yaw %.0f..%.0f / mg_pitch %.0f..%.0f, the gun '%s' swings %.0f..%.0f / "
+						 "%.0f..%.0f - his hands leave the grips past them\n", Label(), g_pszCrewRole[cs.eRole], yLo, yHi, pLo, pHi, m.szName,
+						 -m.flArc, m.flArc, m.flPitchMin, m.flPitchMax );
+		}
+		if ( m_iSeatYawPose[i] >= 0 && m_iSeatPitchPose[i] >= 0 )
+		{
+			pMan->SetPoseParameter( m_iSeatYawPose[i], m_flMGYaw[cs.iMans] - cs.flYaw );	// his poses are made facing his seat's way
+			pMan->SetPoseParameter( m_iSeatPitchPose[i], m_flMGPitch[cs.iMans] );
+		}
+	}
+}
+
+// V2b: pintle guns fire where they point, from the gun model's muzzle, at infantry only (they can't hurt armour)
+void CDoDSPVehicle::FirePintleGuns( CBaseEntity *pTarget, const Vector &vecAimPoint )
+{
+	if ( dynamic_cast<CDoDSPVehicle *>( pTarget ) )
+		return;
+	for ( int k = 0; k < m_pType->nMGs; k++ )
+	{
+		const VehicleType_t::MG_t &m = m_pType->mgs[k];
+		if ( m.eMount != VehicleType_t::MG_PINTLE || !MGManned( k ) || m_iMGMuzzle[k] <= 0 || !m_hMGGun[k].Get() )
+			continue;
+		Vector vecMuzzle = MGMuzzle( k ), vecDir = MGDir( k ), vecTo = vecAimPoint - vecMuzzle;
+		float flDist = VectorNormalize( vecTo );
+		float flErr = RAD2DEG( acosf( clamp( DotProduct( vecDir, vecTo ), -1.0f, 1.0f ) ) );
+		if ( flErr > VEHICLE_COAX_CONE || flDist > m.flRange || !MGBurstShot( k ) )
+			continue;
+		CBaseEntity *pFriend = NULL;
+		if ( LineOfFire( vecMuzzle, vecAimPoint, pTarget, 0.0f ) && !FriendlyInTheWay( vecMuzzle, vecDir, flDist + 64.0f, 0.0f, &pFriend ) )
+			FireMG( k, vecMuzzle, vecDir );
 	}
 }
 
@@ -3448,6 +3682,9 @@ void CDoDSPVehicle::WeaponThink( float dt )
 			pT->SetPoseParameter( m_iPitchPose, m_flTurretPitch * m_flPitchSign );
 	}
 	UpdateSounds( fabs( AngleDiff( m_flTurretYaw, flOldYaw ) ) / MAX( dt, 0.001f ) );
+	// V2b: pintle guns: their gunner aims them, at the target (where seen) or its last known spot, else back to the front
+	Vector vecPintleAim = pTarget ? ( bSeen ? vecSeenPoint : pTarget->WorldSpaceCenter() ) : m_vecQuarryPos;
+	AimPintleGuns( vecPintleAim, pTarget || bAimAtQuarry, dt );
 
 	// reload clank shortly before the gun is ready again
 	if ( !m_bReloadSoundDone && m_pType->szReload[0] && now >= m_flNextGun - 2.0f )
@@ -3458,7 +3695,10 @@ void CDoDSPVehicle::WeaponThink( float dt )
 
 	// V3e: hull guns have their own gunner and their own aim (the turret crew may be gone, the turret elsewhere)
 	if ( pTarget && !m_bHoldFire && bSeen )
+	{
 		FireHullMGs( pTarget, vecAimPoint );
+		FirePintleGuns( pTarget, vecAimPoint );
+	}
 	if ( !pTarget || m_bHoldFire || !CanAim() )
 		return;
 	Vector vecBarrel = BarrelDir();
@@ -4438,7 +4678,8 @@ void CDoDSPVehicle::SpawnCrewSeats( void )
 			break;
 		Vector vecWorld;
 		VectorTransform( cs.vecOrigin, EntityToWorldTransform(), vecWorld );
-		pNPC->KeyValue( "additionalequipment", "weapon_mp40" );
+		if ( !cs.bUnarmed )
+			pNPC->KeyValue( "additionalequipment", "weapon_mp40" );		// V2b: a gunner's hands are on his gun
 		pNPC->KeyValue( "squadname", szSquad );
 		pNPC->AddSpawnFlags( SF_NPC_FALL_TO_GROUND );
 		pNPC->SetAbsOrigin( vecWorld );
@@ -4452,7 +4693,9 @@ void CDoDSPVehicle::SpawnCrewSeats( void )
 		}
 		GermanSoldier_SetSeatDeath( pNPC, cs.szDeath );
 		m_hCrewSeat[i] = pNPC;
-		Msg( "DOD-SP vehicle %s: its %s is in his seat%s\n", Label(), g_pszCrewRole[cs.eRole], cs.bSteer ? " (steering)" : "" );
+		m_iSeatYawPose[i] = m_iSeatPitchPose[i] = -2;		// a new man: look his poses up again
+		Msg( "DOD-SP vehicle %s: its %s is in his seat%s\n", Label(), g_pszCrewRole[cs.eRole],
+			 cs.bSteer ? " (steering)" : cs.iMans >= 0 ? CFmtStr( " (on the %s)", m_pType->mgs[cs.iMans].szName ).Access() : "" );
 	}
 }
 
@@ -4817,6 +5060,12 @@ void CDoDSPVehicle::FinishWreck( void )
 		UTIL_Remove( m_hTurret.Get() );
 		m_hTurret = NULL;
 	}
+	for ( int k = 0; k < VEHICLE_MAX_MGS; k++ )		// V2b: the wreck model has no gun on its pintle
+		if ( m_hMGGun[k].Get() )
+		{
+			UTIL_Remove( m_hMGGun[k].Get() );
+			m_hMGGun[k] = NULL;
+		}
 	bool bSwapped = false;
 	if ( m_pType->szDeadModel[0] && modelinfo->GetModelIndex( m_pType->szDeadModel ) >= 0 )
 	{

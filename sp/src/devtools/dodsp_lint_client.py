@@ -364,6 +364,14 @@ def check_vehicle_types():
                     bad.append("%s: crew seat '%s' needs \"origin\" x y z and \"idle\"" % (name, r))
                 if d.get("steer") == "1" and t.get("tracked", "0") != "0":
                     bad.append("%s: crew seat '%s' steers, but a tracked vehicle has no steering wheel" % (name, r))
+                # V2b: a gunner's seat mans one of its pintle guns, crewed by his role; "weapon" only says "none"
+                if "weapon" in d and d["weapon"] != "none":
+                    bad.append("%s: crew seat '%s' weapon '%s' - the only choice is \"none\"" % (name, r, d["weapon"]))
+                if "mans" in d:
+                    mg_ = dict((k_, dict(v_)) for k_, v_ in (t.get("mgs") if isinstance(t.get("mgs"), list) else []) if isinstance(v_, list))
+                    g_ = mg_.get(d["mans"])
+                    if not g_ or g_.get("mount") != "pintle" or g_.get("crew") != r:
+                        bad.append("%s: crew seat '%s' mans '%s' - want one of its pintle machine guns crewed by '%s'" % (name, r, d["mans"], r))
         # V3e: machine guns on their real mounts; no pre-V3e "coax" (it fired from the main gun's muzzle)
         if "coax" in t:
             bad.append("%s: has the old \"coax\" block - V3e machine guns go in \"mgs\" on their mounts" % name)
@@ -371,12 +379,28 @@ def check_vehicle_types():
         for mname, mg in (mgs if isinstance(mgs, list) else []):
             m = dict(mg) if isinstance(mg, list) else {}
             mount = m.get("mount")
-            if mount not in ("turret", "barrel", "hull"):
-                bad.append("%s: machine gun '%s' mount '%s' - want turret / barrel / hull" % (name, mname, mount))
+            if mount not in ("turret", "barrel", "hull", "pintle"):
+                bad.append("%s: machine gun '%s' mount '%s' - want turret / barrel / hull / pintle" % (name, mname, mount))
                 continue
-            if mount != "hull" and "turret_model" not in t:
+            if mount in ("turret", "barrel") and "turret_model" not in t:
                 bad.append("%s: machine gun '%s' is on a turret it hasn't got" % (name, mname))
-            need = ["muzzle"] + (["pivot"] if mount == "barrel" else []) + (["arc", "pitch", "crew"] if mount == "hull" else [])
+            # V2b: a pintle gun's muzzle and elevation are its MODEL's (attachment "muzzle", pose "mg_pitch") - never a script muzzle
+            need = (["pintle", "model", "arc", "pitch", "crew", "traverse"] if mount == "pintle" else ["muzzle"]) + \
+                   (["pivot"] if mount == "barrel" else []) + (["arc", "pitch", "crew"] if mount == "hull" else [])
+            if mount == "pintle":
+                if "muzzle" in m:
+                    bad.append("%s: machine gun '%s' (pintle) has a \"muzzle\" - a pintle gun's muzzle is its model's attachment" % (name, mname))
+                if "pintle" in m and len(m["pintle"].split()) == 3:
+                    root_ = name
+                    while kv_get(types[root_], "base") in types:
+                        root_ = kv_get(types[root_], "base")
+                    want_ = COD2_TURRET_TAGS.get(root_)
+                    got_ = [float(x) for x in m["pintle"].split()]
+                    if want_ and max(abs(a_ - b_) for a_, b_ in zip(got_, want_)) > 0.15:
+                        bad.append("%s: machine gun '%s' pintle %s, but CoD2's tag_turret is at %s (cod2_vehicle_tags.txt)"
+                                   % (name, mname, m["pintle"], " ".join("%.1f" % v for v in want_)))
+                if "arc_riders" in m and "arc" in m and float(m["arc_riders"]) > float(m["arc"]):
+                    bad.append("%s: machine gun '%s' arc_riders %s is wider than its arc %s" % (name, mname, m["arc_riders"], m["arc"]))
             for k in need:
                 if k not in m:
                     bad.append("%s: machine gun '%s' (%s) has no \"%s\"" % (name, mname, mount, k))

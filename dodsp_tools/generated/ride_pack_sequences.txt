@@ -1,6 +1,6 @@
 // The sequences in npc_ww2_anims_ride.mdl as delivered (every $sequence of its .qc) - the lint checks every seat in
 // dodsp_vehicles.txt names one of these. Regenerate whenever a ride pack is delivered (dodsp_tools/ANIMATIONS.md).
-// Pack: dodsp_npc_ww2_anims_ride_h2b2.zip
+// Pack: dodsp_npc_ww2_anims_ride_v2b.zip
 ww2_ride1_idle
 ww2_ride2_idle
 ww2_ride3_idle
@@ -55,3 +55,5 @@ ww2_vi_halftrack_guy_death2
 ww2_vi_halftrack_bay_death1
 ww2_vi_halftrack_bay_death2
 ww2_vi_halftrack_commander_death
+ww2_halftrack_mg
+ww2_halftrack_mg_death

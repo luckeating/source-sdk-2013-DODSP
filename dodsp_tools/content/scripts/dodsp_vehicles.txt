@@ -87,7 +87,7 @@
 "DoDSP_Vehicles"
 {
 	// Must match DODSP_VEHICLE_SCRIPT_VERSION in server.dll (dodsp_vehicle.cpp): use this file with the server.dll of the same build.
-	"script_version"	"H3"
+	"script_version"	"V2b"
 
 	"panzer2"
 	{
@@ -416,7 +416,7 @@
 		{
 			"hull_front"	"14.5 30"	"hull_side"	"8 30"	"hull_rear"		"8"		"hull_top"		"0"		"hull_bottom"	"5"
 			"open_top"		"1"
-			"structure"		"90"	"crew"	"driver commander"		// + 10 passengers (V3)
+			"structure"		"90"	"crew"	"driver commander gunner"		// + the riders in the bay (H3); V2b: the MG42's gunner
 			"ammo_fire"		"0.1"	"fuel_fire"		"0.35"	"engine"	"front"
 		}
 		"dead_model"		"models/cod2/vehicles/halftrack_dead.mdl"
@@ -424,6 +424,17 @@
 		{
 			"driver"			"hull -20 15 70"
 			"commander"		"hull -20 -15 70"
+			"gunner"			"hull -20 0 70"
+		}
+		// V2b: the front MG42 on its pintle behind the shield (CoD2 tag_turret, cod2_vehicle_tags.txt), a gun you can see
+		// (dodsp_mg42_pintle = CoD2's mg42_with_bipod_test1, mg42_model.py: its muzzle and elevation are the model's), swung
+		// by the gunner +-30 with the bay empty, +-20 while riders are aboard (at +-30 he steps into the seated riders:
+		// mg_preview.py), -15..+15 up. MG42 cyclic ~1200 rpm.
+		"mgs"
+		{
+			"mg42"	{ "mount" "pintle"	"pintle" "9.6 0.0 89.3"	"model" "models/dodsp/vehicles/dodsp_mg42_pintle.mdl"	"crew" "gunner"
+					  "arc" "30"	"arc_riders" "20"	"pitch" "-15 15"	"traverse" "60"
+					  "damage" "12"	"rate" "20"	"burst" "1.5"	"pause" "1.2"	"range" "2500"	"spread" "3"	"sound" "Weapon_Mg42.Shoot" }
 		}
 		// H2: the driver you can see, in CoD2's own driver seat (tag_driver x 1.0284, cod2_vehicle_tags.txt); he steers
 		// (ww2_halftrack_driver blends on "steer" with the steering angle - steer_compose.py, previewed by the owner)
@@ -435,6 +446,11 @@
 			// seat_death_preview.py "sitting" check); not tag_passenger - there he sat 12 units off the seat (owner's screenshot).
 			// Killed there he slumps (CoD2's bay death, re-based to start at his idle: halftrack_commander_death)
 			"commander"	{ "origin" "2.0 -1.4 32.3"	"yaw" "0"	"idle" "ww2_vi_halftrack_passenger_idle"	"death" "ww2_vi_halftrack_commander_death" }
+			// V2b: the MG42's gunner, standing on CoD2's tag_mgguy behind it, no rifle (his hands are on the gun). His idle is
+			// the 52-pose blend on mg_yaw / mg_pitch that follows the gun (mg_gunner_compose.py: CoD2's halftrack_mggunner_idle
+			// with the gun turned, previewed by the owner); shot there he crumples into the bay (ww2_halftrack_mg_death, one
+			// copy per mg_yaw column so it starts where he stands)
+			"gunner"	{ "origin" "-19.4 0.2 31.0"	"yaw" "0"	"idle" "ww2_halftrack_mg"	"mans" "mg42"	"weapon" "none"	"death" "ww2_halftrack_mg_death" }
 		}
 		// H3: the troop complement - six in the bay on CoD2's own seats (tag_guy01..06, facing in), out through the rear
 		// doors, then each runs to his spot beside the vehicle (CoD2's tag_walker0..5) and his own AI takes over. The two
