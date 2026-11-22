@@ -190,7 +190,9 @@ def build(pack, mapping, dod_ref, models):
                     if sp:
                         o = rig.idx[VB + sp[1]]; acc[o] = acc.get(o, 0.0) + w * sp[2]; w = w * sp[0]
                     acc[vi] = acc.get(vi, 0.0) + w
-                nrm = rig.Rg @ v['n']; nrm /= np.linalg.norm(nrm) + 1e-12
+                # CoD stores a vertex's normal in its MAIN BONE's frame, like its position (taken raw it agreed with the
+                # faces 19-71% of the time; turned by the bone, 100% - the other way round: see winding)
+                nrm = rig.Rg @ (bones[v['bone']]['R'] @ v['n']); nrm /= np.linalg.norm(nrm) + 1e-12
                 top = sorted(acc.items(), key=lambda kv: -kv[1])
                 dropped = max(dropped, sum(w for _, w in top[WEIGHTS_MAX:]))
                 top = top[:WEIGHTS_MAX]; tw = sum(w for _, w in top)
@@ -210,15 +212,36 @@ def build(pack, mapping, dod_ref, models):
     return rig, tris, dict(joints_moved=rig.joint_report(), warp=[(round(float(z), 1), [round(float(v), 2) for v in d], [round(float(v), 2) for v in sc]) for z, d, sc in rig.warp], parts=[(m, lod) for m, lod, *_ in loaded], triangles=counts, vertices=nverts,
                            worst_weight_dropped=round(dropped, 3), height=round(float(max(max(t[1][0][2], t[2][0][2], t[3][0][2]) for t in tris)), 2))
 
+# SMD's front face: corners in RIGHT-HAND order about the outward normal. Measured on SMDs that draw right in game (the
+# halftrack rig's body.smd from Crowbar's decompile: 100%), not assumed. CoD2 winds the other way (mg42_model.py
+# already reversed it; this converter first didn't, and the soldier drew inside out - 2026-11-21).
+WINDING_AGREE_MIN = 0.9
+
 def winding(tris):
-    """+1 if the files' corner order turns the right-hand way about the vertex normals (outward), -1 if the other"""
+    """share of triangles whose corner order turns the right-hand way about their vertex normals"""
     s = 0
     for _, a, b, c in tris:
-        f = np.cross(b[0] - a[0], c[0] - a[0]); s += np.sign(f @ (a[1] + b[1] + c[1]))
+        f = np.cross(b[0] - a[0], c[0] - a[0]); s += (f @ (a[1] + b[1] + c[1])) > 0
     return s / len(tris)
 
+def needs_flip(tris):
+    """True if the corners must be reversed for SMD; stops when the normals don't settle it (they'd be wrong)"""
+    w = winding(tris)
+    if WINDING_AGREE_MIN <= w: return False
+    if w <= 1 - WINDING_AGREE_MIN: return True
+    raise SystemExit('winding: only %.0f%% of triangles agree with their normals either way - the normals are wrong '
+                     '(not in the space the positions are in?); not writing an SMD that may draw inside out' % (100 * max(w, 1 - w)))
+
+def check_smd_winding(path):
+    """a written SMD read back: its corner order must agree with its normals the SMD way"""
+    sys.path.insert(0, HERE); import char_preview as CP
+    _, _, P, N, _, _ = CP.read_mesh(path)
+    f = np.cross(P[:, 1] - P[:, 0], P[:, 2] - P[:, 0]); a = np.mean(np.einsum('ij,ij->i', f, N.sum(1)) > 0)
+    if a < WINDING_AGREE_MIN: raise SystemExit('%s: only %.0f%% of triangles face out the SMD way' % (path, 100 * a))
+    return a
+
 def write_smd(path, rig, tris, matname=lambda m: m, flip=None):
-    if flip is None: flip = winding(tris) < 0          # SMD: counter-clockwise seen from outside (right-hand normal out)
+    if flip is None: flip = needs_flip(tris)
     L = rig.local()
     out = ['version 1', 'nodes'] + ['%d "%s" %d' % (i, n, p) for i, (n, p) in enumerate(rig.nodes)] + ['end', 'skeleton', 'time 0']
     out += ['%d %.6f %.6f %.6f %.6f %.6f %.6f' % ((i,) + L[i]) for i in range(len(rig.nodes))]
@@ -240,6 +263,7 @@ if __name__ == '__main__':
     rig, tris, info = build(pack, mapping, ref, models)
     os.makedirs(out, exist_ok=True)
     info['flipped_winding'] = bool(write_smd(os.path.join(out, 'reference.smd'), rig, tris))
+    info['faces_out'] = round(float(check_smd_winding(os.path.join(out, 'reference.smd'))), 4)
     info['stretch'] = {rig.nodes[i][0][len(VB):]: '%.2f -> %.2f' % rl for i, rl in rig.ratio.items()}
     json.dump(info, open(os.path.join(out, 'parts.json'), 'w'), indent=1)
     print(json.dumps(info, indent=1))

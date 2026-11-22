@@ -1469,6 +1469,21 @@ If you learn something like this, add it here in the same commit as the fix.
   (X in alpha, Y in green) to BGR888 + NORMAL flag, green kept (CoD2 and Source are both Direct3D) - the one guess:
   if folds look lit from below in game, flip green. No spec maps yet. Model: german/npc_german_cod3_rifleman.mdl,
   materials models/dodsp/cod3/. Test = the Hammer "model" key on one npc_german_soldier (Precache honours it).
+  FIRST IN-GAME LOOK 2026-11-21 (owner's screenshot): INSIDE OUT - the V4j mistake again ("verify a file-format writer
+  against a known-good converter's output BEFORE handing it over"), plus a second fault it hid. CoD2 stores a vertex's
+  NORMAL in its main bone's frame (like its position): taken raw they agreed with the faces 19-71% of the time, so the
+  winding test (corner order vs normals) read noise and kept CoD's order - which is the LEFT-hand one (mg42_model.py
+  already reversed it). Turned by the bone, 100% the other way. Fix (cod2_char.py): normals through the bone; needs_flip
+  stops unless >= 90% agree one way; check_smd_winding reads every written SMD back and demands the SMD convention
+  (measured on the halftrack rig's body.smd, which draws right in game: 99.97%) - it fails the shipped file (64%) and
+  passes the fixed one (99.8%). char_preview.py now culls back faces like the engine (its two-sided render hid this).
+  Owner: "actually pretty nice looking" - recompile from dodsp_cod3_rifleman_fix1.zip (model source only).
+
+## READY TO SHIP - REMIND THE OWNER (2026-11-21: "continue to remind me about the vehicle build ready to ship, we wont let it
+## be ignored for long")
+- **V2b2 + V5 vehicle build** (both PREPARED, committed, NOT built): the gunner's stutter (parts driven + stamped every
+  tick), hull aim, own men clearing the line of fire, knock-out jolt, pivot swing check, riders tilting with the sprung
+  body. One server.dll + client.dll, no models/script. Mention it at the end of each session's work until he says go.
 
 ## REQUIRED FIXES (owner said "mark it as a required fix" - do before calling the vehicles done)
 - **Carrier open top** (owner 2026-11-21): carrier.mdl / carrier_desert.mdl collision is one closed convex shell over the

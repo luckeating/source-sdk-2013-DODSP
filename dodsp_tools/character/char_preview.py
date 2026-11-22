@@ -53,7 +53,11 @@ def pose_from(ref, anim_path, frame):
 def render(cam, P, N, UV, mats, tex, Z, C):
     S = cam.project(P.reshape(-1, 3)).reshape(-1, 3, 3)
     light = np.array([0.4, -0.5, 0.75]); light /= np.linalg.norm(light)
-    for tri, nn, uv, m in zip(S, N, UV, mats):
+    # back faces culled the way the engine culls an SMD's: a front face's corners turn right-hand about the outward
+    # normal (a two-sided preview hid an inside-out soldier, 2026-11-21)
+    front = np.cross(P[:, 1] - P[:, 0], P[:, 2] - P[:, 0]) @ cam.fwd > 0
+    for tri, nn, uv, m, fr in zip(S, N, UV, mats, front):
+        if not fr: continue
         x0, y0 = np.floor(tri[:, :2].min(0)).astype(int); x1, y1 = np.ceil(tri[:, :2].max(0)).astype(int)
         x0, y0, x1, y1 = max(x0, 0), max(y0, 0), min(x1, cam.w - 1), min(y1, cam.h - 1)
         if x0 > x1 or y0 > y1: continue

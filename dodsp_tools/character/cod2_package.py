@@ -115,11 +115,12 @@ def build(pack, npz, ref, soldier, out, name, helmet, models):
     S = mdl48.read(soldier); bn = [b['name'] for b in S['bones']]
     assert set(bn) <= set(n for n, p in rig.nodes), set(bn) - set(n for n, p in rig.nodes)
     base = os.path.basename(name); src = os.path.join(out, 'modelsrc', base); os.makedirs(src, exist_ok=True)
-    flip = C.winding(tris) < 0
+    flip = C.needs_flip(tris)
     body = [t for t, p in zip(tris, rig.tri_part) if p != helmet]; helm = [t for t, p in zip(tris, rig.tri_part) if p == helmet]
     C.write_smd(os.path.join(src, 'body.smd'), rig, body, flip=flip)
     C.write_smd(os.path.join(src, 'helmet.smd'), rig, helm, flip=flip)
     solids, pinfo = phy_solids(soldier[:-4] + '.phy')
+    info['faces_out'] = [round(float(C.check_smd_winding(os.path.join(src, f))), 4) for f in ('body.smd', 'helmet.smd')]
     write_physics(os.path.join(src, 'physics.smd'), rig, solids)
     write_ragdoll_pose(os.path.join(src, 'ragdoll.smd'), rig, S)
     tex = textures(pack, [t[0] for t in tris], os.path.join(out, 'materials', *MATDIR.split('/')))
@@ -168,4 +169,4 @@ def build(pack, npz, ref, soldier, out, name, helmet, models):
 if __name__ == '__main__':
     a = sys.argv[1:]
     info = build(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7:])
-    print(json.dumps({k: info[k] for k in ('eye', 'soldier_eye', 'ragdoll_solids', 'ragdoll_mass', 'body_tris', 'helmet_tris', 'height', 'textures')}, indent=1))
+    print(json.dumps({k: info[k] for k in ('faces_out', 'eye', 'soldier_eye', 'ragdoll_solids', 'ragdoll_mass', 'body_tris', 'helmet_tris', 'height', 'textures')}, indent=1))
