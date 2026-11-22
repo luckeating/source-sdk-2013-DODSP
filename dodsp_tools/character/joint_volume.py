@@ -201,6 +201,13 @@ def summary(res, counts=None):
 #  - knee: two helpers (1/3, 2/3) - a crouched knee folds 146 deg; one half-way helper leaves 73 deg between
 #    neighbours (cos 36 = 0.81 of the leg kept between them, a pointed bulb in game); two leave 49 deg (0.91). Band 8:
 #    deep-crouch knees median 0.33 / 0.46 (R / L) vs 0.21 / 0.29 with one helper at 6, no other pose thinner.
+#    BUT the calf side of that band SWELLED the knee (joints2 in game, owner 2026-11-22: "nothing changed", a bulb under
+#    the kneeling knee): calf skin turned by the helpers' 49/97 deg instead of 146 sticks out below the joint. Scored
+#    both ways (thinner AND fatter: 95th percentile radius ratio), the band is 8 on the thigh, 6 on the calf - swell
+#    p90 1.33 / 1.27 (L / R, 8 / 8) -> 1.23 / 1.17 (none 1.06 / 1.08) with NO held pose thinner than the original;
+#    calf side 4-5 swells less (1.12-1.16) but pinches the prone crawl's knees (0.34 -> 0.19). Tried and NOT used: a
+#    1-2 unit band on the inside of the bend only ('inside_band', place_folds) - it pinches the back of the knee at
+#    moderate bends (0.81 -> 0.19).
 #  - elbow: two helpers, band 4 - held poses' worst 10% 0.83 / 0.90 (L / R) -> 0.89 / 0.95 against one at 5; a few
 #    extreme held poses already collapsed before (prone Panzerschreck / pistol, MG crouch-walk: 0.39-0.49) end 0.1-0.16
 #    lower with any design tried - cod2_package lists them (JV_POSE_DROP_MAX bounds them).
@@ -215,9 +222,11 @@ JOINT_DESIGN = {
     'elbow': dict(band=4.0, fracs=(1.0 / 3, 2.0 / 3)),
     'wrist': dict(band=1.5, fracs=(0.5,), roll=((0.45, 0.2), (0.6, 0.4), (0.75, 0.6), (0.9, 0.8))),
     'hip': dict(band=6.0, fracs=(0.5,)),
-    'knee': dict(band=8.0, fracs=(1.0 / 3, 2.0 / 3)),
+    'knee': dict(band=(8.0, 6.0), fracs=(1.0 / 3, 2.0 / 3)),
     'ankle': dict(band=3.0, fracs=(0.5,)),
 }
+JV_FOLD_FULL = 0.6      # a corner this far toward the fold direction (cos) takes the inside band in full
+JV_LIMB_REACH = 1.15    # a joint's band takes skin out to this x the limb's own radius (split_weights) - never the torso / gear beside it
 JV_ROLL_CLEAR = 20.0    # degrees: no held pose may roll this close to a roll helper's branch cut (place_cuts)
 
 def half_target(q_child, q_bind, k=0.5):
@@ -261,8 +270,10 @@ def design_helpers(nodes, local, design=None, sides='LR'):
             fr = dz['fracs']; kind = 'swing' if dz.get('roll') else 'turn'
             for i, k in enumerate(fr):
                 name = HELPER_NAME % (s, j) if len(fr) == 1 else 'dodsp_%s_%s_%d' % (s, j, i + 1)
+                ub = np.array(local[e][:3], float); ub /= max(np.linalg.norm(ub), 1e-9)
                 out.append(dict(side=s, joint=j, name=name, kind=kind, frac=k, level=(i + 1) / (len(fr) + 1), parent=p,
-                                child=c, end=e, band=dz['band'], pos=pos, qb=qb, axis=axis, cut=180.0))
+                                child=c, end=e, band=dz['band'], pos=pos, qb=qb, axis=axis, cut=180.0, u_child=ub,
+                                inside_band=dz.get('inside_band')))
             for i, r in enumerate(dz.get('roll', ())):
                 t, k = r if isinstance(r, tuple) else (r, r)          # (place along the bone, share of the roll)
                 out.append(dict(side=s, joint=j, name='dodsp_%s_%s_roll%d' % (s, j, i + 1), kind='roll', frac=k, at=t, **{'from': dz.get('roll_from', 0.0)},
@@ -288,6 +299,21 @@ def place_cuts(specs, samples_of, stance=None):
         if best[0] >= 1000:
             raise SystemExit('joint_volume: %s - every place for the roll\'s branch cut has a held pose within %d deg'
                              % (sp['name'], JV_ROLL_CLEAR))
+    return specs
+
+def place_folds(specs, samples_of):
+    """hinge joints (design key 'inside_band'): the direction the child folds toward, in the PARENT's frame - the mean
+    way the child's far end moves over every pose bent past 45 degrees. The skin on that side of the joint is the crease."""
+    for sp in specs:
+        if sp['kind'] == 'roll' or sp.get('inside_band') is None: continue
+        qb = Rot.from_quat(sp['qb']); u = qb.apply(sp['u_child']); acc = np.zeros(3); n = 0
+        for q in samples_of(sp):
+            v = Rot.from_quat(q).apply(sp['u_child'])
+            if np.degrees(np.arccos(np.clip(v @ u, -1, 1))) < 45: continue
+            dv = v - u; dv -= (dv @ u) * u; acc += dv / max(np.linalg.norm(dv), 1e-9); n += 1
+        if n:
+            acc -= (acc @ u) * u
+            if np.linalg.norm(acc) > 1e-6: sp['fold'] = acc / np.linalg.norm(acc)
     return specs
 
 def helper_skeleton(nodes, local, specs, engine=False):
@@ -330,7 +356,7 @@ def split_levels(w, bones, at, x):
     w2 = sorted([(b, v) for b, v in rest + [(bones[i], (1 - f) * t), (bones[i + 1], f * t)] if v > 1e-4], key=lambda bv: -bv[1])[:3]
     sm = sum(v for _, v in w2); return [(b, v / sm) for b, v in w2]
 
-def split_weights(P, W, specs, wpos):
+def split_weights(P, W, specs, wpos, wrot=None):
     """THE re-weighting: P corners (bind, model space), W [[(bone, weight)]] (changed in place), wpos(bone) -> its bind
     position. Joint by joint: corners within the band go parent -> turn/swing helpers -> child (toward_child); then
     along a parent bone with roll helpers, what is still on it goes bone -> roll helpers -> the joint's swing helper
@@ -341,10 +367,38 @@ def split_weights(P, W, specs, wpos):
     for (s, j), sps in groups.items():
         sp0 = sps[0]; p, c, e = sp0['parent'], sp0['child'], sp0['end']
         J, E = wpos(c), wpos(e); A = wpos(p) if j != 'hip' else J + (J - E)
-        _, sv = JointProbe.radius(P, A, J, E); bp, bc = joint_sides(A, J, E, sp0['band'], j); cc = toward_child(sv, bp, bc)
+        rad, sv = JointProbe.radius(P, A, J, E); bp, bc = joint_sides(A, J, E, sp0['band'], j); cc = toward_child(sv, bp, bc)
         turn = [sp for sp in sps if sp['kind'] != 'roll']
         chain = [p] + [sp['helper'] for sp in turn] + [c]; at = [0.0] + [sp['level'] for sp in turn] + [1.0]
-        for v in np.where((sv > -bp) & (sv < bc))[0]:
+        inband = (sv > -bp) & (sv < bc)
+        # only the LIMB's skin: a corner joins the split if it already moves with the child, or lies within the limb's
+        # own surface (JV_LIMB_REACH x the 98th percentile radius of the child-weighted skin in the band). The band is cut
+        # along the bone, so without this every corner level with the joint took part - 148 gear / chest corners on the
+        # left clavicle moved onto the upper arm, and the coat's cuff lip beyond the wrist swung with the hand (owner
+        # 2026-11-22: "a triangle around the thumb sticking up")
+        onc = np.array([any(b == c and x > 0.05 for b, x in w) for w in W])
+        limb_r = np.percentile(rad[inband & onc], 98) if (inband & onc).any() else 0.0
+        sp0['limb_radius'] = float(limb_r)
+        fold = sp0.get('fold'); ib = sp0.get('inside_band')
+        if fold is not None and ib is not None:
+            # a hinge: the skin on the INSIDE of the bend is the crease - it splits at the joint over ib units and folds
+            # in, the outside blends over the whole band (round, not swollen). The fold direction is in the parent's frame.
+            PR = wrot(p) if j != 'hip' else wrot(c)
+            fw = PR @ fold
+            seg = np.where((sv < 0)[:, None], A + np.clip(((P - A) @ (J - A)) / max((J - A) @ (J - A), 1e-9), 0, 1)[:, None] * (J - A),
+                           J + np.clip(((P - J) @ (E - J)) / max((E - J) @ (E - J), 1e-9), 0, 1)[:, None] * (E - J))
+            rv = P - seg; rn = np.linalg.norm(rv, axis=1); ins = (rv @ fw) / np.maximum(rn, 1e-9)
+            k = np.clip(ins / JV_FOLD_FULL, 0, 1); k = k * k * (3 - 2 * k)
+            bpv = bp * (1 - k) + min(ib, bp) * k; bcv = bc * (1 - k) + min(ib, bc) * k
+            x = np.where(sv < 0, 0.5 + sv / (2 * bpv), 0.5 + sv / (2 * bcv)); x = np.clip(x, 0, 1); cc = x * x * (3 - 2 * x)
+        # ...and never onto a bone CoD kept it off: a corner with no weight on the child (the coat's skirt beside the
+        # thigh, a strap over the shoulder) blends parent -> helpers up to the joint and back to the parent past it
+        # (mirrored, so its neighbours stay continuous); one with none on the parent the same way round. Without this
+        # the tunic skirt took 0.6 of the thigh and moved 8.8 units in the crouched aim (the egg grenade's belt loop
+        # stretched), a gear strap took 0.4 of the left upper arm (2026-11-22).
+        onp = np.array([any(b == p and x > 0.05 for b, x in w) for w in W])
+        cc = np.where(~onc, toward_child(-np.abs(sv), bp, bc), np.where(~onp, toward_child(np.abs(sv), bp, bc), cc))
+        for v in np.where(inband & (onc | (rad <= JV_LIMB_REACH * limb_r)))[0]:
             W[v] = split_levels(W[v], chain, at, cc[v])
     for (s, j), sps in groups.items():
         roll = [sp for sp in sps if sp['kind'] == 'roll']
@@ -373,7 +427,7 @@ def reweight(mesh, specs, skel):
     """the measuring copy: a Mesh re-weighted by split_weights"""
     Wb = skel.world(skel.bind)
     W = [[(b, x) for b, x in zip(bb, ww) if x > 0] for bb, ww in zip(mesh.B, mesh.W)]
-    W = split_weights(mesh.P, W, specs, lambda i: Wb[i][1])
+    W = split_weights(mesh.P, W, specs, lambda i: Wb[i][1], lambda i: Wb[i][0])
     m2 = Mesh.__new__(Mesh); m2.P = mesh.P
     m2.B = np.array([[b for b, _ in w] + [0] * (3 - len(w)) for w in W], int)
     m2.W = np.array([[x for _, x in w] + [0.0] * (3 - len(w)) for w in W])
@@ -433,6 +487,7 @@ def add_to_rig(rig, tris, poses, design=None, stance=None):
         if c not in drv: drv[c] = [qrel(sk.pose(fr)[c][1]) for fr in valid]
         return drv[c]
     place_cuts(specs, samples_of, None if stance is None else np.array([stance(l) for l, _ in keep]))
+    place_folds(specs, samples_of)
     rig.nodes = list(rig.nodes); rig.idx = dict(rig.idx)
     for sp in specs:
         tr, tol, err = fit_triggers(samples_of(sp), sp, keep=held)
@@ -442,7 +497,7 @@ def add_to_rig(rig, tris, poses, design=None, stance=None):
         sp.update(triggers=tr, tol=tol, error=[round(x, 2) for x in err], samples=len(valid))
     flat = [(ti, k) for ti, (m, *cs) in enumerate(tris) for k in range(3)]
     P = np.array([tris[ti][1 + k][0] for ti, k in flat])
-    W = split_weights(P, [list(tris[ti][1 + k][3]) for ti, k in flat], specs, lambda i: rig.W[i][1])
+    W = split_weights(P, [list(tris[ti][1 + k][3]) for ti, k in flat], specs, lambda i: rig.W[i][1], lambda i: rig.W[i][0])
     new = [list(t) for t in tris]
     for (ti, k), w in zip(flat, W):
         pp, nn, uv, _ = new[ti][1 + k]; new[ti][1 + k] = (pp, nn, uv, w)

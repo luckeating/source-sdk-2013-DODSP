@@ -1760,6 +1760,15 @@ LOG:
   m >= 0.945 (wrist swing helper, worst 6% shrink; others <= 1%) - not the bulb, but a real fault: normalize it in our
   bone_setup.cpp (client + server compile it) with the next client build; twist_bones.engine_quat_interp normalizes,
   so every preview so far modelled the debug engine, not the release one.
+  THUMB TRIANGLE 2026-11-22 (owner, joints2: "the right hand holding the gun in a crouched state has a triangle around
+  the thumb sticking up"). Cause: the band split chose corners by their place ALONG the bone only, so anything level
+  with a joint took part - the coat's cuff lip beyond the wrist swung with the hand, gear straps over the shoulder
+  took 0.4 of the upper arm, the tunic skirt beside the thigh 0.6 of the thigh (moved 8.8 units crouched). Fix
+  (joint_volume.split_weights, one rule for every joint): a corner joins a band only if it moves with the child already
+  or lies within JV_LIMB_REACH x the limb's own skin radius, and never gains weight on a bone CoD kept it off (no child
+  weight -> parent -> helpers up to the joint and back to the parent past it, mirrored so neighbours stay continuous).
+  Measured: 0 corners gain child weight at any joint (was 34 / 22 / 14 / 4 at the L shoulder / L hip / R shoulder / R hip).
+  LESSON: a weight band needs a reach across the limb as well as along it - test what a re-weight ADDS, bone by bone.
 
 
 ## READY TO SHIP - REMIND THE OWNER (2026-11-21: "continue to remind me about the vehicle build ready to ship, we wont let it
