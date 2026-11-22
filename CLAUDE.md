@@ -1614,6 +1614,20 @@ LOG:
     wrist-twist helper per arm taking a measured share of the hand's ROLL only (triggers along the roll, swing
     left out), forearm skin graded onto it; elbow helper with CoD's measured bulge slide; previewed with a Python
     copy of DoQuatInterpBone in the K98 poses before anything ships; verified by reading the owner's compile back.
+  TWIST PREVIEW 2026-11-22 (owner: "go ahead and make a preview"): character/twist_preview.py. CoD's own wrist-twist
+  bone, twist only, over 500 CoD2 animations: 76% down the forearm (7.30 / 9.65), taking 0.84 (left) / 0.91 (right) of
+  the hand's ROLL. Design: one helper per arm `dodsp_<L|R>_ForeTwist` (our name - not Valve's Ulna) under the
+  forearm at TWIST_AT 0.76, TWIST_SHARE 0.87; 12 triggers = the hand rolled every 30 deg round the forearm axis (bind
+  otherwise), the helper rolled 0.87 as far, tolerance 90 deg (a bent wrist still finds its roll); each vertex's
+  FOREARM weight moves onto the helper linearly from 0 at the elbow to all of it at the helper (hand weights untouched).
+  engine_quat_interp = DoQuatInterpBone line for line: on DoD's K98 aims the helper comes out within 1-2 deg of the
+  wanted roll (left hand -78 -> -69 vs -68; -104 -> -90.8 vs -90.5). Wrist cross-section kept (5th percentile of the
+  vertices' distance from the forearm axis, posed / rest): standing 0.74 -> 0.86, crouched 0.65 -> 0.77; the cuff
+  notch where the hand enters is gone in the renders (twist_preview_left_arm.png). The minimum (0.42-0.63, both arms,
+  even at 5-9 deg of roll) is the wrist BEND, not the roll - not this fix. NEXT (on the owner's go): cod2_package writes
+  the helpers into the skeleton, the weights, a .vrd ($proceduralbones) from rig_twist's triggers; after his Crowbar
+  compile, read the helpers' procedural data back from the .mdl (mstudioquatinterpbone_t: control, numtriggers,
+  triggerindex; per trigger inv_tolerance, trigger q, target q, pos) and compare with the design.
 
 
 ## READY TO SHIP - REMIND THE OWNER (2026-11-21: "continue to remind me about the vehicle build ready to ship, we wont let it
