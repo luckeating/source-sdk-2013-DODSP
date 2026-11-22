@@ -1452,9 +1452,23 @@ If you learn something like this, add it here in the same commit as the fix.
   turns from xanim_map.npz (the animation converter's); OUR lengths/offsets in CoD's bind orientation, so nothing is
   re-posed; limbs stretched along the bone (forearm 9.65 -> 11.48, shin 15.1 -> 16.5); the TRUNK kept in CoD's shape
   and rebound (CoD's j_spine4 sits 3.5 units lower than our Spine4 - a per-bone stretch squashed the chest to 0.4).
-  Limb joints move 1-3 units against the trunk (joint_report). char_preview.py skins it with any DoD SMD (Source's
-  linear blend): idle / run / crouch / aim look right. Not done: QC, VTFs, normal maps, hitboxes/ragdoll/attachments
-  (want the owner's compiled npc_german_rifleman to copy them), eyes are plain head mesh.
+  char_preview.py skins it with any DoD SMD (Source's linear blend): idle / run / crouch / aim look right.
+  OWNER on the first preview: "shoulders pretty sharp and bulky" - RIGHT, a conversion fault, not the CoD mesh (an
+  untouched-CoD render settled it): our shoulder joints sit 2.4 units BEHIND CoD's and our clavicles 2.3 ABOVE, so the
+  arms (which follow our joints) hung off the back of the coat and the clavicle-weighted trapezius rose in a ridge.
+  Fix (cod2_char.py TrunkWarp): the trunk + clavicles stay CoD's shape but are bent by height to meet our hip /
+  shoulder / head joints (hips: a side shift of -0.98 growing from the middle - scaling the width made the coat 20%
+  thinner); CoD's shoulder-twist weights go half to the clavicle (rounder raised-arm shoulders). LESSON: when a ported
+  body looks off, render the untouched source mesh next to it before deciding whose fault it is.
+  PACK (cod2_package.py, mdl48.py, vtf.py): everything but the mesh is read from the owner's COMPILED
+  npc_german_rifleman (.mdl v48 + .phy): includes, 8 attachments (eyes moved to CoD's tag_eye - lands 0.4 from the
+  soldier's), IK chains, both hitbox sets, bodygroups body + helmet/blank, ragdoll = the soldier's 18 hulls placed on
+  our bones + its masses / rotdamping / massbias / joint limits, and the 'ragdoll' sequence = the soldier's OWN
+  reference pose (its compiled bones; a T-pose, NOT the DoD a_reference idle - limits are measured from that pose).
+  VTF 7.2 colour = the iwi's DXT1 mips byte for byte (decoded back: identical); normals rebuilt from CoD's '-gggr'
+  (X in alpha, Y in green) to BGR888 + NORMAL flag, green kept (CoD2 and Source are both Direct3D) - the one guess:
+  if folds look lit from below in game, flip green. No spec maps yet. Model: german/npc_german_cod3_rifleman.mdl,
+  materials models/dodsp/cod3/. Test = the Hammer "model" key on one npc_german_soldier (Precache honours it).
 
 ## REQUIRED FIXES (owner said "mark it as a required fix" - do before calling the vehicles done)
 - **Carrier open top** (owner 2026-11-21): carrier.mdl / carrier_desert.mdl collision is one closed convex shell over the

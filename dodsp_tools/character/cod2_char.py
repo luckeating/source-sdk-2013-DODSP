@@ -16,10 +16,13 @@ How (one owner for each fact):
   - the reference skeleton = OUR bones' lengths and offsets (the DoD reference's local positions: what every animation
     sets) turned the way the CoD bind pose has them (so nothing is re-posed: a vertex keeps its place relative to its
     bone; only the bones' LENGTHS change).
-  - the trunk (pelvis, spine, neck, head) keeps CoD's shape: those vertices are placed by the global frame alone (CoD's
-    j_mainroot on our pelvis) and bound to our bones where they are. CoD's spine joints sit elsewhere along the trunk
-    than ours (j_spine4 3.5 units lower than our Spine4) though the trunk is as long (pelvis-head 19.9 vs 19.4), so a
-    per-bone stretch there would squash the chest to 0.4 and pull the belly to 1.6.
+  - the trunk (pelvis, spine, clavicles, neck, head) keeps CoD's shape, bent gently to meet OUR limb joints: placed by
+    the global frame (CoD's j_mainroot on our pelvis), then moved by TrunkWarp - by height, how far our hip / shoulder /
+    head joints sit from CoD's (and how much wider or narrower) - and bound to our bones where it lands. CoD's spine
+    joints sit elsewhere along the trunk than ours (j_spine4 3.5 units lower than our Spine4) though the trunk is as long
+    (pelvis-head 19.9 vs 19.4), so a per-bone stretch there squashed the chest to 0.4. Without the warp our shoulders
+    sat 2.4 units BEHIND CoD's and our clavicles 2.3 above: the arms hung off the back of the coat and the trapezius
+    rose in a ridge (owner 2026-11-21: "shoulders pretty sharp and bulky"). The clavicles are trunk for the same reason.
   - limbs: a vertex's coordinate ALONG a limb bone (x) is scaled by our length / CoD's between the joint and the next
     joint; beyond the next joint it is shifted (a hand's vertices weighted to the forearm stay a hand's size). So each
     limb hangs from OUR joint (where the animations put it); joint_report says how far that is from CoD's.
@@ -36,9 +39,13 @@ from smd import SMD
 
 COD2VB = {c: VB + v for v, c in MAP.items()}
 # the joint each bone's length runs to (ours: the child's local position; CoD's: the same pair of joints)
-TRUNK = {VB + b for b in ('Pelvis', 'Spine', 'Spine1', 'Spine2', 'Spine4', 'Neck1', 'Head1')}
+TRUNK = {VB + b for b in ('Pelvis', 'Spine', 'Spine1', 'Spine2', 'Spine4', 'Neck1', 'Head1', 'L_Clavicle', 'R_Clavicle')}
 CHAIN = {'Clavicle': 'UpperArm', 'UpperArm': 'Forearm', 'Forearm': 'Hand', 'Thigh': 'Calf', 'Calf': 'Foot'}
 WEIGHTS_MAX = 3
+# CoD bone -> (share kept on the bone it maps to, our other bone, its share). CoD's shoulder twist bone takes only part
+# of the upper arm's turn; ours has no twist bone, so its vertices go half to the clavicle - in the raised-arm aims the
+# top of the shoulder then rounds off instead of peaking (preview 2026-11-21, shoulders_compare).
+SPLIT = {'j_shouldertwist_le': (0.5, 'L_Clavicle', 0.5), 'j_shouldertwist_ri': (0.5, 'R_Clavicle', 0.5)}
 
 def chain_child(vn):
     b = vn[len(VB):]
@@ -83,6 +90,30 @@ class Rig:
     def trunk_place(self, x):
         """a trunk vertex: CoD's bind pose through the global frame, CoD's root on our pelvis"""
         return self.Rg @ (x - self.root_cod) + self.W[0][1]
+    def build_warp(self):
+        """TrunkWarp's control heights: hips, shoulders, head - each with how far our joint(s) sit from CoD's (placed
+        like the trunk), and for a pair: CoD's half-span and how far each joint moved outward (- = inward)"""
+        def at(names):
+            ours = [self.W[self.idx[VB + n]][1] for n in names]; cod = [self.trunk_place(self.B[MAP[n]]['t']) for n in names]
+            d = np.mean([o - c for o, c in zip(ours, cod)], 0); z = np.mean([c[2] for c in cod])
+            if len(names) == 2:
+                h = abs(cod[0][1] - cod[1][1]) / 2; s = (h, abs(ours[0][1] - ours[1][1]) / 2 - h)
+            else: s = (1.0, 0.0)
+            return z, d, s
+        self.warp = [at(('L_Thigh', 'R_Thigh')), at(('L_UpperArm', 'R_UpperArm')), at(('Head1',))]
+        self.yc = self.W[0][1][1]
+    def trunk_warp(self, x):
+        """a trunk vertex where it goes: trunk_place, then the warp at its height (linear between the control heights)"""
+        p = self.trunk_place(x); z = p[2]; W = self.warp
+        if z <= W[0][0]: k, f = 0, 0.0
+        elif z >= W[-1][0]: k, f = len(W) - 2, 1.0
+        else:
+            k = next(k for k in range(len(W) - 1) if W[k][0] <= z <= W[k + 1][0]); f = (z - W[k][0]) / (W[k + 1][0] - W[k][0])
+        d = W[k][1] + f * (W[k + 1][1] - W[k][1])
+        y = p[1] - self.yc; side = 0.0
+        for j, g in ((k, 1 - f), (k + 1, f)):
+            h, out = W[j][2]; side += g * np.sign(y) * min(abs(y) / h, 1.0) * out
+        return np.array([p[0] + d[0], p[1] + side, p[2] + d[2]])
     def joint_report(self):
         """our joints vs CoD's carried by the same rule as the trunk (where a limb's mesh moves from CoD's place)"""
         out = {}
@@ -133,10 +164,12 @@ def build(pack, mapping, dod_ref, models):
             body = bones
         loaded.append((m, lod, xm['materials'][0], bones, sf))
     assert body is not None, 'no body (a part with the legs) among %s' % models
-    rig = Rig(body, mapping, dod_ref)
-    tris = []; counts = {}; dropped = 0.0; nverts = 0
+    rig = Rig(body, mapping, dod_ref); rig.build_warp()
+    tris = []; tpart = []; counts = {}; dropped = 0.0; nverts = 0; tags = {}
     for m, lod, mats, bones0, sf in loaded:
         bones = world_bones(bones0, body)
+        for b in bones:
+            if b['name'].startswith('tag_'): tags[b['name']] = rig.trunk_warp(b['t'])     # tag_eye: on the head
         assert len(mats) == len(sf), (m, len(mats), len(sf))
         for mat, s in zip(mats, sf):
             V = []
@@ -151,8 +184,11 @@ def build(pack, mapping, dod_ref, models):
                     qc = bones[d]['R'].T @ (x - bones[d]['t'])            # in the driving CoD bone
                     qv = rig.off[vn].T @ qc                               # in our bone (no scale: CoD units = ours)
                     R, t = rig.W[vi]
-                    if vn in TRUNK: pos += w * rig.trunk_place(x)
+                    if vn in TRUNK: pos += w * rig.trunk_warp(x)
                     else: pos += w * (R @ stretch(qv, rig.ratio.get(vi)) + t)
+                    sp = SPLIT.get(bones[b]['name'])
+                    if sp:
+                        o = rig.idx[VB + sp[1]]; acc[o] = acc.get(o, 0.0) + w * sp[2]; w = w * sp[0]
                     acc[vi] = acc.get(vi, 0.0) + w
                 nrm = rig.Rg @ v['n']; nrm /= np.linalg.norm(nrm) + 1e-12
                 top = sorted(acc.items(), key=lambda kv: -kv[1])
@@ -161,7 +197,7 @@ def build(pack, mapping, dod_ref, models):
                 V.append((pos, nrm, v['uv'], [(b, w / tw) for b, w in top]))
             nverts += len(V)
             for a, b, c in s['tris']:
-                tris.append((mat, V[a], V[b], V[c]))
+                tris.append((mat, V[a], V[b], V[c])); tpart.append(m)
             counts[mat] = counts.get(mat, 0) + len(s['tris'])
     # standing on the ground: the lowest vertex at z 0 (the pelvis carries the rest)
     zmin = min(min(t[1][0][2], t[2][0][2], t[3][0][2]) for t in tris)
@@ -170,7 +206,8 @@ def build(pack, mapping, dod_ref, models):
     R0, t0 = rig.W[0]; rig.W[0] = (R0, t0 + sh)
     for i, (n, p) in enumerate(rig.nodes):
         if p >= 0: R, t = rig.W[i]; rig.W[i] = (R, t + sh)
-    return rig, tris, dict(joints_moved=rig.joint_report(), parts=[(m, lod) for m, lod, *_ in loaded], triangles=counts, vertices=nverts,
+    rig.tri_part = tpart; rig.tags = {k: v + sh for k, v in tags.items()}
+    return rig, tris, dict(joints_moved=rig.joint_report(), warp=[(round(float(z), 1), [round(float(v), 2) for v in d], [round(float(v), 2) for v in sc]) for z, d, sc in rig.warp], parts=[(m, lod) for m, lod, *_ in loaded], triangles=counts, vertices=nverts,
                            worst_weight_dropped=round(dropped, 3), height=round(float(max(max(t[1][0][2], t[2][0][2], t[3][0][2]) for t in tris)), 2))
 
 def winding(tris):
@@ -180,8 +217,8 @@ def winding(tris):
         f = np.cross(b[0] - a[0], c[0] - a[0]); s += np.sign(f @ (a[1] + b[1] + c[1]))
     return s / len(tris)
 
-def write_smd(path, rig, tris, matname=lambda m: m):
-    flip = winding(tris) < 0          # SMD: counter-clockwise seen from outside (right-hand normal out)
+def write_smd(path, rig, tris, matname=lambda m: m, flip=None):
+    if flip is None: flip = winding(tris) < 0          # SMD: counter-clockwise seen from outside (right-hand normal out)
     L = rig.local()
     out = ['version 1', 'nodes'] + ['%d "%s" %d' % (i, n, p) for i, (n, p) in enumerate(rig.nodes)] + ['end', 'skeleton', 'time 0']
     out += ['%d %.6f %.6f %.6f %.6f %.6f %.6f' % ((i,) + L[i]) for i in range(len(rig.nodes))]
