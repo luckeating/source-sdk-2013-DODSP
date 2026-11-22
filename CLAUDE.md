@@ -1427,7 +1427,15 @@ If you learn something like this, add it here in the same commit as the fix.
   they are (owner's guess, confirmed). US rangers (Normandy, 30cal, medic, radio, named, wet), British, German (Wehrmacht,
   Fallschirmjager, Panzergrenadier, Waffen, winter / Africa, MG42 gunners, officers), Russian; each character = body +
   head + gear + a random helmet (xmodelalias) - the "random look per spawn" plan. Candidate for the US infantry (vs the
-  BiA GMod rip). Hobby only, like the rest.
+  BiA GMod rip). Hobby only, like the rest. ANIMATION COMPARISON (same day): its AI script (animscripts/init.gsc)
+  names 75 animations and all 75 are CoD2 xanims by name - 68 of them CoD2's corner system (left/right x stand/crouch:
+  alert, aim straight/left/right/behind, look, transitions), plus combat / pistol / crouch runs; we have 2 of the 75
+  packed (combatrun_forward_1/2) - our corners are CoD1's. Limbs (thigh, shin, upper arm, forearm, hip-neck, spans):
+  every CoD3 body = CoD2's within 0.1 units; DoD's reference (our soldier) differs (shin +1.3, forearm +1.9, hips 1.9
+  narrower) - the converter's learned constants already cover that for animations; a mesh port onto our skeleton
+  must re-fit it. Of CoD2's 3669 xanims ~280 are in our packs; unconverted families useful to NPCs: corner (284),
+  pistol (111), stand / crouch aim-alert-look sets, wounded (46, 8 packed), prone (20), balcony falls (16), mortar (21) /
+  flak88 (62) crews, panzerfaust corners (32); pb_ / pt_ / viewmodel (676) are player animations, not for NPCs.
 
 ## REQUIRED FIXES (owner said "mark it as a required fix" - do before calling the vehicles done)
 - **Carrier open top** (owner 2026-11-21): carrier.mdl / carrier_desert.mdl collision is one closed convex shell over the
