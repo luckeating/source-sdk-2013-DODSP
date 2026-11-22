@@ -1354,6 +1354,10 @@ If you learn something like this, add it here in the same commit as the fix.
   regenerated (+2). Owner side: compile dodsp_npc_ww2_anims_ride_v2b.zip (the h2b2 pack + 65 SMDs + their QC blocks; every
   existing file byte-identical) and dodsp_mg42_pintle_v2b.zip (needs CoD2's MG42 texture as materials/models/cod2/
   mtl_weapon_mg42.vmt). Undo: the H3b script (script_version H3) + server.dll (build 44909170762).
+  FIRST V2b LOOK 2026-11-21 (build 44975332307, owner's screenshot): gun on its pintle, textured, gunner at the grips;
+  the gunner killed slumps at the gun (CONFIRMED). Swing / firing / the riders' 20-degree arc NOT tested yet - the owner
+  had no target ("no American infantry"). The PLAYER is one (allies, FirePintleGuns skips only vehicles): test with
+  `god`, no notarget; for the riders' arc stand 1200..2500 units off (riders get off on contact within 1200).
 
 ## REQUIRED FIXES (owner said "mark it as a required fix" - do before calling the vehicles done)
 - **Carrier open top** (owner 2026-11-21): carrier.mdl / carrier_desert.mdl collision is one closed convex shell over the
