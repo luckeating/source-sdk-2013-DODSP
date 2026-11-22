@@ -1744,6 +1744,22 @@ LOG:
   0.89/0.18, 0.85/0.21 -> 0.92/0.81, 0.91/0.80, hips -> 0.88/0.48, 0.92/0.79, shoulders -> 0.86/0.65, 0.89/0.74. 24
   helpers (80 bones). The swing helper's trigger fit is the loosest (95% 13-15 deg, worst 45-57). Delivered
   dodsp_cod3_rifleman_joints2.zip (model source only; client unchanged).
+  JOINTS2 IN GAME 2026-11-22 (owner: "nothing changed"; screenshot crouched aim, side view). His compiled .mdl READ BACK:
+  all 24 helpers match the design (twist_bones.check_compiled, worst 0.06 deg) - the compile and the engine are fine.
+  Rendered at HIS camera angle (jv2/ownerview.py): joints1 and joints2 look the same there (the wrist changes show
+  only aimed down, from below); the kneeling knee is a round BULB in both, and joints2's is BIGGER (band 8) - the bulb
+  is what he sees. MY MISTAKE: the measure scores only THINNING (5th percentile); a joint that swells is invisible to it,
+  and the inside of a deep bend is left out - which is where the bulb comes from: calf skin at the back of the knee
+  turned by a helper's 49/97 degrees instead of the calf's 146 sticks out below the knee instead of folding into the
+  crease. LESSON: a thickness measure must score both ways (thinner AND fatter), and look at the result from the
+  player's angle before calling it fixed. NEXT (not built, preview first): hinge joints (knee, elbow) blend through
+  helpers on the OUTSIDE only - skin on the inside of the bend (fixed for a hinge) splits sharply at the joint and
+  folds into the crease; scored by a two-sided measure + renders from the owner's angle.
+  ENGINE FACT (found on the way): bone_setup.cpp DoQuatInterpBone normalizes its blended quaternion INSIDE Assert(),
+  which Release compiles out - QuaternionMatrix of the raw blend = (1 - m^2) I + m^2 R, a shrink. Measured on joints2:
+  m >= 0.945 (wrist swing helper, worst 6% shrink; others <= 1%) - not the bulb, but a real fault: normalize it in our
+  bone_setup.cpp (client + server compile it) with the next client build; twist_bones.engine_quat_interp normalizes,
+  so every preview so far modelled the debug engine, not the release one.
 
 
 ## READY TO SHIP - REMIND THE OWNER (2026-11-21: "continue to remind me about the vehicle build ready to ship, we wont let it
