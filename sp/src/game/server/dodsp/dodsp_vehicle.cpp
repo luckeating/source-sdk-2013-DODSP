@@ -42,6 +42,7 @@
 #include "SoundEmitterSystem/isoundemittersystembase.h"
 #include "dodsp_factions.h"
 #include "dodsp_vehicle_armour.h"
+#include "dodsp_npc_motion.h"
 #include "soundchars.h"
 #include "smoke_trail.h"
 #include "itempents.h"
@@ -1163,7 +1164,7 @@ private:
 	void			SetTactic( int eTactic, int eWhy );
 	bool			InBand( float flDist, float *pflMin, float *pflMax );
 	// V2 weapons
-	void			WeaponThink( float dt );
+	void			WeaponThink( void );
 	bool			CalibrateTurret( void );
 	CBaseEntity		*FindTarget( void );
 	bool			TargetValid( CBaseEntity *pTarget, float flRange, bool bNeedSight );
@@ -1198,7 +1199,7 @@ private:
 	float			m_flDoorsStart;				// H3: when the doors' curve started (the dismount order; 0 = shut, never opened)
 	int				m_iDoorPose;				// the model's door pose parameter (looked up once; -2 = not yet, -1 none)
 	float			m_flDoorOpen;				// ... and the degrees it opens them at 1 (the model's "dodsp_doors")
-	void			DoorsThink( void );
+	void			DriveDoors( void );			// V2b2: every tick from DrivenTick
 	static float	DoorPoseFor( float flDeg, float flOpen );
 	float			m_flRiderGo[VEHICLE_MAX_SEATS];	// when each gets off (0 = not ordered / gone)
 	bool			m_bDismountOrder;
@@ -1304,6 +1305,17 @@ private:
 	float			m_flNextScan;
 	float			m_flTurretYaw;				// local to the hull, degrees (turret model's own front = 0)
 	float			m_flTurretPitch;			// degrees up
+	// V2b2: WeaponThink says where to aim, DrivenTick turns every part toward it every tick and stamps each part's clock
+	EHANDLE			m_hAimEnt;					// the target (the point rides with it), NULL = m_vecAimPoint is a world point
+	Vector			m_vecAimPoint;				// offset from m_hAimEnt's origin, or a world point
+	bool			m_bAimActive;				// false = back to the front
+	float			m_flTurretTurnRate;			// deg/s the turret turned on the last tick (its sound), not saved
+	float			m_flSteerWant;				// DriveThink's steering wish, wound toward every tick
+	void			DrivenTick( void );
+	void			AimTurret( const Vector &vecAimPoint, bool bAim, float dt );
+	void			PoseDriver( void );
+	void			StampPart( CBaseAnimating *pPart, bool bProp );
+	void			WindowWatchdog( void );
 	float			m_flNextGun;
 	float			m_flNextMGShot[VEHICLE_MAX_MGS], m_flMGBurstEnd[VEHICLE_MAX_MGS], m_flMGPauseUntil[VEHICLE_MAX_MGS];
 	// V2b: pintle guns you can see (one prop each), traversed by their gunner: yaw (the prop's) and pitch (its "mg_pitch"),
@@ -1396,6 +1408,7 @@ BEGIN_DATADESC( CDoDSPVehicle )
 	DEFINE_FIELD( m_hTurret, FIELD_EHANDLE ),
 	DEFINE_FIELD( m_flSpeed, FIELD_FLOAT ),
 	DEFINE_FIELD( m_flSteer, FIELD_FLOAT ),
+	DEFINE_FIELD( m_flSteerWant, FIELD_FLOAT ),
 	DEFINE_FIELD( m_flHeading, FIELD_FLOAT ),
 	DEFINE_FIELD( m_flMaxSpeedScale, FIELD_FLOAT ),
 	DEFINE_FIELD( m_bHasGoal, FIELD_BOOLEAN ),
@@ -1414,6 +1427,9 @@ BEGIN_DATADESC( CDoDSPVehicle )
 	DEFINE_FIELD( m_hForcedTarget, FIELD_EHANDLE ),
 	DEFINE_FIELD( m_bHoldFire, FIELD_BOOLEAN ),
 	DEFINE_FIELD( m_flTurretYaw, FIELD_FLOAT ),
+	DEFINE_FIELD( m_hAimEnt, FIELD_EHANDLE ),
+	DEFINE_FIELD( m_vecAimPoint, FIELD_VECTOR ),
+	DEFINE_FIELD( m_bAimActive, FIELD_BOOLEAN ),
 	DEFINE_FIELD( m_flTurretPitch, FIELD_FLOAT ),
 	DEFINE_AUTO_ARRAY( m_hMGGun, FIELD_EHANDLE ),
 	DEFINE_AUTO_ARRAY( m_flMGYaw, FIELD_FLOAT ),
@@ -1433,6 +1449,7 @@ BEGIN_DATADESC( CDoDSPVehicle )
 	DEFINE_OUTPUT( m_OnStuck, "OnStuck" ),
 	DEFINE_OUTPUT( m_OnNoRoute, "OnNoRoute" ),
 	DEFINE_THINKFUNC( DriveThink ),
+	DEFINE_THINKFUNC( DrivenTick ),
 	DEFINE_THINKFUNC( WreckThink ),
 	// V4
 	DEFINE_FIELD( m_eState, FIELD_INTEGER ),
@@ -1496,7 +1513,7 @@ CDoDSPVehicle::CDoDSPVehicle()
 	m_flNavCheckTime = 0.0f;
 	m_flHalfWidth = m_flHalfLength = m_flBodyHeight = 0.0f;
 	m_flWheelbase = 0.0f;
-	m_flSteer = 0.0f;
+	m_flSteer = m_flSteerWant = 0.0f;
 	m_bBodySprung = false;
 	m_nBodyKicks = 0;
 	m_flBodyKickPitch = m_flBodyKickRoll = 0.0f;
@@ -1521,6 +1538,9 @@ CDoDSPVehicle::CDoDSPVehicle()
 	m_bHoldFire = false;
 	m_flNextScan = 0.0f;
 	m_flTurretYaw = m_flTurretPitch = 0.0f;
+	m_vecAimPoint = vec3_origin;
+	m_bAimActive = false;
+	m_flTurretTurnRate = 0.0f;
 	m_flNextGun = 0.0f;
 	for ( int k = 0; k < VEHICLE_MAX_MGS; k++ )
 	{
@@ -1745,7 +1765,7 @@ void CDoDSPVehicle::Spawn( void )
 			DispatchSpawn( pTurret );
 			pTurret->SetParent( this );
 			pTurret->SetLocalOrigin( m_pType->vecTurretOffset );
-			pTurret->SetLocalAngles( vec3_angle );
+			pTurret->SetLocalAngles( vec3_angle );		// dodsp-lint: part placed
 			m_hTurret = pTurret;
 		}
 	}
@@ -1755,6 +1775,7 @@ void CDoDSPVehicle::Spawn( void )
 	SetThink( &CDoDSPVehicle::DriveThink );
 	SetNextThink( gpGlobals->curtime + VEHICLE_THINK );
 	SetMoveDoneTime( 1.0f );
+	SetContextThink( &CDoDSPVehicle::DrivenTick, gpGlobals->curtime + TICK_INTERVAL, "DrivenTick" );
 }
 
 // The body's size from the model, in the vehicle's own frame (forward / sideways / up) - one owner, called on
@@ -1852,6 +1873,8 @@ void CDoDSPVehicle::OnRestore( void )
 		m_pType = FindVehicleType( STRING( m_iszVehicleType ) );
 	if ( m_pType )
 		MeasureBody();
+	if ( GetNextThinkTick( "DrivenTick" ) == TICK_NEVER_THINK )		// a save from before V2b2
+		SetContextThink( &CDoDSPVehicle::DrivenTick, gpGlobals->curtime + TICK_INTERVAL, "DrivenTick" );
 }
 
 void CDoDSPVehicle::Activate( void )
@@ -2438,8 +2461,7 @@ void CDoDSPVehicle::DriveThink( void )
 	if ( !m_pType )
 		return;
 	RidersThink();
-	DoorsThink();
-	CrewSeatsThink();
+	CrewSeatsThink();			// (the doors' pose: DriveDoors, every tick from DrivenTick - V2b2)
 	if ( m_eState != VSTATE_FIGHTING )
 	{
 		DamageStateThink();		// burning / abandoned: no driving, no guns
@@ -2615,11 +2637,10 @@ void CDoDSPVehicle::DriveThink( void )
 		else if ( !m_bHasGoal )
 			flWantSteer = 0.0f;
 		flWantSteer = clamp( flWantSteer, -flLock, flLock );
-		float flStep = VEHICLE_STEER_RATE * dt;
-		m_flSteer = m_flSteer + clamp( flWantSteer - m_flSteer, -flStep, flStep );
+		m_flSteerWant = flWantSteer;		// V2b2: wound toward it every tick in DrivenTick (VEHICLE_STEER_RATE)
 	}
 	else if ( m_flSteer != 0.0f )
-		m_flSteer = 0.0f;
+		m_flSteer = m_flSteerWant = 0.0f;
 	Vector vecNext = vecPos + vecFwd * ( m_flSpeed * dt );
 	float flGroundZ;
 	QAngle angWant = BuildAngles( m_flHeading, vecNext, &flGroundZ );
@@ -2693,7 +2714,7 @@ void CDoDSPVehicle::DriveThink( void )
 		}
 	}
 
-	WeaponThink( dt );
+	WeaponThink();
 
 	if ( dodsp_vehicle_debug.GetBool() && m_Route.Count() )
 	{
@@ -3016,32 +3037,32 @@ bool CDoDSPVehicle::CalibrateTurret( void )
 		pT->GetPoseParameterRange( m_iPitchPose, m_flPoseMin, m_flPoseMax );
 	// measure in the turret's own frame, turret straight, barrel level
 	QAngle angSave = pT->GetLocalAngles();
-	pT->SetLocalAngles( vec3_angle );
+	pT->SetLocalAngles( vec3_angle );		// dodsp-lint: measuring
 	Vector vecLevel( 0, 0, 0 ), vecHigh( 0, 0, 0 ), vecLow( 0, 0, 0 );
 	if ( m_iMuzzleAttach > 0 )
 	{
 		Vector vecWorld;
 		if ( m_iPitchPose >= 0 )
-			pT->SetPoseParameter( m_iPitchPose, 0.0f );
+			pT->SetPoseParameter( m_iPitchPose, 0.0f );		// dodsp-lint: measuring
 		pT->InvalidateBoneCache();
 		pT->GetAttachment( m_iMuzzleAttach, vecWorld );
 		VectorITransform( vecWorld, pT->EntityToWorldTransform(), vecLevel );
 		if ( m_iPitchPose >= 0 )
 		{
-			pT->SetPoseParameter( m_iPitchPose, m_flPoseMax );
+			pT->SetPoseParameter( m_iPitchPose, m_flPoseMax );		// dodsp-lint: measuring
 			pT->InvalidateBoneCache();
 			pT->GetAttachment( m_iMuzzleAttach, vecWorld );
 			VectorITransform( vecWorld, pT->EntityToWorldTransform(), vecHigh );
-			pT->SetPoseParameter( m_iPitchPose, m_flPoseMin );
+			pT->SetPoseParameter( m_iPitchPose, m_flPoseMin );		// dodsp-lint: measuring
 			pT->InvalidateBoneCache();
 			pT->GetAttachment( m_iMuzzleAttach, vecWorld );
 			VectorITransform( vecWorld, pT->EntityToWorldTransform(), vecLow );
-			pT->SetPoseParameter( m_iPitchPose, 0.0f );
+			pT->SetPoseParameter( m_iPitchPose, 0.0f );		// dodsp-lint: measuring
 			pT->InvalidateBoneCache();
 		}
 		m_flTurretFwdOffset = ( vecLevel.Length2D() > 1.0f ) ? RAD2DEG( atan2f( vecLevel.y, vecLevel.x ) ) : 0.0f;
 	}
-	pT->SetLocalAngles( angSave );
+	pT->SetLocalAngles( angSave );		// dodsp-lint: measuring
 	m_flPitchSign = ( vecHigh.z >= vecLow.z ) ? 1.0f : -1.0f;
 	Msg( "DOD-SP vehicle %s (%s, %s): turret barrel faces %.0f deg in its model, barrel_pitch %s%.0f..%.0f (%s = up), muzzle %s; "
 		 "main gun %s, %d machine gun%s\n", Label(), m_pType->szName, DoDSP_FactionName( m_eFaction ), m_flTurretFwdOffset,
@@ -3469,7 +3490,7 @@ void CDoDSPVehicle::SpawnPintleGuns( void )
 		DispatchSpawn( pGun );
 		pGun->SetParent( this );
 		pGun->SetLocalOrigin( m.vecPintle );
-		pGun->SetLocalAngles( QAngle( 0, m_flMGYaw[k], 0 ) );
+		pGun->SetLocalAngles( QAngle( 0, m_flMGYaw[k], 0 ) );		// dodsp-lint: part placed
 		m_hMGGun[k] = pGun;
 	}
 }
@@ -3495,6 +3516,148 @@ void CDoDSPVehicle::MeasurePintleGun( int iMG )
 	if ( pGun && ( m_iMGPitchPose[iMG] < 0 || m_flMGPoseLo[iMG] > m.flPitchMin + 0.01f || m_flMGPoseHi[iMG] < m.flPitchMax - 0.01f ) )
 		Warning( "INVARIANT DOD-SP vehicle %s: machine gun '%s' model %s elevates only %.0f..%.0f (\"mg_pitch\"), the script wants %.0f..%.0f - "
 				 "it aims within what the model has\n", Label(), m.szName, m.szModel, m_flMGPoseLo[iMG], m_flMGPoseHi[iMG], m.flPitchMin, m.flPitchMax );
+}
+
+// V2b2: THE way the vehicle's code turns a part that isn't the vehicle itself (turret, pintle gun, a seated crewman's
+// pose) or its own poses: every tick, then the part's CLOCK is stamped. The engine draws a networked value at the time it
+// was stamped with - angles at the part's simulation time, poses at its anim time - and our parts had no clock running:
+// the gun/turret props (prop_dynamic with no default animation) never think, so their stamps stayed at spawn and every
+// new angle REPLACED the last one on screen (a 20 Hz staircase); a crewman's pose was stamped only at his own AI
+// thinks. V2b's gunner then lagged his gun by ~0.1 s and the gun stepped - the owner's "stuttering like before".
+// Props are also made "not simulated every tick" so their angles are drawn on the same window as poses (the NPC
+// window): gun and gunner reach the screen equally late, as in the preview (dodsp_tools/driven_sim.py).
+void CDoDSPVehicle::StampPart( CBaseAnimating *pPart, bool bProp )
+{
+	if ( !pPart )
+		return;
+	if ( bProp )
+	{
+		if ( pPart->IsSimulatedEveryTick() )
+			pPart->SetSimulatedEveryTick( false );		// dodsp-lint: driven part clock
+		pPart->SetSimulationTime( gpGlobals->curtime );
+	}
+	pPart->StudioFrameAdvance();
+}
+
+// V2b2: the turret toward the aim point in the hull's frame, else back to the front - one tick of it. Was WeaponThink's,
+// at 20 Hz. Barrel pitch only within the model's barrel_pitch.
+void CDoDSPVehicle::AimTurret( const Vector &vecAimPoint, bool bAim, float dt )
+{
+	CBaseAnimating *pT = m_hTurret.Get() ? m_hTurret->GetBaseAnimating() : NULL;
+	if ( !pT || !m_bTurretCalibrated )
+		return;
+	float flWantYaw = 0.0f, flWantPitch = 0.0f;
+	if ( bAim )
+	{
+		Vector vecLocal;
+		VectorIRotate( vecAimPoint - AimPivot(), EntityToWorldTransform(), vecLocal );
+		flWantYaw = RAD2DEG( atan2f( vecLocal.y, vecLocal.x ) ) - m_flTurretFwdOffset;
+		flWantPitch = RAD2DEG( atan2f( vecLocal.z, vecLocal.Length2D() ) );
+	}
+	float flOldYaw = m_flTurretYaw;
+	m_flTurretYaw = ApproachAngle( flWantYaw, m_flTurretYaw, TurretRate() * dt );
+	float flPitchMin = MIN( m_flPoseMin * m_flPitchSign, m_flPoseMax * m_flPitchSign );
+	float flPitchMax = MAX( m_flPoseMin * m_flPitchSign, m_flPoseMax * m_flPitchSign );
+	if ( m_iPitchPose < 0 )
+		flPitchMin = flPitchMax = 0.0f;
+	flWantPitch = clamp( flWantPitch, flPitchMin, flPitchMax );
+	m_flTurretPitch = Approach( flWantPitch, m_flTurretPitch, ( CanAim() ? m_pType->flPitchRate : 0.0f ) * dt );
+	m_flTurretTurnRate = fabs( AngleDiff( m_flTurretYaw, flOldYaw ) ) / MAX( dt, 0.001f );
+	pT->SetLocalAngles( QAngle( 0, m_flTurretYaw, 0 ) );
+	if ( m_iPitchPose >= 0 )
+		pT->SetPoseParameter( m_iPitchPose, m_flTurretPitch * m_flPitchSign );
+}
+
+// V2b2: the driver's hands on the wheel = THE steering angle (m_flSteer, + = left), every tick
+void CDoDSPVehicle::PoseDriver( void )
+{
+	float flLock = ( m_flWheelbase > 0.0f ) ? RAD2DEG( atanf( m_flWheelbase / MAX( m_pType->flMinTurnRadius, 50.0f ) ) ) : 0.0f;
+	if ( flLock <= 0.0f )
+		return;
+	for ( int i = 0; i < m_pType->crewSeats.Count() && i < VEHICLE_MAX_CREW_SEATS; i++ )
+	{
+		const VehicleType_t::CrewSeat_t &cs = m_pType->crewSeats[i];
+		CBaseAnimating *pAnim = m_hCrewSeat[i].Get() ? m_hCrewSeat[i]->GetBaseAnimating() : NULL;
+		if ( !cs.bSteer || !pAnim )
+			continue;
+		if ( m_iSteerPose == -2 )
+		{
+			m_iSteerPose = pAnim->LookupPoseParameter( "steer" );
+			if ( m_iSteerPose < 0 )
+				Warning( "INVARIANT DOD-SP vehicle %s: its %s's model has no \"steer\" pose parameter - he won't turn the wheel "
+						 "(recompile npc_ww2_anims_ride from the H2 pack)\n", Label(), g_pszCrewRole[cs.eRole] );
+		}
+		if ( m_iSteerPose >= 0 )
+			pAnim->SetPoseParameter( m_iSteerPose, clamp( m_flSteer / flLock, -1.0f, 1.0f ) );	// + = left, like m_flSteer
+	}
+}
+
+// V2b2: THE per-tick drive of everything the vehicle turns besides itself (see StampPart): the steering wound toward
+// DriveThink's wish, the turret and pintle guns toward WeaponThink's aim point (re-read every tick: a target's point
+// moves with it, the hull turns under the guns), the crew's poses, the doors - then every part's clock is stamped.
+// Runs every tick (a MOVETYPE_PUSH entity is simulated every tick, so a context think due next tick runs).
+void CDoDSPVehicle::DrivenTick( void )
+{
+	SetNextThink( gpGlobals->curtime + TICK_INTERVAL, "DrivenTick" );
+	if ( !m_pType )
+		return;
+	float dt = TICK_INTERVAL;
+	bool bFighting = m_eState == VSTATE_FIGHTING;
+	if ( bFighting )
+	{
+		if ( m_flWheelbase > 0.0f )
+		{
+			float flStep = VEHICLE_STEER_RATE * dt;
+			m_flSteer = m_flSteer + clamp( m_flSteerWant - m_flSteer, -flStep, flStep );
+		}
+		Vector vecAim = m_vecAimPoint;
+		bool bAim = m_bAimActive;
+		if ( m_hAimEnt.Get() )
+			vecAim += m_hAimEnt->GetAbsOrigin();
+		else if ( m_bAimActive && m_hAimEnt.IsValid() )
+			bAim = false;			// the target is gone since the last WeaponThink: back to the front until it says
+		AimTurret( vecAim, bAim, dt );
+		AimPintleGuns( vecAim, bAim, dt );
+	}
+	else
+		m_flTurretTurnRate = 0.0f;
+	PoseGunners();
+	PoseDriver();
+	DriveDoors();
+	WindowWatchdog();
+	StampPart( m_hTurret.Get() ? m_hTurret->GetBaseAnimating() : NULL, true );
+	for ( int k = 0; k < m_pType->nMGs && k < VEHICLE_MAX_MGS; k++ )
+		StampPart( m_hMGGun[k].Get() ? m_hMGGun[k]->GetBaseAnimating() : NULL, true );
+	for ( int i = 0; i < m_pType->crewSeats.Count() && i < VEHICLE_MAX_CREW_SEATS; i++ )
+	{
+		CBaseEntity *pMan = m_hCrewSeat[i].Get();
+		if ( pMan && pMan->IsAlive() )
+			StampPart( pMan->GetBaseAnimating(), false );	// living and seated: a dying man's own think plays his death
+	}
+	StampPart( this, false );		// its own poses (the doors)
+}
+
+// V2b2: INVARIANT - a gunner and his gun are drawn equally late. Gun props take the client's base window, NPCs the
+// wider of it and cl_interp_npcs (c_baseentity.cpp AdjustInterpolationAmount): a cl_interp_npcs above cl_interp puts
+// his hands behind the gun's grips while it swings. Once per map, and only for a vehicle with a crewed pintle gun.
+void CDoDSPVehicle::WindowWatchdog( void )
+{
+	static float s_flWarnedAt = -1.0f;
+	if ( s_flWarnedAt >= 0.0f && gpGlobals->curtime >= s_flWarnedAt )
+		return;
+	bool bGunner = false;
+	for ( int i = 0; i < m_pType->crewSeats.Count() && i < VEHICLE_MAX_CREW_SEATS; i++ )
+		if ( m_pType->crewSeats[i].iMans >= 0 && m_hCrewSeat[i].Get() )
+			bGunner = true;
+	if ( !bGunner )
+		return;
+	int nBase = CDoDSPNpcMotion::WindowTicks( false ), nNPC = CDoDSPNpcMotion::WindowTicks( true );
+	if ( nBase != nNPC )
+	{
+		s_flWarnedAt = gpGlobals->curtime;
+		Warning( "INVARIANT DOD-SP vehicle %s: the client draws NPCs %d ticks late but their guns %d (cl_interp_npcs is above "
+				 "cl_interp) - a gunner's hands trail his gun while it swings. Type: cl_interp_npcs 0\n", Label(), nNPC, nBase );
+	}
 }
 
 // V2b: THE one owner of where a pintle gun points: its gunner traverses it toward the aim point (inside the arc and its
@@ -3540,11 +3703,10 @@ void CDoDSPVehicle::AimPintleGuns( const Vector &vecAimPoint, bool bAim, float d
 			pGun->InvalidateBoneCache();
 		}
 	}
-	PoseGunners();
 }
 
-// V2b: each gunner's mg_yaw / mg_pitch = his gun's, on the same think the gun moved (his hands stay on its grips).
-// One owner; the gun's aim is AimPintleGuns'.
+// V2b: each gunner's mg_yaw / mg_pitch = his gun's, on the same tick the gun moved (his hands stay on its grips).
+// One owner; the gun's aim is AimPintleGuns'. Called from DrivenTick only (V2b2).
 void CDoDSPVehicle::PoseGunners( void )
 {
 	for ( int i = 0; i < m_pType->crewSeats.Count() && i < VEHICLE_MAX_CREW_SEATS; i++ )
@@ -3622,7 +3784,7 @@ void CDoDSPVehicle::FireHullMGs( CBaseEntity *pTarget, const Vector &vecAimPoint
 	}
 }
 
-void CDoDSPVehicle::WeaponThink( float dt )
+void CDoDSPVehicle::WeaponThink( void )
 {
 	// H3b: a vehicle's EYES don't depend on its guns - its crew sees. The halftrack has no gun yet (its MG42 is V2b),
 	// so this returned before the scan: m_hTarget never set, "its own eyes" in UpdateQuarry blind, and riders on
@@ -3652,39 +3814,18 @@ void CDoDSPVehicle::WeaponThink( float dt )
 		return;		// seen (UpdateQuarry's own eyes, the riders' contact) - nothing to aim or fire
 	CBaseEntity *pTarget = m_hTarget.Get();
 
-	// turn the turret and raise the barrel toward it (in the hull's frame), else back to the front
-	float flWantYaw = 0.0f, flWantPitch = 0.0f;
+	// WHERE to aim: a target in sight (at the point it sees); else where its enemy was last known (ready when he
+	// shows); else back to the front. V2b2: this think only says where - DrivenTick turns the turret and the pintle
+	// guns every tick toward the point as it moves (a target's point rides with the target).
 	Vector vecAimPoint = vec3_origin, vecSeenPoint = vec3_origin;
 	bool bSeen = pTarget && CanSee( pTarget, &vecSeenPoint );
 	bool bAimAtQuarry = !pTarget && m_hQuarry.Get() && gpGlobals->curtime - m_flQuarryTime < VEHICLE_FORGET_TIME;
 	if ( pTarget || bAimAtQuarry )
-	{
-		// a target in sight (at the point it sees); else where its enemy was last known (ready when he shows)
 		vecAimPoint = pTarget ? ( bSeen ? vecSeenPoint : pTarget->WorldSpaceCenter() ) : m_vecQuarryPos;
-		Vector vecLocal;
-		VectorIRotate( vecAimPoint - AimPivot(), EntityToWorldTransform(), vecLocal );
-		flWantYaw = RAD2DEG( atan2f( vecLocal.y, vecLocal.x ) ) - m_flTurretFwdOffset;
-		flWantPitch = RAD2DEG( atan2f( vecLocal.z, vecLocal.Length2D() ) );
-	}
-	float flOldYaw = m_flTurretYaw;
-	if ( m_hTurret.Get() )
-	{
-		m_flTurretYaw = ApproachAngle( flWantYaw, m_flTurretYaw, TurretRate() * dt );
-		float flPitchMin = MIN( m_flPoseMin * m_flPitchSign, m_flPoseMax * m_flPitchSign );
-		float flPitchMax = MAX( m_flPoseMin * m_flPitchSign, m_flPoseMax * m_flPitchSign );
-		if ( m_iPitchPose < 0 )
-			flPitchMin = flPitchMax = 0.0f;
-		flWantPitch = clamp( flWantPitch, flPitchMin, flPitchMax );
-		m_flTurretPitch = Approach( flWantPitch, m_flTurretPitch, ( CanAim() ? m_pType->flPitchRate : 0.0f ) * dt );
-		m_hTurret->SetLocalAngles( QAngle( 0, m_flTurretYaw, 0 ) );
-		CBaseAnimating *pT = dynamic_cast<CBaseAnimating *>( m_hTurret.Get() );
-		if ( pT && m_iPitchPose >= 0 )
-			pT->SetPoseParameter( m_iPitchPose, m_flTurretPitch * m_flPitchSign );
-	}
-	UpdateSounds( fabs( AngleDiff( m_flTurretYaw, flOldYaw ) ) / MAX( dt, 0.001f ) );
-	// V2b: pintle guns: their gunner aims them, at the target (where seen) or its last known spot, else back to the front
-	Vector vecPintleAim = pTarget ? ( bSeen ? vecSeenPoint : pTarget->WorldSpaceCenter() ) : m_vecQuarryPos;
-	AimPintleGuns( vecPintleAim, pTarget || bAimAtQuarry, dt );
+	m_hAimEnt = pTarget;
+	m_vecAimPoint = pTarget ? vecAimPoint - pTarget->GetAbsOrigin() : vecAimPoint;
+	m_bAimActive = pTarget || bAimAtQuarry;
+	UpdateSounds( m_flTurretTurnRate );
 
 	// reload clank shortly before the gun is ready again
 	if ( !m_bReloadSoundDone && m_pType->szReload[0] && now >= m_flNextGun - 2.0f )
@@ -4092,7 +4233,7 @@ void CDoDSPVehicle::UpdateDamageSmoke( void )
 		pSmoke->SetLifetime( -1 );
 		pSmoke->SetParent( this );
 		pSmoke->SetLocalOrigin( Vector( x * m_flHalfLength, 0.0f, m_flBodyHeight * 0.75f ) );
-		pSmoke->SetLocalAngles( QAngle( -90.0f, 0.0f, 0.0f ) );		// "directed" speed = straight up
+		pSmoke->SetLocalAngles( QAngle( -90.0f, 0.0f, 0.0f ) );		// "directed" speed = straight up (dodsp-lint: part placed)
 		pSmoke->SetMoveType( MOVETYPE_NONE );
 		m_hDamageSmoke = pSmoke;
 	}
@@ -4517,7 +4658,7 @@ float CDoDSPVehicle::DoorPoseFor( float flDeg, float flOpen )
 	return flDen > 1e-6f ? clamp( t / flDen, 0.0f, 1.0f ) : 0.0f;
 }
 
-void CDoDSPVehicle::DoorsThink( void )
+void CDoDSPVehicle::DriveDoors( void )
 {
 	const VehicleType_t::Doors_t &d = m_pType->doors;
 	if ( !d.nKeys || m_flDoorsStart <= 0.0f || m_eState == VSTATE_WRECKED )
@@ -4728,7 +4869,6 @@ void CDoDSPVehicle::CrewSeatsThink( void )
 		return;
 	if ( !m_bCrewSeatsSpawned && m_flCrewSeatsAt > 0.0f && gpGlobals->curtime >= m_flCrewSeatsAt )
 		SpawnCrewSeats();
-	float flLock = ( m_flWheelbase > 0.0f ) ? RAD2DEG( atanf( m_flWheelbase / MAX( m_pType->flMinTurnRadius, 50.0f ) ) ) : 0.0f;
 	for ( int i = 0; i < m_pType->crewSeats.Count() && i < VEHICLE_MAX_CREW_SEATS; i++ )
 	{
 		CBaseEntity *pMan = m_hCrewSeat[i].Get();
@@ -4751,20 +4891,8 @@ void CDoDSPVehicle::CrewSeatsThink( void )
 			pMan->TakeDamage( info );
 			continue;
 		}
-		if ( cs.bSteer && flLock > 0.0f )
-		{
-			CBaseAnimating *pAnim = pMan->GetBaseAnimating();
-			if ( m_iSteerPose == -2 )
-			{
-				m_iSteerPose = pAnim ? pAnim->LookupPoseParameter( "steer" ) : -1;
-				if ( m_iSteerPose < 0 )
-					Warning( "INVARIANT DOD-SP vehicle %s: its %s's model has no \"steer\" pose parameter - he won't turn the wheel "
-							 "(recompile npc_ww2_anims_ride from the H2 pack)\n", Label(), g_pszCrewRole[cs.eRole] );
-			}
-			if ( pAnim && m_iSteerPose >= 0 )
-				pAnim->SetPoseParameter( m_iSteerPose, clamp( m_flSteer / flLock, -1.0f, 1.0f ) );	// + = left, like m_flSteer
-		}
 	}
+	// (his hands on the wheel: PoseDriver, every tick from DrivenTick - V2b2)
 }
 
 void CDoDSPVehicle::SetBurning( bool bAmmo, CBaseEntity *pAttacker )

@@ -71,6 +71,14 @@ void CDoDSPNpcMotion::Reset( void )
 // One owner: the client's pose window for an NPC, in ticks, minus the one tick its position is drawn late. Read
 // from the local player's own settings (all user info), the way the client computes it (cdll_bounded_cvars.cpp
 // GetClientInterpAmount, c_baseentity.cpp AdjustInterpolationAmount).
+static int s_nBaseWindow = 8, s_nNpcWindow = 8;		// DelayTicks' last reading: any entity's window / an NPC's
+
+int CDoDSPNpcMotion::WindowTicks( bool bNPC )
+{
+	DelayTicks();			// (re)reads the player's settings at most once a second
+	return bNPC ? s_nNpcWindow : s_nBaseWindow;
+}
+
 int CDoDSPNpcMotion::DelayTicks( void )
 {
 	static float s_flChecked = -1.0f;
@@ -90,8 +98,10 @@ int CDoDSPNpcMotion::DelayTicks( void )
 	}
 	float flBase = MAX( flInterp, flRate > 0.0f ? flRatio / flRate : 0.0f );
 	int nWindow = TIME_TO_TICKS( flBase ) + 1;
+	s_nBaseWindow = nWindow;
 	if ( flNPCs > 0.0f )
 		nWindow = MAX( nWindow, TIME_TO_TICKS( flNPCs ) + 1 );
+	s_nNpcWindow = nWindow;
 	s_nTicks = clamp( nWindow - 1, 1, DODSP_MOTION_SAMPLES / 2 );
 	if ( s_nTicks != s_nPrinted )
 	{

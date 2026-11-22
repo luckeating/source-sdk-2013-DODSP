@@ -1358,6 +1358,29 @@ If you learn something like this, add it here in the same commit as the fix.
   the gunner killed slumps at the gun (CONFIRMED). Swing / firing / the riders' 20-degree arc NOT tested yet - the owner
   had no target ("no American infantry"). The PLAYER is one (allies, FirePintleGuns skips only vehicles): test with
   `god`, no notarget; for the riders' arc stand 1200..2500 units off (riders get off on contact within 1200).
+  SECOND LOOK (same build, owner as the target): the gun aims and fires at him - "yes it works" - BUT the gunner "is doing
+  that strange stuttering from before". Cause (engine code, not the poses): every part the vehicle turns had NO CLOCK.
+  The gun / turret props are prop_dynamic_override with no default animation - CDynamicProp::Spawn gives them no think,
+  so their simulation and anim times stay at spawn; the client stamps a networked angle with the simulation time and a
+  pose with the anim time (c_baseentity.cpp PostDataUpdate; a sample no newer than the last REPLACES it, interpolatedvar.h
+  AddToHead), so every 20 Hz angle landed in one step and the gun's mg_pitch was never even latched while it swung; the
+  gunner's pose was stamped only at his own AI thinks (0.1 s) and drawn cl_interp late - his hands trailed a stepping gun.
+  The tank turrets and the driver's steer pose had the same fault (slow enough not to show); so did the doors' pose.
+  **V2b2 PREPARED 2026-11-21 (not built).** DrivenTick (dodsp_vehicle.cpp, a context think EVERY tick - a MOVETYPE_PUSH
+  vehicle is simulated every tick) is THE driver of every part the vehicle turns: steering wound toward DriveThink's
+  wish (m_flSteerWant), turret (AimTurret, was WeaponThink's) and pintle guns toward WeaponThink's aim (m_hAimEnt +
+  m_vecAimPoint, re-read every tick: the point rides with the target, the hull turns under the guns), gunners' and the
+  driver's poses, the doors (DriveDoors, was DoorsThink); then StampPart stamps each part's clock (props: simulation +
+  anim time and NOT "simulated every tick", so their angles are drawn on the same window as poses; living seated crew:
+  anim time; the vehicle itself: anim time for the doors). WeaponThink only says where. Guards: lint check_vehicle_parts
+  (pose/angle writes only in the drivers or tagged `part placed` / `measuring`; the drivers called only from DrivenTick;
+  DrivenTick runs every tick and stamps turret, guns, crew and itself; StampPart stamps both clocks; Spawn + OnRestore
+  schedule it - each tested by breaking it), check_npc_motion's every-tick ban allows only StampPart's tagged line;
+  INVARIANT (WindowWatchdog) when cl_interp_npcs widens the NPC window past the gun's (hands would trail). Preview:
+  dodsp_tools/driven_sim.py - shipped: the gun stands still in ~60% of frames while turning and his hands trail 4 units;
+  V2b2: no still frames, hands on the grips. LESSON: a value the server sets on ANOTHER entity reaches the screen at that
+  entity's clock - stamp it, or it's drawn at the wrong time (V3e taught it for NPCs moved by code; V2b broke it for
+  props and poses driven by the vehicle). Undo: the V2b server.dll (build 44975332307).
 
 ## REQUIRED FIXES (owner said "mark it as a required fix" - do before calling the vehicles done)
 - **Carrier open top** (owner 2026-11-21): carrier.mdl / carrier_desert.mdl collision is one closed convex shell over the

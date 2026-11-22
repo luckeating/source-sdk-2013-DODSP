@@ -34,6 +34,7 @@ public:
 	void			Reset( void );			// save loaded / removed / teleported: nothing delayed any more
 
 	static int		DelayTicks( void );		// one owner: how many ticks late the client draws an NPC's pose, minus one
+	static int		WindowTicks( bool bNPC );	// V2b2: the client's draw window in ticks - an NPC's (cl_interp_npcs counts), or any other entity's
 
 private:
 	struct Sample_t { int nTick; Vector vecOrigin; QAngle angAngles; };

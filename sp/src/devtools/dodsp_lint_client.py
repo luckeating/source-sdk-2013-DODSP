@@ -633,8 +633,11 @@ def check_npc_motion():
             path = os.path.join(root, fn)
             text = open(path, encoding="utf-8", errors="replace").read()
             for n, line in enumerate(text.split("\n"), 1):
-                if re.search(r"\bSet(Animated|Simulated)EveryTick\s*\(", line.split("//")[0]):
-                    bad.append("%s:%d sets the every-tick flags - code-driven moves go through CDoDSPNpcMotion" % (fn, n))
+                if re.search(r"\bSet(Animated|Simulated)EveryTick\s*\(", line.split("//")[0]) and not (
+                        fn == "dodsp_vehicle.cpp" and "dodsp-lint: driven part clock" in line
+                        and "SetSimulatedEveryTick( false )" in line):
+                    bad.append("%s:%d sets the every-tick flags - code-driven moves go through CDoDSPNpcMotion (only "
+                               "the vehicle's StampPart may clear 'simulated every tick' on a prop it drives)" % (fn, n))
             if re.search(r"\bCDoDSPNpcMotion\s+m_\w+\s*;", text):
                 for need in ("DoDSP_NetworkOrigin", "DoDSP_NetworkAngles", "PostSimulate("):
                     if need not in text:
@@ -742,6 +745,52 @@ def check_vehicle_eyes():
     return []
 
 
+def check_vehicle_parts():
+    """V2b2: INVARIANT - everything the vehicle turns besides itself (turret, pintle guns, its seated crewmen's poses,
+    its own door pose) is turned every tick by DrivenTick and stamped on that part's own clock (StampPart). V2b set the
+    MG42's angles and its gunner's poses at the vehicle's 20 Hz think and stamped nothing: the gun props never think,
+    so the client replaced each angle in one step, and the gunner's pose came at his own thinks ~0.1 s later - the
+    gunner "stuttering" at a swinging gun. Rules: in dodsp_vehicle.cpp every SetPoseParameter / SetLocalAngles is in a
+    part driver (AimTurret, AimPintleGuns, PoseGunners, PoseDriver, DriveDoors) or tagged as a one-off placement /
+    measurement; the part drivers are called from DrivenTick only; DrivenTick stamps the turret, the guns, the crew
+    and itself; StampPart stamps the simulation time and the anim time. Preview: dodsp_tools/driven_sim.py."""
+    drivers = {"AimTurret", "AimPintleGuns", "PoseGunners", "PoseDriver", "DriveDoors"}
+    src = open(VEHICLE_CPP, encoding="latin-1").read()
+    bad = []
+    func = ""
+    for n, line in enumerate(src.split("\n"), 1):
+        m = re.match(r"^[A-Za-z][^(]*?(\w+)::~?(\w+)\s*\(", line)
+        if m:
+            func = m.group(2)
+        code = line.split("//")[0]
+        if re.search(r"\b(SetPoseParameter|SetLocalAngles)\s*\(", code):
+            if func not in drivers and "dodsp-lint: part placed" not in line and "dodsp-lint: measuring" not in line:
+                bad.append("dodsp_vehicle.cpp:%d (%s) turns a part outside the per-tick drivers - go through DrivenTick "
+                           "(or tag a one-off: dodsp-lint: part placed / measuring)" % (n, func))
+        for d in drivers:
+            if re.search(r"\b%s\s*\(" % d, code) and func not in ("DrivenTick", d) and not re.match(r"^\s*void\s", line):
+                bad.append("dodsp_vehicle.cpp:%d (%s) calls %s - only DrivenTick may (every tick, then the clocks)" % (n, func, d))
+    t = re.search(r"void CDoDSPVehicle::DrivenTick\(\s*void\s*\)\s*\{(.*?)\n\}", src, re.S)
+    body = "\n".join(l.split("//")[0] for l in t.group(1).split("\n")) if t else ""
+    if not t:
+        bad.append("dodsp_vehicle.cpp: CDoDSPVehicle::DrivenTick is gone")
+    else:
+        if not re.search(r'SetNextThink\(\s*gpGlobals->curtime \+ TICK_INTERVAL,\s*"DrivenTick"', body):
+            bad.append("dodsp_vehicle.cpp: DrivenTick no longer runs every tick")
+        for what, pat in (("the turret", r"StampPart\(\s*m_hTurret"), ("the guns", r"StampPart\(\s*m_hMGGun"),
+                          ("the crew", r"StampPart\(\s*pMan"), ("the vehicle", r"StampPart\(\s*this")):
+            if not re.search(pat, body):
+                bad.append("dodsp_vehicle.cpp: DrivenTick doesn't stamp %s's clock" % what)
+    st = re.search(r"void CDoDSPVehicle::StampPart\([^)]*\)\s*\{(.*?)\n\}", src, re.S)
+    if not st or "SetSimulationTime( gpGlobals->curtime )" not in st.group(1) or "StudioFrameAdvance()" not in st.group(1):
+        bad.append("dodsp_vehicle.cpp: StampPart must stamp the simulation time AND the anim time")
+    for ctx in ("Spawn", "OnRestore"):
+        m2 = re.search(r"void CDoDSPVehicle::%s\(\s*void\s*\)\s*\{(.*?)\n\}" % ctx, src, re.S)
+        if not m2 or '"DrivenTick"' not in m2.group(1):
+            bad.append("dodsp_vehicle.cpp: %s doesn't schedule DrivenTick" % ctx)
+    return bad
+
+
 def check_hashint():
     """INVARIANT: tier1's HashInt never reads outside its 256-entry table, for ANY int key. Valve's shifted the signed
     key, so a negative one (ACT_INVALID, asked of the activity hash by TranslateActivity) indexed before the table and
@@ -824,6 +873,7 @@ def main():
                      ("the vehicle body's rock or suspension is written outside its owners (H1, T1)", check_vehicle_body),
                      ("a vehicle's physics shadow can take its moves back (H3b)", check_vehicle_push),
                      ("a vehicle can be blind (H3b)", check_vehicle_eyes),
+                     ("a vehicle turns a part off its clock (V2b2)", check_vehicle_parts),
                      ("tier1's HashInt can read outside its table (a negative key crashed the server)", check_hashint)):
         vbad = fn()
         if vbad:
