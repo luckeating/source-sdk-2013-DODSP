@@ -939,6 +939,37 @@ def check_vehicle_body():
         bad.append("dodsp_vehicles.txt has a susp_travel key - suspension travel is measured into the model (vehicle_rig.py)")
     return bad
 
+def check_quat_normalize():
+    """INVARIANT: a quatinterp helper bone's matrix is a rotation. Valve's DoQuatInterpBone (public/bone_setup.cpp)
+    normalized its blended quaternion inside Assert(), which Release compiles out - the CoD3 rifleman's joint helpers
+    shrank by up to 6%. The normalize must be a statement of its own."""
+    path = os.path.join(ROOT, "public", "bone_setup.cpp")
+    src = open(path, encoding="latin-1").read()
+    m = re.search(r"void DoQuatInterpBone\(.*?\n\}", src, re.S)
+    if not m:
+        return ["bone_setup.cpp: DoQuatInterpBone not found"]
+    body = re.sub(r"//[^\n]*", "", m.group(0))
+    if re.search(r"Assert\s*\([^;]*QuaternionNormalize", body):
+        return ["bone_setup.cpp: DoQuatInterpBone normalizes inside Assert() - gone in Release"]
+    if not re.search(r"^\s*(float\s+\w+\s*=\s*)?QuaternionNormalize\(\s*quat\s*\)", body, re.M):
+        return ["bone_setup.cpp: DoQuatInterpBone must normalize the blended quaternion before QuaternionMatrix"]
+    return []
+
+
+def check_support_grip():
+    """N1 (2026-11-22): the animation packs put the left hand on DoD's K98 grip (dodsp_tools/support_grip.py) and stop
+    over its bar. Both CoD pack builders must run that solve and its check."""
+    tools = os.path.join(ROOT, "..", "..", "dodsp_tools")
+    bad = []
+    for f, needs in (("build_ww2_pack.py", ("GRIP.solve(", "GRIP_REPORT.check(")),
+                     ("retarget_cod1.py", ("self.support.solve(",)),
+                     ("build_cod1_pack.py", ("rt.grip_report.check(",)),
+                     ("cod1_setup.py", ("rt.support = Grip(",))):
+        src = open(os.path.join(tools, f), encoding="latin-1").read()
+        bad += ["dodsp_tools/%s: no %s" % (f, n) for n in needs if n not in src]
+    return bad
+
+
 def main():
     bad = []
     sight_bad = check_vehicle_sight()
@@ -959,7 +990,9 @@ def main():
                      ("a vehicle turns a part off its clock (V2b2)", check_vehicle_parts),
                      ("a V5 vehicle fix was undone (hull aim, line of fire, jolt, body attachment)", check_vehicle_v5),
                      ("tier1's HashInt can read outside its table (a negative key crashed the server)", check_hashint),
-                     ("the soldier's joint helpers aren't recomputed after the client's arm fixes", check_procedural_last)):
+                     ("the soldier's joint helpers aren't recomputed after the client's arm fixes", check_procedural_last),
+                     ("a joint helper's quaternion isn't normalized in Release", check_quat_normalize),
+                     ("a CoD pack builder skips the K98 support-grip solve (N1)", check_support_grip)):
         vbad = fn()
         if vbad:
             print("dodsp_lint_client: %s:" % what)

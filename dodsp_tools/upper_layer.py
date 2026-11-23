@@ -58,7 +58,7 @@ def upper_sequence(seqname, smd, activity, nframes):
     return out
 
 
-MP40_MUZZLE = np.array([0.8, 4.5, 26.5])     # w_mp40 muzzle, in its weapon_bone frame
+from gun_follow import MP40_MUZZLE     # w_mp40 muzzle, in its weapon_bone frame (one owner)
 MIN_TRAVEL = 12.0                             # feet must end this far away for a pain to carry motion
 HIP_SPIN_KEEP = 0.0                           # share of CoD's hip spin kept as torso twist
 TWIST_LIMIT = math.radians(45)                # torso twist over DoD's hips is eased toward at most this

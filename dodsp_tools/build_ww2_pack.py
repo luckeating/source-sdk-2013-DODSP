@@ -20,7 +20,8 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(__file__))
 from smd import SMD
 from upper_layer import weightlist_lines, upper_sequence, ikchain_lines, hand_release_lines, rebase_upper, walkframe_lines
-from gun_follow import GunReference, place_guns, inv
+from gun_follow import GunReference, place_guns, inv, is_loop
+from support_grip import Grip, Report
 
 # Upper-body pain overlays (see upper_layer.py): source animation -> activity
 UPPER_PAINS = {'a_stand_helmet_hit': 'ACT_WW2_UPPER_PAIN_HEAD',
@@ -160,6 +161,10 @@ GUN_REF = GunReference(_W[_r.index('ValveBiped.Bip01_R_Hand')], _W[_r.index('Val
                        _W[_r.index('ValveBiped.Weapon_bone')])
 GUN_OFFSETS = [inv(GUN_REF.rel_R) @ GRIP_MP40, inv(GUN_REF.rel_R) @ GRIP_K98]   # weapon_bone, weapon_bone_left
 holder_stats = {}
+# N1 (2026-11-22): the left hand onto DoD's K98 grip wherever the source holds the gun two-handed (support_grip.py)
+GRIP = Grip(DOD_BOLT)
+GRIP_OTHER_GUN = re.compile(r'(mg42|30cal|pistol|rocket|panzer|flak|mortar)', re.I)
+GRIP_REPORT = Report()
 
 def process(src, dst):
     s = SMD(src)
@@ -187,11 +192,20 @@ def process(src, dst):
     if has_gun:
         guns, labels = place_guns(GUN_REF, src_frames, dod_frames, GUN_OFFSETS)
         holder_stats[os.path.basename(src)] = labels
+        sw = GRIP.support_weights(src_frames, labels, GUN_OFFSETS[1], is_loop(src_frames), GUN_REF.rel_R)
+        if GRIP_OTHER_GUN.search(os.path.basename(src)):
+            sw = [(0.0, 0.0)] * len(sw)   # made for another gun (MG team, pistol, rocket): the K98's grip isn't its grip
     else:
         guns = [[W[rh] @ GRIP_MP40, W[rh] @ GRIP_K98] for W in dod_worlds]
-    for (_, f), W, (g40, g98) in zip(s.frames, dod_worlds, guns):
+        sw = [(0.0, 0.0)] * len(dod_worlds)      # no source gun: where the left hand belongs is unknown - CoD's arm stays
+    before, after = [], []
+    for (_, f), W, (g40, g98), (w, slide) in zip(s.frames, dod_worlds, guns, sw):
+        before.append(GRIP.solve(s.nodes, dict(f), g98, 0.0)[1:])
+        Lw, miss, deg, short, slid = GRIP.solve(s.nodes, f, g98, w, slide)
+        after.append((miss, deg, short, slid))
         f[wr] = local_from(W[rh], g40)    # parent: right hand
-        f[wl] = local_from(W[lh], g98)    # parent: left hand
+        f[wl] = local_from(Lw, g98)       # parent: left hand (as solved), so the rifle stays where gun_follow put it
+    GRIP_REPORT.add(os.path.basename(dst), [w for w, _ in sw], before, after)
     s.write(dst)
     return len(s.frames)
 
@@ -204,6 +218,8 @@ frames = {}
 for a in used_anims:
     smdfile, _ = animations[a]
     frames[a] = process(os.path.join(SRC_DIR, smdfile), os.path.join(OUT, f'ww2_{a}.smd'))
+GRIP_REPORT.check(MODEL_NAME)
+GRIP_REPORT.write(os.path.join(OUT, 'SUPPORT_GRIP.txt'))
 
 # The low/mid-wall cover set fires ~18 deg to the side of the body's facing (CoD2 soldiers
 # lean into the wall). The NPC code points his facing at the enemy, so turn the whole set

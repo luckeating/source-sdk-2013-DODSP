@@ -391,6 +391,23 @@ If you learn something like this, add it here in the same commit as the fix.
   the right hand (weapon_bone) so blends stop swinging it. Engine facts for later stages: client ground IK (CIKContext,
   IK_GROUND) runs for models with ikchains but plants only where a sequence has ikrules (4 do); $jigglebone, sequence
   autolayers and the transition graph are all supported and unused.
+  **N1 PREPARED 2026-11-22 (owner: "start the k98 build").** dodsp_tools/support_grip.py = THE owner of the support
+  hand: both CoD pack builders solve the left arm (two-bone IK, elbow in the animation's plane, clavicle forward up to
+  20 deg when out of reach, then along the rifle toward the source's own hold) onto DoD's K98 grip wherever the SOURCE
+  holds its rifle two-handed (left hand within 5 units of the barrel line, -10..+7 along it from DoD's grip mapped
+  into the source gun frame; the right hand on its trigger grip - CoD1's right-side corners shoulder the rifle
+  LEFT-handed; not where the gun follows the left hand; not MG/pistol/rocket animations). Builders stop over 1 unit
+  (support_grip.Report). Result: 53 CoD2 + 154 CoD1 animations hold two-handed somewhere, every such frame on the
+  grip; only the left arm bones + weapon_bone_left change, QCs identical. Lint check_support_grip.
+  CORRECTION TO THE AUDIT: its 11.1-unit median counted every frame of an animation that holds the rifle somewhere
+  (hands on helmets, grenades, the ground, left-shouldered corners). In frames really held two-handed the miss was
+  3-6 units (worst 11.4; 13 animations over 8) - inside SupportHandIK's full band, so the runtime already fixed most of
+  it. The bake is right but is NOT the whole story of "wrong in every animation". Client diagnostic for the next look:
+  `dodsp_grip_report` (c_npc_german_soldier.cpp MeasureGrip): the aimed K98 man's sequence, DoD set or CoD pack, the
+  rifle vs DoD's K98 hold in the right hand, the left hand vs the grip before / after the client fixes.
+  TRIED, DROPPED: sliding a LEFT-held K98 onto DoD's grip (right hand 1-2 units further off the trigger in every combat
+  run). Recovered the main packs' build commands (ANIMATIONS.md; rifleman_reference.py rebuilds the German reference
+  from his compiled .mdl - reproduces the delivered CoD1 pack exactly but for the unused L_Knee). Ride pack not touched.
 
 ## Open known issues (lighting)
 - The door entity doesn't cast into the sun cascades.

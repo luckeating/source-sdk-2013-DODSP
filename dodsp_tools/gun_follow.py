@@ -19,6 +19,9 @@ All matrices are 4x4 numpy arrays in model space.
 import math
 import numpy as np
 
+K98_MUZZLE = np.array([1.3, 4.3, 35.5])     # w_k98 muzzle_flash, in its weapon_bone_left frame
+MP40_MUZZLE = np.array([0.8, 4.5, 26.5])    # w_mp40 muzzle_flash, in its weapon_bone frame
+
 RIGHT_POS_TOL = 4.0      # units: right hand may slide this far along its grip and still hold
 RIGHT_ROT_TOL = 30.0     # degrees
 LEFT_POS_TOL = 5.0       # units from the left hand's reference grip spot

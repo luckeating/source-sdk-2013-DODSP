@@ -1,10 +1,10 @@
 """Shared setup for retargeting the CoD1 'assault' decompile onto the DoD German."""
-import numpy as np, math
+import numpy as np, math, re
+from support_grip import Grip
 from smd import SMD
 from retarget_cod1 import Retargeter, worlds
 
-K98_MUZZLE = np.array([1.3, 4.3, 35.5])     # w_k98 muzzle_flash, in its weapon_bone_left frame
-MP40_MUZZLE = np.array([0.8, 4.5, 26.5])    # w_mp40 muzzle_flash, in its weapon_bone frame
+from gun_follow import K98_MUZZLE, MP40_MUZZLE    # the gun models' facts live with the gun placement
 
 def _grip(path, bone):
     s = SMD(path); W = worlds(s, s.frames[0][1])
@@ -33,6 +33,8 @@ def make_retargeter(assault_dir, dod_dir, dod_ref):
     g40 = _grip(f'{dod_dir}/dod_player_shared_anim_@StandAim_MP40.smd', 'ValveBiped.weapon_bone')
     g98 = _grip(f'{dod_dir}/dod_player_shared_anim_@StandAim_BOLT.smd', 'ValveBiped.weapon_bone_left')
     rt = Retargeter(f'{assault_dir}/assault_anim_@ragdoll.smd', dod_ref, g40, g98, offs)
+    rt.support = Grip(f'{dod_dir}/dod_player_shared_anim_@StandAim_BOLT.smd')        # N1: the left hand on DoD's K98 grip
+    rt.grip_other_gun = re.compile(r'(^|_)(p|pc|ps|mg42[ps]?|b30s|lmg|rocket|flame)(_|\.|$)|pistol|panzer', re.I)
     # Hands: CoD1's rest pose has the wrists turned, so the rest-to-rest comparison can't be
     # trusted for them. The hand bones point the same way in both rigs (checked against CoD1's
     # gun); what differs is the roll about that axis. It's measured from the animations: the

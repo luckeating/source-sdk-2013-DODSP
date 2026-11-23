@@ -202,6 +202,19 @@ Gameplay with the A4a set is right; these are visual and wait for a full animati
 3. Rebuild the pack, recompile `npc_german_rifleman.qc`, and regenerate the matching `SEQUENCES*.txt`.
 
 
+## The two main packs - THE commands (recovered 2026-11-22, N1)
+
+German reference = the rifleman's compiled bones (the original reference SMD is gone):
+
+    python3 -I rifleman_reference.py <npc_german_rifleman.mdl> <dod_player_shared_anim_a_reference.smd> <ref.smd>
+    python3 -I build_ww2_pack.py <Ranger decompile> american_ranger_normandy__2_2.qc <ref.smd>
+        <dod_player_shared_anim_@StandAim_BOLT.smd> <dod_player_shared_anim_@StandAim_MP40.smd> <ww2 out>
+    python3 -I build_cod1_pack.py <Assault decompile> <dod_player_shared dir> <ref.smd> <ww2 out>/ww2_skeleton.smd <cod1 out>
+
+Before N1 these reproduced the delivered packs (CoD1: every SMD exactly but the unused L_Knee; CoD2: within 2e-5).
+Since N1 both builders solve the left arm onto DoD's K98 grip (support_grip.py) and stop over its bar; each writes
+SUPPORT_GRIP.txt / SUPPORT_GRIP_COD1.txt (per animation: frames held two-handed, worst miss before, after).
+
 ## The ride pack (npc_ww2_anims_ride.mdl) - THE command (recovered 2026-11-20: it reproduces the delivered pack byte for byte)
 
 Source: the owner's Crowbar decompile of the CoD2 officer port (`german_normandy_officer.qc` + SMDs), the German rifleman

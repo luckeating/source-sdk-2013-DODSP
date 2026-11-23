@@ -11,11 +11,12 @@ Spine1 and Spine4. Guns: follow CoD1's own weapon tag through whichever hand hol
 it (gun_follow.py), calibrated on the aim pose so the barrel points where the CoD
 animator aimed it and the grip sits at DoD's grip.
 """
-import math, itertools
+import math, itertools, os, re
 import numpy as np
 from smd import SMD
 from cod1_map import cod1_to_dod
-from gun_follow import GunReference, place_guns, inv as ginv
+from gun_follow import GunReference, place_guns, is_loop, inv as ginv
+from support_grip import Report
 
 def m4(R, t):
     M = np.eye(4); M[:3, :3] = R; M[:3, 3] = t; return M
@@ -157,6 +158,9 @@ class Retargeter:
             G = np.eye(4); G[:3, :3] = rel[:3, :3] @ self.gun_off[key]; G[:3, 3] = grip[:3, 3]
             self.gun_O.append(ginv(rel) @ G)
         self.holder_stats = {}
+        # N1 (2026-11-22, support_grip.py): the left hand on DoD's K98 grip - make_retargeter sets self.support
+        # (support_grip.Grip of DoD's StandAim_BOLT); the report stops build_cod1_pack.py over its bar
+        self.grip_report = Report()
 
     def convert(self, src_path, dst_path):
         s = SMD(src_path)
@@ -166,14 +170,26 @@ class Retargeter:
         bones = [self.dr.index('ValveBiped.weapon_bone'), self.dr.index('ValveBiped.weapon_bone_left')]
         parents = [rh, lh]
         if all(r[1] is not None for r in res):
-            guns, labels = place_guns(self.gun_ref, [r[1] for r in res], [r[2] for r in res], self.gun_O, self.scale)
+            src = [r[1] for r in res]
+            guns, labels = place_guns(self.gun_ref, src, [r[2] for r in res], self.gun_O, self.scale)
             self.holder_stats[src_path] = labels
-        else:   # no CoD1 gun tag: DoD grip in the right hand
+            sw = self.support.support_weights(src, labels, self.gun_O[1], is_loop(src), self.gun_ref.rel_R) if getattr(self, 'support', None) else [(0.0, 0.0)] * len(res)
+            if getattr(self, 'grip_other_gun', None) and self.grip_other_gun.search(os.path.basename(src_path)):
+                sw = [(0.0, 0.0)] * len(res)   # made for another gun (pistol, MG, rocket): the K98's grip isn't its grip
+        else:   # no CoD1 gun tag: DoD grip in the right hand; where the left hand belongs is unknown - CoD's arm stays
             guns = [[r[2][0] @ g for g in (self.grip_mp40, self.grip_k98)] for r in res]
-        for (fo, _, hands), g in zip(res, guns):
+            sw = [(0.0, 0.0)] * len(res)
+        before, after = [], []
+        for (fo, _, hands), g, (w, slide) in zip(res, guns, sw):
+            if getattr(self, 'support', None):
+                before.append(self.support.solve(out.nodes, dict(fo), g[1], 0.0)[1:])
+                Lw, miss, deg, short, slid = self.support.solve(out.nodes, fo, g[1], w, slide)
+                after.append((miss, deg, short, slid)); hands = (hands[0], Lw)
             for j, par, M in zip(bones, parents, g):
                 L = ginv(hands[0 if par == rh else 1]) @ M
                 fo[j] = tuple(L[:3, 3]) + euler(L[:3, :3])
+        if getattr(self, 'support', None):
+            self.grip_report.add(os.path.basename(dst_path), [w for w, _ in sw], before, after)
         out.frames = [(t, r[0]) for (t, _), r in zip(s.frames, res)]
         out.write(dst_path)
         return len(out.frames)

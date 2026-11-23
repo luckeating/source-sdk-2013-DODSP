@@ -106,6 +106,8 @@ for name, b in seqs:
         body.append('}')
         rows.append((seqname, act, smds[0], converted[smds[0]][1]))
 
+rt.grip_report.check('german\\npc_ww2_anims_cod1.mdl')     # N1: stops the build if a held frame misses DoD's K98 grip
+rt.grip_report.write(os.path.join(OUT, 'SUPPORT_GRIP_COD1.txt'))
 for p in used_params: L.append(poseparams[p])
 L += ikchain_lines()
 L += weightlist_lines(SMD(DOD_REF).nodes)

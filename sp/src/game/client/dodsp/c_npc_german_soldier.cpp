@@ -32,6 +32,7 @@
 #include "bone_setup.h"
 #include "ragdoll.h"
 #include "vphysics_interface.h"
+#include "view.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -53,6 +54,11 @@ static const matrix3x4_t s_GripLeftHung(	-0.58605f, 0.40105f, 0.70406f, 2.90256f
 static const matrix3x4_t s_GripRightHung(	-0.18726f, 0.97583f, 0.11260f, 2.64628f,
 											0.26099f, -0.06109f, 0.96341f, -0.17044f,
 											0.94701f, 0.20980f, -0.24324f, 12.66309f );
+// DoD's K98 in the right hand (weapon_bone_left in the right hand's space, StandAim_BOLT: every BOLT pose but the
+// prone crawl holds it exactly here) - what dodsp_grip_report compares the animation's rifle with.
+static const matrix3x4_t s_RifleInRHand(	-0.00787f, 0.23146f, 0.97281f, 0.00277f,
+											-0.94948f, -0.30696f, 0.06535f, -0.00008f,
+											0.31374f, -0.92315f, 0.22218f, 0.00042f );
 #define LHAND_FULL_DIST		8.0f	// CoD hand this close to DoD's grip: put it right on
 #define LHAND_FREE_DIST		15.0f	// this far: the CoD hand has let go, leave it
 #define LHAND_GRIP_DIST		6.0f	// the hand only takes DoD's grip orientation this close...
@@ -126,6 +132,23 @@ private:
 	void	ApplyHitKick( CStudioHdr *pStudioHdr );
 	void	SupportHandIK( CStudioHdr *pStudioHdr );
 	void	RecomputeProceduralBones( CStudioHdr *pStudioHdr, int boneMask );
+	void	MeasureGrip( CStudioHdr *pStudioHdr, bool bAfterFixes );
+public:
+	~C_NPC_GermanSoldier();
+	// N1 (2026-11-22): what the K98 hold looks like on screen, for dodsp_grip_report - measured in BuildTransformations
+	// from the animation as blended (before the client's fixes) and from the final pose (after them)
+	struct GripDiag_t
+	{
+		bool	bK98;
+		float	flRifleOff, flRifleDeg;		// the animation's rifle vs DoD's K98 hold in the right hand
+		float	flHandBefore, flHandAfter;	// left hand to DoD's grip on the rifle (units)
+		float	flCoD, flIK;				// CoD share of the pose, the support-hand IK's weight
+		bool	bBlending, bRifleHeld;
+		float	flTime;
+	};
+	GripDiag_t	m_Grip;
+	static CUtlVector<C_NPC_GermanSoldier *> s_All;
+private:
 	void	SteadyRifleThroughBlends( CStudioHdr *pStudioHdr );
 	bool	IsBlending( void );
 	bool	IsCoDSequence( CStudioHdr *pStudioHdr, int iSeq );
@@ -166,7 +189,16 @@ C_NPC_GermanSoldier::C_NPC_GermanSoldier()
 	SetIdentityMatrix( m_matRifleInRHand );
 	m_bRifleHeld = m_bRifleCatchingUp = false;
 	m_flRifleTime = 0.0f;
+	memset( &m_Grip, 0, sizeof( m_Grip ) );
+	s_All.AddToTail( this );
 }
+
+C_NPC_GermanSoldier::~C_NPC_GermanSoldier()
+{
+	s_All.FindAndRemove( this );
+}
+
+CUtlVector<C_NPC_GermanSoldier *> C_NPC_GermanSoldier::s_All;
 
 C_ClientRagdoll *C_NPC_GermanSoldier::CreateClientRagdoll( bool bRestoring )
 {
@@ -249,11 +281,102 @@ void C_NPC_GermanSoldier::BuildTransformations( CStudioHdr *pStudioHdr, Vector *
 	if ( !pStudioHdr )
 		return;
 
+	MeasureGrip( pStudioHdr, false );	// the animation's own hold (dodsp_grip_report)
 	ApplyHitKick( pStudioHdr );		// moves the torso; arms and gun ride along
 	SteadyRifleThroughBlends( pStudioHdr );	// the K98 stays in the right hand while poses cross-fade
 	SupportHandIK( pStudioHdr );	// then the support hand onto the gun
+	MeasureGrip( pStudioHdr, true );	// the hold on screen
 	RecomputeProceduralBones( pStudioHdr, boneMask );	// LAST: the joint helpers follow whatever the fixes above moved
 }
+
+//-----------------------------------------------------------------------------
+// N1 (2026-11-22): the K98 hold as the screen shows it. The packs now put the support hand on DoD's grip wherever the
+// CoD animation holds the rifle two-handed (dodsp_tools/support_grip.py); the owner still saw K98 men holding the rifle
+// wrong "in every animation", and an animation file can't say which sequence, which DoD weapon set or which client fix
+// is on screen. MeasureGrip records it every frame; dodsp_grip_report prints it for the man under the crosshair.
+//-----------------------------------------------------------------------------
+void C_NPC_GermanSoldier::MeasureGrip( CStudioHdr *pStudioHdr, bool bAfterFixes )
+{
+	C_BaseCombatWeapon *pWeapon = GetActiveWeapon();
+	CStudioHdr *pWeaponHdr = pWeapon ? pWeapon->GetModelPtr() : NULL;
+	const int iGun = Bone( pStudioHdr, "ValveBiped.weapon_bone_left" );
+	const int iRH = Bone( pStudioHdr, "ValveBiped.Bip01_R_Hand" );
+	const int iLH = Bone( pStudioHdr, "ValveBiped.Bip01_L_Hand" );
+	m_Grip.bK98 = pWeaponHdr && Studio_BoneIndexByName( pWeaponHdr, "ValveBiped.weapon_bone_left" ) >= 0 && iGun >= 0 && iRH >= 0 && iLH >= 0;
+	if ( !m_Grip.bK98 )
+		return;
+
+	matrix3x4_t matGrip;
+	ConcatTransforms( GetBone( iGun ), s_GripLeftHung, matGrip );
+	Vector vecGrip, vecHand;
+	MatrixGetColumn( matGrip, 3, vecGrip );
+	MatrixGetColumn( GetBone( iLH ), 3, vecHand );
+	float flHand = ( vecHand - vecGrip ).Length();
+	if ( bAfterFixes )
+	{
+		m_Grip.flHandAfter = flHand;
+		m_Grip.flIK = m_flLHandWeight * clamp( cl_npc_german_lhand_ik.GetFloat(), 0.0f, 1.0f );
+		m_Grip.bRifleHeld = m_bRifleHeld && m_bRifleCatchingUp;
+		m_Grip.flTime = gpGlobals->curtime;
+		return;
+	}
+	m_Grip.flHandBefore = flHand;
+	m_Grip.flCoD = CoDWeight( pStudioHdr );
+	m_Grip.bBlending = IsBlending();
+
+	// the rifle in the right hand vs DoD's
+	matrix3x4_t matHandInv, matRel;
+	MatrixInvert( GetBone( iRH ), matHandInv );
+	ConcatTransforms( matHandInv, GetBone( iGun ), matRel );
+	Quaternion qRel, qDoD;
+	Vector vecRel, vecDoD;
+	MatrixAngles( matRel, qRel, vecRel );
+	MatrixAngles( s_RifleInRHand, qDoD, vecDoD );
+	m_Grip.flRifleOff = ( vecRel - vecDoD ).Length();
+	m_Grip.flRifleDeg = QuaternionAngleDiff( qRel, qDoD );
+}
+
+static void DoDSP_GripReport( void )
+{
+	// the K98 man nearest the middle of the screen (within 30 degrees), else the nearest K98 man
+	const Vector &vecEye = MainViewOrigin(), &vecFwd = MainViewForward();
+	C_NPC_GermanSoldier *pBest = NULL;
+	float flBest = -2.0f, flNear = FLT_MAX;
+	C_NPC_GermanSoldier *pNear = NULL;
+	int nK98 = 0, nOffGun = 0, nRifleOff = 0;
+	for ( int i = 0; i < C_NPC_GermanSoldier::s_All.Count(); i++ )
+	{
+		C_NPC_GermanSoldier *p = C_NPC_GermanSoldier::s_All[i];
+		if ( !p || p->IsDormant() || !p->m_Grip.bK98 || gpGlobals->curtime - p->m_Grip.flTime > 1.0f )
+			continue;
+		nK98++;
+		nOffGun += p->m_Grip.flHandAfter > 3.0f;
+		nRifleOff += p->m_Grip.flRifleOff > 2.0f || p->m_Grip.flRifleDeg > 10.0f;
+		Vector d = p->WorldSpaceCenter() - vecEye;
+		float flDist = VectorNormalize( d );
+		float flDot = DotProduct( d, vecFwd );
+		if ( flDot > 0.866f && flDot > flBest ) { flBest = flDot; pBest = p; }
+		if ( flDist < flNear ) { flNear = flDist; pNear = p; }
+	}
+	C_NPC_GermanSoldier *p = pBest ? pBest : pNear;
+	if ( !p )
+	{
+		Msg( "DOD-SP grip: no German soldier with a K98 in view (drawn in the last second)\n" );
+		return;
+	}
+	const C_NPC_GermanSoldier::GripDiag_t &g = p->m_Grip;
+	CStudioHdr *pHdr = p->GetModelPtr();
+	int iSeq = p->GetSequence();
+	const char *pszSeq = ( pHdr && iSeq >= 0 && iSeq < pHdr->GetNumSeq() ) ? pHdr->pSeqdesc( iSeq ).pszLabel() : "?";
+	Msg( "DOD-SP grip: #%d %s seq %s (%s) | rifle vs DoD's K98 hold %.1f units %.0f deg | left hand to grip: animation "
+		 "%.1f, on screen %.1f | CoD share %.2f, hand IK %.2f%s%s | K98 men in view: %d, hand off the grip %d, rifle off %d\n",
+		 p->entindex(), p->GetModel() ? modelinfo->GetModelName( p->GetModel() ) : "?", pszSeq, g.flCoD > 0.5f ? "CoD pack" : "DoD set",
+		 g.flRifleOff, g.flRifleDeg, g.flHandBefore, g.flHandAfter, g.flCoD, g.flIK,
+		 g.bBlending ? ", blending" : "", g.bRifleHeld ? ", rifle held through the blend" : "", nK98, nOffGun, nRifleOff );
+}
+static ConCommand dodsp_grip_report( "dodsp_grip_report", DoDSP_GripReport, "N1: how the K98 man under the crosshair holds "
+	"his rifle right now - sequence, its source, the rifle vs DoD's hold, the left hand vs DoD's grip before and after "
+	"the client's fixes." );
 
 //-----------------------------------------------------------------------------
 // The model's procedural bones (the half-angle joint helpers, $proceduralbones: each turns half as far as its joint's

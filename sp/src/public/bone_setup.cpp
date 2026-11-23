@@ -4764,7 +4764,12 @@ void DoQuatInterpBone(
 				pos.z = pos.z + s * pTrigger->pos.z;
 			}
 		}
-		Assert( QuaternionNormalize( quat ) != 0);
+		// DOD-SP: the normalize sat INSIDE Assert(), which Release compiles out - the blended quaternion went to
+		// QuaternionMatrix unnormalized = (1 - m^2) I + m^2 R, a helper bone shrunk by up to 6% (the CoD3 rifleman's
+		// wrist). INVARIANT: a quatinterp helper's matrix is a rotation. Guard: dodsp_lint_client.py check_quat_normalize.
+		float flQuatLen = QuaternionNormalize( quat );
+		Assert( flQuatLen != 0 );
+		(void)flQuatLen;
 		QuaternionMatrix( quat, pos, bonematrix );
 	}
 
