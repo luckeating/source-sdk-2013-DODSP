@@ -1775,6 +1775,9 @@ LOG:
   KNEE (same day): the joints2 bulb was the calf side of an 8-unit band. Scored two-sided over held poses through the
   engine's triggers: calf band 5 -> swell p90 1.37 / 1.33 -> 1.17 / 1.18 (original 1.06 / 1.09), thinning kept; calf 4
   thins the left knee, calf 6 the kneeling right. Delivered dodsp_cod3_rifleman_joints3.zip (model source only).
+  CONFIRMED 2026-11-22 (owner compiled joints3, "tested a few times and messed around, no noticeable issues now").
+  KNOWN-GOOD for the CoD3 rifleman's joints (24 helpers, limb-reach band split, knee calf band 5). Still open: the
+  release-build quaternion normalize in bone_setup.cpp DoQuatInterpBone (next client build).
   LESSON: a weight band needs a reach across the limb as well as along it - test what a re-weight ADDS, bone by bone.
 
 
