@@ -391,7 +391,8 @@ If you learn something like this, add it here in the same commit as the fix.
   the right hand (weapon_bone) so blends stop swinging it. Engine facts for later stages: client ground IK (CIKContext,
   IK_GROUND) runs for models with ikchains but plants only where a sequence has ikrules (4 do); $jigglebone, sequence
   autolayers and the transition graph are all supported and unused.
-  **N1 PREPARED 2026-11-22 (owner: "start the k98 build").** dodsp_tools/support_grip.py = THE owner of the support
+  **N1 BUILT 2026-11-22: build 45098465851 (client: dodsp_grip_report + the Release quaternion normalize) + packs
+  dodsp_npc_ww2_anims_n1.zip / dodsp_npc_ww2_anims_cod1_n1.zip (owner: "start the k98 build"). Not yet tested in game.** dodsp_tools/support_grip.py = THE owner of the support
   hand: both CoD pack builders solve the left arm (two-bone IK, elbow in the animation's plane, clavicle forward up to
   20 deg when out of reach, then along the rifle toward the source's own hold) onto DoD's K98 grip wherever the SOURCE
   holds its rifle two-handed (left hand within 5 units of the barrel line, -10..+7 along it from DoD's grip mapped
